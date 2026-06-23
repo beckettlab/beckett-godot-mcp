@@ -3,6 +3,12 @@
 > *Stop waiting for Godot.*
 
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/pBAugYuerR)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Godot 4.2+](https://img.shields.io/badge/Godot-4.2%2B-478CBF?logo=godotengine&logoColor=white)](https://godotengine.org)
+[![MCP](https://img.shields.io/badge/MCP-server-5A45FF)](https://modelcontextprotocol.io)
+[![Release](https://img.shields.io/github/v/release/beckettlab/beckett-godot-mcp?logo=github)](https://github.com/beckettlab/beckett-godot-mcp/releases)
+[![Stars](https://img.shields.io/github/stars/beckettlab/beckett-godot-mcp?logo=github)](https://github.com/beckettlab/beckett-godot-mcp/stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/beckettlab/beckett-godot-mcp)](https://github.com/beckettlab/beckett-godot-mcp/commits)
 
 **Beckett** is a **zero-sidecar** Model Context Protocol (MCP) server embedded directly in the **Godot 4** editor as a GDScript `EditorPlugin`. AI agents (Claude and others) drive the editor over HTTP — no Node/Python bridge, no second process, no cloud.
 
