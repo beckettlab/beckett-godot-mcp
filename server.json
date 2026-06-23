@@ -3,7 +3,7 @@
   "name": "io.github.beckettlab/beckett-godot-mcp",
   "title": "Beckett - MCP for Godot",
   "description": "MCP server embedded in the Godot 4 editor; drive Godot with AI, zero sidecar.",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "websiteUrl": "https://github.com/beckettlab/beckett-godot-mcp#readme",
   "repository": {
     "url": "https://github.com/beckettlab/beckett-godot-mcp",
