@@ -1,0 +1,5 @@
+{
+  "description": "One-screen 2D platformer: CharacterBody2D player with coyote time + jump buffer, coin pickups, a kill-zone hazard, score HUD, game-over/retry, and juice (squash, burst, score pop, camera shake).",
+  "main_scene": "res://main.tscn",
+  "open": true
+}
