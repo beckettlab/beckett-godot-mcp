@@ -1,0 +1,27 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.beckettlab/beckett-godot-mcp",
+  "title": "Beckett — MCP for Godot",
+  "description": "MCP server embedded in the Godot 4 editor — drive Godot with AI, zero sidecar.",
+  "version": "1.2.0",
+  "websiteUrl": "https://github.com/beckettlab/beckett-godot-mcp#readme",
+  "repository": {
+    "url": "https://github.com/beckettlab/beckett-godot-mcp",
+    "source": "github",
+    "id": "1273876922"
+  },
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "distribution": "Godot editor addon (enable in Project > Plugins). No npm/pypi/docker package; no stdio binary.",
+      "runtime": {
+        "transport": "streamable-http",
+        "defaultUrl": "http://127.0.0.1:8770/mcp",
+        "note": "Local-only HTTP server (Godot TCPServer); port configurable. Not a publicly reachable remote, so intentionally not listed under 'remotes'."
+      },
+      "editions": {
+        "lite": "Free MIT — github.com/beckettlab/beckett-godot-mcp + Godot Asset Library",
+        "full": "Paid — beckettlabs.itch.io/beckett-godot-mcp"
+      }
+    }
+  }
+}
