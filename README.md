@@ -2,6 +2,8 @@
 
 > *Stop waiting for Godot.*
 
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/pBAugYuerR)
+
 **Beckett** is a **zero-sidecar** Model Context Protocol (MCP) server embedded directly in the **Godot 4** editor as a GDScript `EditorPlugin`. AI agents (Claude and others) drive the editor over HTTP — no Node/Python bridge, no second process, no cloud.
 
 This repository is the free, **MIT-licensed Lite edition** — the complete **inspect → author → run** dev loop (41 tools). The paid **Full** edition makes the AI *play* your game (screenshots, input, asserts) and adds a test runner, animation tools, background exports, and 36 knowledge packs — see [What Full adds](#what-full-adds).
