@@ -40,6 +40,8 @@ Existing Godot MCP servers either shell out to the CLI (can't play the game, scr
 
 ## Tools (41) · Resources (6) · Prompts (5)
 
+> **Fewer tools, on purpose — that's the moat, not a limitation.** Most Godot MCPs hand-code one tool per task (`create_sprite`, `add_collision`, `make_timer`…) — hundreds that *still* miss classes and flood the model's context (LLMs measurably degrade past ~40 tools). Beckett's are **reflection-generic**: `describe_class` / `set_property` / `call_method` drive *any* of Godot's 1000+ classes through `ClassDB` — TileMap, GPUParticles, AnimationTree, shaders, your own `class_name` — with no per-domain code. **Don't count tools, count coverage:** a smaller, sharper toolset that reaches the *whole* engine beats a hundred narrow wrappers that don't.
+
 The free Lite edition — the complete inspect → author → run loop:
 
 - **Reflection / discovery:** `get_godot_version`, `find_classes`, `describe_class`, `find_methods`, `describe_object`, `set_property`, `call_method`, `get_scene_tree`
