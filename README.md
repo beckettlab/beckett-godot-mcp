@@ -16,6 +16,10 @@ This repository is the free, **MIT-licensed Lite edition** — the complete **in
 
 **Lite: you play, the AI reads the logs. Full: the AI plays.**
 
+## Demo
+
+[![Watch Beckett drive Godot](https://img.youtube.com/vi/oUHrA4ojqdg/maxresdefault.jpg)](https://www.youtube.com/watch?v=oUHrA4ojqdg)
+
 ## Why
 
 Existing Godot MCP servers either shell out to the CLI (can't play the game, screenshot, or inspect runtime) or run a Node/Python **sidecar** that relays to a thin in-editor addon. This one makes the **addon itself the MCP server**, and exposes **reflection-generic** tools that work on *any* class via `ClassDB` — instead of hundreds of hand-coded per-domain wrappers (an anti-pattern: LLMs degrade past ~40 tools).
