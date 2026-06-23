@@ -10,3 +10,12 @@
 *.wav binary
 *.ogg binary
 *.zip binary
+
+# Asset Library: the archive Godot downloads should contain ONLY addons/ — not
+# the repo's README / LICENSE / INSTALL / project.godot / CI. Keeps the installed
+# asset clean and avoids clobbering the user's own project.godot. The addon ships
+# its own LICENSE + README inside addons/beckett/.
+# https://docs.godotengine.org/en/latest/community/asset_library/submitting_to_assetlib.html#recommendations
+/**         export-ignore
+/addons     !export-ignore
+/addons/**  !export-ignore
