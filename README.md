@@ -2,6 +2,7 @@
 
 > *Stop waiting for Godot.*
 
+[![CI](https://github.com/beckettlab/beckett-godot-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/beckettlab/beckett-godot-mcp/actions/workflows/ci.yml)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/pBAugYuerR)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Godot 4.2+](https://img.shields.io/badge/Godot-4.2%2B-478CBF?logo=godotengine&logoColor=white)](https://godotengine.org)

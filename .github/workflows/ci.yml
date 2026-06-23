@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: parse + boot (Godot 4.6.2)
+    runs-on: ubuntu-latest
+    env:
+      GODOT_VERSION: 4.6.2-stable
+      BECKETT_AUTO_CONFIG: "0"   # don't let the plugin rewrite .mcp.json during the CI boot
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot runtime libs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libgl1 libxkbcommon0 libfontconfig1 || true
+
+      - name: Download Godot ${{ env.GODOT_VERSION }}
+        run: |
+          set -euxo pipefail
+          BIN="Godot_v${GODOT_VERSION}_linux.x86_64"
+          curl -fSL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/${BIN}.zip"
+          unzip -q godot.zip
+          mv "${BIN}" godot
+          chmod +x godot
+          ./godot --headless --version
+
+      - name: Parse-check every addon script
+        run: |
+          set -uo pipefail
+          fail=0
+          while IFS= read -r f; do
+            out="$(./godot --headless --path . --check-only --script "$f" 2>&1)" || true
+            if printf '%s' "$out" | grep -qiE 'SCRIPT ERROR|Parse Error'; then
+              echo "::error file=${f}::GDScript parse error"
+              printf '%s\n' "$out"
+              fail=1
+            else
+              echo "ok  ${f}"
+            fi
+          done < <(find addons -name '*.gd' | sort)
+          exit "$fail"
+
+      - name: Boot headless editor — plugin loads clean
+        run: |
+          set -uo pipefail
+          timeout 120 ./godot --headless --editor --path . --quit-after 300 > boot.log 2>&1 || true
+          echo '----- boot.log (tail) -----'
+          tail -n 60 boot.log
+          if grep -qiE 'SCRIPT ERROR|Parse Error|hides a global script class|Failed to load script' boot.log; then
+            echo '::error::headless boot produced script/class errors'
+            exit 1
+          fi
+          echo 'boot clean'
