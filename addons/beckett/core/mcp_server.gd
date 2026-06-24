@@ -70,7 +70,8 @@ var _readonly: bool = false
 var _confirm_destructive: bool = false
 var _allowlist: Array[String] = []  # regex strings; empty = allow all
 var _idempotency: Dictionary = {}    # key -> cached result dict (FIFO-capped at IDEMPOTENCY_MAX)
-var _audit: Array = []               # ring of {t, tool, ms, ok[, error]} — who did what (D6)
+var _audit: Array = []               # ring of {t, tool, ms, ok, args[, error|result]} — who did what (D6)
+var _audit_total := 0                # total calls this session (the ring keeps only the last AUDIT_MAX)
 var _client_info: Dictionary = {}    # clientInfo {name, version} from the last initialize
 var _client_ua: String = ""          # last request's User-Agent (best-effort fallback identity)
 var _last_activity_ms: int = 0       # Time.get_ticks_msec() of the last request (0 = none yet)
@@ -375,7 +376,17 @@ func _call_tool(id: Variant, params: Dictionary) -> Dictionary:
 	else:
 		r = {"text": str(raw)}
 	var result := _tool_result(r)
-	_audit_record(name, args, Time.get_ticks_msec() - t0, str(r.get("error", "")))
+	# A short preview of the outcome (not just the args) so the dock feed shows what the
+	# call actually did — capped like args to keep the ring light.
+	var rprev := ""
+	if not r.has("error"):
+		if r.has("text"):
+			rprev = str(r["text"])
+		elif r.has("json"):
+			rprev = JSON.stringify(r["json"])
+		else:
+			rprev = JSON.stringify(r)
+	_audit_record(name, args, Time.get_ticks_msec() - t0, str(r.get("error", "")), rprev)
 
 	if not idem.is_empty():
 		if _idempotency.size() >= IDEMPOTENCY_MAX:
@@ -387,7 +398,7 @@ func _call_tool(id: Variant, params: Dictionary) -> Dictionary:
 ## Append one entry to the audit ring (D6: see who/what ran, when, how long).
 ## Args are stored compactly (keys + truncated JSON) — enough to reconstruct intent
 ## without bloating memory or leaking huge file bodies into the ring.
-func _audit_record(tool_name: String, args: Dictionary, ms: int, error: String) -> void:
+func _audit_record(tool_name: String, args: Dictionary, ms: int, error: String, result := "") -> void:
 	var brief := JSON.stringify(args)
 	if brief.length() > 200:
 		brief = brief.substr(0, 200) + "…"
@@ -400,7 +411,10 @@ func _audit_record(tool_name: String, args: Dictionary, ms: int, error: String) 
 	}
 	if not error.is_empty():
 		entry["error"] = error.substr(0, 200)
+	elif result != "":
+		entry["result"] = result.substr(0, 200) + ("…" if result.length() > 200 else "")
 	_audit.append(entry)
+	_audit_total += 1
 	if _audit.size() > AUDIT_MAX:
 		_audit.pop_front()
 
@@ -408,6 +422,11 @@ func _audit_record(tool_name: String, args: Dictionary, ms: int, error: String) 
 ## Read-only view for the audit:// resource and the dock panel.
 func audit_log() -> Array:
 	return _audit
+
+
+## Total calls this session — may exceed audit_log().size(), which caps at AUDIT_MAX.
+func audit_total() -> int:
+	return _audit_total
 
 
 ## Who is connected, for the dock. name/version come from the client's initialize

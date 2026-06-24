@@ -23,14 +23,14 @@ const UPGRADE_URL := "https://beckettlabs.itch.io/beckett-godot-mcp"
 
 var _es := 1.0  # editor display scale; multiply every px size by this
 
-var _status_pill: PanelContainer
-var _status_pill_label: Label
-var _pill_on: StyleBoxFlat
-var _pill_off: StyleBoxFlat
+var _status_dot: Panel
+var _status_text: Label
 var _toggle_btn: Button
 var _url_btn: Button
 var _game_label: Label
 var _client_label: Label
+var _client_dot: Panel
+var _client_row: HBoxContainer
 var _clients_list: VBoxContainer
 var _clients_count: Label
 var _clients_empty: Label
@@ -39,14 +39,18 @@ var _tier_label: Label
 var _tier_stats: Label
 var _effort_desc: Label
 var _activity_box: VBoxContainer
+var _activity_scroll: ScrollContainer  # bounds the feed's height; scrolls when it overflows
 var _activity_empty: Label
-var _activity_count: Label
+var _activity_count: Button  # footer toggle: "View all N calls" / "Show recent"
 var _feedback: Label
 var _accum := 0.0
 var _clients_accum := 999.0  # refresh client detection immediately on first tick
 var _audit_sig := ""
+var _expanded := {}  # audit-row key -> bool; keeps an opened row open across rebuilds
+var _show_all := false  # activity feed: newest ACTIVITY_ROWS (false) vs the whole ring (true)
 var _feedback_left := 0.0
 var _was_running := false
+var _wait_phase := 0  # cycles the "waiting…" ellipsis so it reads as actively pending
 
 
 func _ready() -> void:
@@ -55,7 +59,6 @@ func _ready() -> void:
 		_es = EditorInterface.get_editor_scale()
 	add_theme_constant_override("separation", int(8 * _es))
 
-	_build_header()
 	_build_server_card()
 	_build_clients_card()
 	_build_effort_card()
@@ -74,67 +77,115 @@ func _ready() -> void:
 	_refresh_effort()
 
 
-# ---------------------------------------------------------------- header
+# ------------------------------------------------------------- masthead + server
 
-func _build_header() -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", int(6 * _es))
-	add_child(row)
+func _build_server_card() -> void:
+	var mono: Font = get_theme_font("source", "EditorFonts") if has_theme_font("source", "EditorFonts") else null
+
+	# The top card is also the masthead, so build it directly — no "SERVER" section label.
+	var pc := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = _color("dark_color_1", Color(0, 0, 0, 0.2))
+	sb.set_corner_radius_all(int(5 * _es))
+	sb.set_content_margin_all(10 * _es)
+	pc.add_theme_stylebox_override("panel", sb)
+	add_child(pc)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", int(7 * _es))
+	pc.add_child(box)
+
+	# Masthead: Beckett · MCP for Godot · v… with the edition pill riding the right.
+	var brand := HBoxContainer.new()
+	brand.add_theme_constant_override("separation", int(6 * _es))
+	# HBox has no baseline align, so drop the smaller tagline by the ascent difference —
+	# then "Beckett" and the tagline sit on exactly the same text baseline.
+	var title_font: Font = get_theme_font("bold", "EditorFonts") if has_theme_font("bold", "EditorFonts") else get_theme_font("font", "Label")
+	var tag_font: Font = get_theme_font("font", "Label")
+	var baseline_drop := 0
+	if title_font != null and tag_font != null:
+		baseline_drop = maxi(0, int(title_font.get_ascent(int(16 * _es)) - tag_font.get_ascent(int(11 * _es))))
 
 	var title := Label.new()
 	title.text = "Beckett"
 	title.add_theme_font_size_override("font_size", int(16 * _es))
+	title.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	if has_theme_font("bold", "EditorFonts"):
 		title.add_theme_font_override("font", get_theme_font("bold", "EditorFonts"))
-	row.add_child(title)
+	brand.add_child(title)
 
+	var tagwrap := MarginContainer.new()  # margin_top pushes the tagline onto the baseline
+	tagwrap.add_theme_constant_override("margin_top", baseline_drop)
+	tagwrap.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	var tagline := Label.new()
 	var ver := _plugin_version()
 	tagline.text = "MCP for Godot" + (" · v" + ver if ver != "" else "")
 	tagline.add_theme_font_size_override("font_size", int(11 * _es))
 	tagline.add_theme_color_override("font_color", _dim())
-	tagline.size_flags_vertical = Control.SIZE_SHRINK_END
-	row.add_child(tagline)
+	tagwrap.add_child(tagline)
+	brand.add_child(tagwrap)
 
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(spacer)
+	var sp := Control.new()
+	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	brand.add_child(sp)
+	var pill := _make_pill("LITE", _color("warning_color", Color(0.9, 0.7, 0.2))) if _is_lite() else _make_pill("FULL", _color("accent_color", Color(0.4, 0.6, 1.0)))
+	pill.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	brand.add_child(pill)
+	box.add_child(brand)
 
-	if _is_lite():
-		row.add_child(_make_pill("LITE", _color("warning_color", Color(0.9, 0.7, 0.2))))
-	else:
-		row.add_child(_make_pill("FULL", _color("accent_color", Color(0.4, 0.6, 1.0))))
+	box.add_child(HSeparator.new())
 
-	# Live server pill — green when running, neutral when stopped.
-	_pill_on = _pill_style(_color("success_color", Color(0.3, 0.8, 0.4)))
-	_pill_off = _pill_style(_dim())
-	_status_pill = PanelContainer.new()
-	_status_pill_label = Label.new()
-	_status_pill_label.add_theme_font_size_override("font_size", int(11 * _es))
-	_status_pill.add_child(_status_pill_label)
-	row.add_child(_status_pill)
+	# Status line: a colour-coded dot + state (· port when running).
+	var status_row := HBoxContainer.new()
+	status_row.add_theme_constant_override("separation", int(5 * _es))
+	_status_dot = _make_dot()
+	status_row.add_child(_status_dot)
+	_status_text = Label.new()
+	_status_text.add_theme_font_size_override("font_size", int(13 * _es))
+	_status_text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	status_row.add_child(_status_text)
+	box.add_child(status_row)
 
-
-# ---------------------------------------------------------------- server card
-
-func _build_server_card() -> void:
-	var box := _card("Server")
-
+	# Primary control.
 	_toggle_btn = Button.new()
 	_toggle_btn.custom_minimum_size = Vector2(0, 30 * _es)
 	_toggle_btn.pressed.connect(_on_toggle_server)
 	box.add_child(_toggle_btn)
 
-	# Endpoint — the whole row is a flat click-to-copy button.
+	# Endpoint as a code block (matches the activity args look); the whole strip copies,
+	# the trailing icon is the affordance.
 	_url_btn = Button.new()
-	_url_btn.flat = true
 	_url_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_url_btn.clip_text = true
 	_url_btn.icon = _eicon("ActionCopy")
-	_url_btn.add_theme_font_size_override("font_size", int(12 * _es))
+	_url_btn.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_url_btn.focus_mode = Control.FOCUS_NONE
+	_url_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_url_btn.add_theme_font_size_override("font_size", int(11 * _es))
+	_url_btn.add_theme_color_override("font_color", _color("font_color", Color(0.9, 0.9, 0.9)))
+	_url_btn.add_theme_color_override("icon_normal_color", _dim())
+	_url_btn.add_theme_stylebox_override("normal", _code_style())
+	_url_btn.add_theme_stylebox_override("hover", _code_style(true))
+	_url_btn.add_theme_stylebox_override("pressed", _code_style(true))
+	if mono != null:
+		_url_btn.add_theme_font_override("font", mono)
 	_url_btn.tooltip_text = "Click to copy the MCP endpoint URL"
 	_url_btn.pressed.connect(_on_copy_url)
 	box.add_child(_url_btn)
+
+	# Live connection: a dot + who's talking (green) or a pending "waiting…" (amber). The
+	# authoritative state from the initialize handshake — distinct from "config written".
+	_client_row = HBoxContainer.new()
+	_client_row.add_theme_constant_override("separation", int(5 * _es))
+	_client_row.tooltip_text = "The connected MCP client, from its initialize handshake.\nThe model is chosen inside that client — MCP does not report it to the server."
+	_client_dot = _make_dot()
+	_client_row.add_child(_client_dot)
+	_client_label = Label.new()
+	_client_label.add_theme_font_size_override("font_size", int(11 * _es))
+	_client_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_client_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_client_row.add_child(_client_label)
+	_client_row.visible = false
+	box.add_child(_client_row)
 
 	# Shown only while a played game has the runtime channel open (noise-free idle).
 	_game_label = Label.new()
@@ -144,17 +195,6 @@ func _build_server_card() -> void:
 	_game_label.tooltip_text = "Live link to the running game — playtest tools use this"
 	_game_label.visible = false
 	box.add_child(_game_label)
-
-	# Who's actually connected (from the client's initialize handshake) + when it last
-	# called. This is the real connection state — distinct from "config written" in the
-	# Clients card. The model is intentionally not shown: MCP never reports it.
-	_client_label = Label.new()
-	_client_label.add_theme_font_size_override("font_size", int(11 * _es))
-	_client_label.add_theme_color_override("font_color", _dim())
-	_client_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_client_label.tooltip_text = "The connected MCP client, reported by its initialize handshake.\nThe model is chosen inside that client — MCP does not report the model to the server."
-	_client_label.visible = false
-	box.add_child(_client_label)
 
 
 # ---------------------------------------------------------------- clients card
@@ -167,7 +207,9 @@ func _build_clients_card() -> void:
 	_clients_count = Label.new()
 	_clients_count.add_theme_font_size_override("font_size", int(10 * _es))
 	_clients_count.add_theme_color_override("font_color", _dim())
-	var box := _card("Clients", _clients_count)
+	# Collapsible + folded by default: this is usually all-✓ and rarely touched, so it
+	# stays out of the way. The "n / m configured" count rides the header for a glance.
+	var box := _collapsible_card("Clients", _clients_count, false)
 
 	# One row per installed client — name + a ✓ once its config is written. Installed-only,
 	# rebuilt each detection tick by _refresh_clients, so a clean machine reads tidy.
@@ -264,7 +306,17 @@ func _build_effort_card() -> void:
 # ---------------------------------------------------------------- activity card
 
 func _build_activity_card() -> void:
-	var box := _card("Activity")
+	# A copy-the-whole-log button rides the header line, right-aligned.
+	var copy_all := Button.new()
+	copy_all.flat = true
+	copy_all.icon = _eicon("ActionCopy")
+	copy_all.add_theme_constant_override("icon_max_width", int(13 * _es))
+	copy_all.focus_mode = Control.FOCUS_NONE
+	copy_all.modulate.a = 0.7
+	copy_all.tooltip_text = "Copy the whole activity log"
+	copy_all.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	copy_all.pressed.connect(_on_copy_all)
+	var box := _card("Activity", copy_all)
 
 	_activity_empty = Label.new()
 	_activity_empty.text = "No calls yet — ask your AI assistant something."
@@ -273,15 +325,29 @@ func _build_activity_card() -> void:
 	_activity_empty.add_theme_color_override("font_color", _dim())
 	box.add_child(_activity_empty)
 
+	# The feed lives in a height-bounded scroll, so a long log scrolls instead of
+	# pushing the rest of the dock off-screen.
+	_activity_scroll = ScrollContainer.new()
+	_activity_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_activity_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_activity_box = VBoxContainer.new()
-	_activity_box.add_theme_constant_override("separation", int(2 * _es))
-	box.add_child(_activity_box)
+	_activity_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_activity_box.add_theme_constant_override("separation", int(4 * _es))
+	_activity_box.minimum_size_changed.connect(_fit_activity_scroll)
+	_activity_scroll.add_child(_activity_box)
+	box.add_child(_activity_scroll)
 
-	_activity_count = Label.new()
+	# Footer: toggles the recent feed ⇄ the whole ring; also carries the call count.
+	_activity_count = Button.new()
+	_activity_count.flat = true
+	_activity_count.focus_mode = Control.FOCUS_NONE
+	_activity_count.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	_activity_count.add_theme_font_size_override("font_size", int(10 * _es))
 	_activity_count.add_theme_color_override("font_color", _dim())
-	_activity_count.tooltip_text = "Full history: resources/read audit://recent"
+	_activity_count.add_theme_color_override("font_hover_color", _color("font_color", Color(0.9, 0.9, 0.9)))
+	_activity_count.tooltip_text = "Show every call this session, or just the recent few. The header ⧉ copies the whole log."
 	_activity_count.visible = false
+	_activity_count.pressed.connect(_toggle_show_all)
 	box.add_child(_activity_count)
 
 
@@ -300,60 +366,245 @@ func _refresh_activity() -> void:
 
 	for c in _activity_box.get_children():
 		c.queue_free()
+	var kept := audit.size()
+	var total: int = server.audit_total() if server.has_method("audit_total") else kept
 	_activity_empty.visible = audit.is_empty()
-	_activity_count.visible = audit.size() > ACTIVITY_ROWS
-	_activity_count.text = "… %d calls this session" % audit.size()
+	_activity_count.visible = total > ACTIVITY_ROWS
+	if _show_all:
+		_activity_count.text = "Show recent"
+	elif total > kept:
+		_activity_count.text = "View all · last %d of %d" % [kept, total]  # ring rotated
+	else:
+		_activity_count.text = "View all %d calls" % total
 
 	var mono: Font = get_theme_font("source", "EditorFonts") if has_theme_font("source", "EditorFonts") else null
-	var n: int = mini(ACTIVITY_ROWS, audit.size())
+	var bright: Color = _color("font_color", Color(0.9, 0.9, 0.9))
+	var n: int = audit.size() if _show_all else mini(ACTIVITY_ROWS, audit.size())
+	var live := {}  # rebuilt expand state — implicitly drops keys that scrolled off
 	for i in n:
 		var e: Dictionary = audit[audit.size() - 1 - i]  # newest first
 		var ok := bool(e.get("ok", true))
 		var tool_name := str(e.get("tool", "?"))
 		var tier: int = MCPEffortScript.tier_of(tool_name)
-		# A failure always reads red; otherwise tint by the tool's effort tier.
-		var col := _color("error_color", Color(0.9, 0.3, 0.3)) if not ok else _tier_color(tier)
-
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", int(5 * _es))
 		var tier_name := str(MCPEffortScript.LEVELS.get(tier, {}).get("name", "L%d" % tier))
+		# One accent tints the whole card — red on failure, else the tool's effort tier.
+		var accent := _row_accent(ok, tier)
 		var tip := "%s — L%d %s\n%s · %dms · %s" % [tool_name, tier, tier_name,
 			str(e.get("t", "")), int(e.get("ms", 0)), "ok" if ok else "FAILED"]
-		var args_s := str(e.get("args", ""))
-		if args_s != "":
-			tip += "\n%s" % args_s
-		if not ok:
-			tip += "\n%s" % str(e.get("error", ""))
-		row.tooltip_text = tip
 
-		# ✓/✗ + tool name share the tier colour; the timing rides a quiet right column.
+		# A stable-ish key (time+tool+args) keeps an opened row open as newer calls arrive.
+		var key := "%s|%s|%s" % [str(e.get("t", "")), tool_name, str(e.get("args", ""))]
+		var expanded: bool = _expanded.get(key, false)
+		live[key] = expanded
+
+		# The whole row is a tinted, rounded card; clicking anywhere on it folds the detail.
+		var card := PanelContainer.new()
+		card.add_theme_stylebox_override("panel", _row_card_style(accent, false))
+		card.mouse_filter = Control.MOUSE_FILTER_STOP
+		card.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		card.tooltip_text = tip
+
+		var body := VBoxContainer.new()
+		body.add_theme_constant_override("separation", int(3 * _es))
+		body.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.add_child(body)
+
+		# ── header: ✓ tool …………… 12ms ▸ — the disclosure arrow trails on the right.
+		var head := HBoxContainer.new()
+		head.add_theme_constant_override("separation", int(5 * _es))
+		head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
 		var mark := Label.new()
 		mark.text = "✓" if ok else "✗"
 		mark.add_theme_font_size_override("font_size", int(11 * _es))
-		mark.add_theme_color_override("font_color", col)
+		mark.add_theme_color_override("font_color", accent)
+		mark.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		if mono != null:
 			mark.add_theme_font_override("font", mono)
-		row.add_child(mark)
+		head.add_child(mark)
 
 		var name_lbl := Label.new()
 		name_lbl.text = tool_name
 		name_lbl.clip_text = true
 		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		name_lbl.add_theme_font_size_override("font_size", int(11 * _es))
-		name_lbl.add_theme_color_override("font_color", col)
+		name_lbl.add_theme_color_override("font_color", bright)
+		name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		if mono != null:
 			name_lbl.add_theme_font_override("font", mono)
-		row.add_child(name_lbl)
+		head.add_child(name_lbl)
 
 		var meta := Label.new()
 		meta.text = "%dms" % int(e.get("ms", 0))
-		meta.add_theme_font_size_override("font_size", int(11 * _es))
+		meta.add_theme_font_size_override("font_size", int(10 * _es))
 		meta.add_theme_color_override("font_color", _dim())
+		meta.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		if mono != null:
 			meta.add_theme_font_override("font", mono)
-		row.add_child(meta)
+		head.add_child(meta)
 
-		_activity_box.add_child(row)
+		# Editor tree arrows are guaranteed in the theme (a glyph like ▸ renders blank in
+		# the mono font); right = folded, down = open.
+		var arrow := TextureRect.new()
+		arrow.texture = _disc_icon(expanded)
+		arrow.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+		arrow.custom_minimum_size = Vector2(12 * _es, 0)
+		arrow.modulate = _dim()
+		arrow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		head.add_child(arrow)
+		body.add_child(head)
+
+		# ── detail (folds away): a divider, then when it ran · its tier, the args it
+		# carried, and the error if it failed — with a one-click copy of the whole call.
+		var args_s := str(e.get("args", ""))
+		var detail := VBoxContainer.new()
+		detail.add_theme_constant_override("separation", int(2 * _es))
+		detail.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		detail.visible = expanded
+
+		var sep := HSeparator.new()
+		sep.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		detail.add_child(sep)
+
+		# meta line (when · tier) shares its row with a trailing copy button.
+		var meta_row := HBoxContainer.new()
+		meta_row.add_theme_constant_override("separation", int(4 * _es))
+		meta_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var meta_line := _detail_line("%s · L%d %s" % [str(e.get("t", "")), tier, tier_name], _dim(), mono)
+		meta_line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		meta_row.add_child(meta_line)
+
+		var summary := _call_summary(tool_name, tier, tier_name, e, ok, args_s)
+		var copy_btn := Button.new()
+		copy_btn.flat = true
+		copy_btn.icon = _eicon("ActionCopy")
+		copy_btn.add_theme_constant_override("icon_max_width", int(13 * _es))
+		copy_btn.focus_mode = Control.FOCUS_NONE
+		copy_btn.modulate.a = 0.7
+		copy_btn.tooltip_text = "Copy this call's details"
+		copy_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		copy_btn.pressed.connect(func() -> void:
+			DisplayServer.clipboard_set(summary)
+			_flash("Call details copied ✓"))
+		meta_row.add_child(copy_btn)
+		detail.add_child(meta_row)
+
+		if args_s != "" and args_s != "{}":
+			detail.add_child(_code_block(args_s, mono))
+		var result_s := str(e.get("result", ""))
+		if result_s != "":
+			detail.add_child(_detail_line(result_s, bright, mono))
+		if not ok:
+			detail.add_child(_detail_line("⚠ %s" % str(e.get("error", "")), accent, mono))
+		body.add_child(detail)
+
+		_activity_box.add_child(card)
+
+		# Brighten on hover (affordance) and toggle the fold on click — both on the card.
+		card.mouse_entered.connect(func() -> void:
+			card.add_theme_stylebox_override("panel", _row_card_style(accent, true)))
+		card.mouse_exited.connect(func() -> void:
+			card.add_theme_stylebox_override("panel", _row_card_style(accent, false)))
+		card.gui_input.connect(func(ev: InputEvent) -> void:
+			if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+				var now := not detail.visible
+				detail.visible = now
+				arrow.texture = _disc_icon(now)
+				_expanded[key] = now)
+
+	_expanded = live
+	call_deferred("_fit_activity_scroll")
+
+
+## Size the feed's scroll to its content, capped — short logs sit at natural height,
+## long ones (or many expanded rows) stop growing and scroll instead.
+func _fit_activity_scroll() -> void:
+	if _activity_scroll == null or _activity_box == null:
+		return
+	# max() guards a timing quirk: the measured size can lag a frame behind a rebuild, so
+	# fall back to a per-row estimate. Capped only when showing all (then it scrolls).
+	var rows := _activity_box.get_child_count()
+	var h := maxf(_activity_box.get_combined_minimum_size().y, rows * 30.0 * _es)
+	_activity_scroll.custom_minimum_size.y = minf(h, 300.0 * _es) if _show_all else h
+
+
+## One wrapped, monospaced line inside an expanded row's detail block.
+func _detail_line(text: String, col: Color, mono: Font) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.add_theme_font_size_override("font_size", int(10 * _es))
+	l.add_theme_color_override("font_color", col)
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if mono != null:
+		l.add_theme_font_override("font", mono)
+	return l
+
+
+## The call's args as a code block — monospace on a sunken, rounded panel so the literal
+## payload reads as code, set apart from the prose lines around it.
+func _code_block(text: String, mono: Font) -> PanelContainer:
+	var pc := PanelContainer.new()
+	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pc.add_theme_stylebox_override("panel", _code_style())
+	pc.add_child(_detail_line(text, _color("font_color", Color(0.9, 0.9, 0.9)), mono))
+	return pc
+
+
+## The sunken, rounded background shared by the args and endpoint code blocks. `hot`
+## brightens it for a button's hover/pressed states.
+func _code_style(hot := false) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0, 0, 0, 0.34 if hot else 0.25)
+	sb.set_corner_radius_all(int(3 * _es))
+	sb.content_margin_left = 6 * _es
+	sb.content_margin_right = 6 * _es
+	sb.content_margin_top = 3 * _es
+	sb.content_margin_bottom = 3 * _es
+	return sb
+
+
+## A copy-paste-friendly one-block summary of a single audit entry — the same fields the
+## expanded row shows, flattened for pasting into a bug report or message.
+func _call_summary(tool_name: String, tier: int, tier_name: String, e: Dictionary, ok: bool, args_s: String) -> String:
+	var s := "%s · L%d %s · %s · %dms · %s" % [tool_name, tier, tier_name,
+		str(e.get("t", "")), int(e.get("ms", 0)), "ok" if ok else "FAILED"]
+	if args_s != "" and args_s != "{}":
+		s += "\nargs: %s" % args_s
+	var res := str(e.get("result", ""))
+	if res != "":
+		s += "\nresult: %s" % res
+	if not ok:
+		s += "\nerror: %s" % str(e.get("error", ""))
+	return s
+
+
+## The single colour that themes one activity card — red on failure, otherwise the
+## tool's effort tier (Inspect stays a neutral grey so reads don't shout).
+func _row_accent(ok: bool, tier: int) -> Color:
+	if not ok:
+		return _color("error_color", Color(0.9, 0.3, 0.3))
+	match tier:
+		2: return Color(0.36, 0.62, 0.92)  # Author — blue
+		3: return Color(0.38, 0.78, 0.46)  # Run — green
+		4: return Color(0.93, 0.70, 0.36)  # Playtest — amber
+		5: return Color(0.72, 0.52, 0.92)  # Ship — violet
+	return _color("font_color", Color(0.86, 0.87, 0.9))  # Inspect / unmapped — neutral
+
+
+## A tinted card background for one activity row: a faint fill plus a solid left stripe
+## in the row's accent. `hot` brightens both for hover feedback.
+func _row_card_style(accent: Color, hot: bool) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(accent.r, accent.g, accent.b, 0.18 if hot else 0.10)
+	sb.set_corner_radius_all(int(4 * _es))
+	sb.border_width_left = int(3 * _es)
+	sb.border_color = Color(accent.r, accent.g, accent.b, 0.9 if hot else 0.6)
+	sb.content_margin_left = 8 * _es
+	sb.content_margin_right = 7 * _es
+	sb.content_margin_top = 4 * _es
+	sb.content_margin_bottom = 4 * _es
+	return sb
 
 
 # ---------------------------------------------------------------- upgrade (Lite)
@@ -405,6 +656,60 @@ func _card(header: String, header_right: Control = null) -> VBoxContainer:
 	return box
 
 
+## Like _card, but the header is a click target that folds a body away (trailing arrow,
+## same as the activity rows). Returns the body VBox to add content to; `open` is the
+## initial state. The header (title + optional right widget + arrow) is always visible.
+func _collapsible_card(header: String, header_right: Control, open: bool) -> VBoxContainer:
+	var pc := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = _color("dark_color_1", Color(0, 0, 0, 0.2))
+	sb.set_corner_radius_all(int(5 * _es))
+	sb.set_content_margin_all(10 * _es)
+	pc.add_theme_stylebox_override("panel", sb)
+	add_child(pc)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", int(6 * _es))
+	pc.add_child(box)
+
+	var hrow := HBoxContainer.new()
+	hrow.add_theme_constant_override("separation", int(5 * _es))
+	hrow.mouse_filter = Control.MOUSE_FILTER_STOP
+	hrow.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	var h := Label.new()
+	h.text = header.to_upper()
+	h.add_theme_font_size_override("font_size", int(10 * _es))
+	h.add_theme_color_override("font_color", _dim())
+	h.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hrow.add_child(h)
+	var sp := Control.new()
+	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hrow.add_child(sp)
+	if header_right != null:
+		header_right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		header_right.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hrow.add_child(header_right)
+	var arrow := TextureRect.new()
+	arrow.texture = _disc_icon(open)
+	arrow.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+	arrow.custom_minimum_size = Vector2(12 * _es, 0)
+	arrow.modulate = _dim()
+	arrow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hrow.add_child(arrow)
+	box.add_child(hrow)
+
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", int(6 * _es))
+	body.visible = open
+	box.add_child(body)
+
+	hrow.gui_input.connect(func(ev: InputEvent) -> void:
+		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+			body.visible = not body.visible
+			arrow.texture = _disc_icon(body.visible))
+	return body
+
+
 func _pill_style(c: Color) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(c.r, c.g, c.b, 0.16)
@@ -427,6 +732,29 @@ func _make_pill(text: String, c: Color) -> PanelContainer:
 	return pc
 
 
+## A small round status dot — an exact-size circle (vs a ● glyph, whose side bearing
+## left an uneven gap to the label). _paint_dot sets its colour and filled/hollow state.
+func _make_dot() -> Panel:
+	var p := Panel.new()
+	var d := int(7 * _es)
+	p.custom_minimum_size = Vector2(d, d)
+	p.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return p
+
+
+func _paint_dot(p: Panel, col: Color, filled: bool) -> void:
+	var sb := StyleBoxFlat.new()
+	sb.set_corner_radius_all(int(4 * _es))  # ≥ half the 7px box → fully round
+	if filled:
+		sb.bg_color = col
+	else:
+		sb.bg_color = Color(col.r, col.g, col.b, 0.0)  # hollow ring = pending
+		sb.border_color = col
+		sb.set_border_width_all(maxi(1, int(1.5 * _es)))
+	p.add_theme_stylebox_override("panel", sb)
+
+
 func _color(cname: String, fallback: Color) -> Color:
 	return get_theme_color(cname, "Editor") if has_theme_color(cname, "Editor") else fallback
 
@@ -437,23 +765,20 @@ func _dim() -> Color:
 	return c
 
 
-## Muted per-tier tint for an activity row — the tool's effort bucket (the same
-## Inspect/Author/Run/Playtest/Ship groups as the slider). Inspect (read-only) stays
-## neutral; the rest get a hue blended toward the editor text colour, so it reads as a
-## gentle accent rather than a loud highlight, and adapts to light/dark editor themes.
-func _tier_color(tier: int) -> Color:
-	var base: Color
-	match tier:
-		2: base = Color(0.36, 0.62, 0.92)  # Author — blue
-		3: base = Color(0.38, 0.78, 0.46)  # Run — green
-		4: base = Color(0.93, 0.70, 0.36)  # Playtest — amber
-		5: base = Color(0.72, 0.52, 0.92)  # Ship — violet
-		_: return _dim()                   # Inspect / unmapped — quiet, like a read
-	return base.lerp(_color("font_color", Color(0.86, 0.87, 0.9)), 0.3)
-
-
 func _eicon(iname: String) -> Texture2D:
 	return get_theme_icon(iname, "EditorIcons") if has_theme_icon(iname, "EditorIcons") else null
+
+
+## Disclosure triangle for an activity row. The Gui* icon names vary across editor
+## versions, so fall back to the Tree control's own expand arrows, which always exist.
+func _disc_icon(open: bool) -> Texture2D:
+	var ei := "GuiTreeArrowDown" if open else "GuiTreeArrowRight"
+	if has_theme_icon(ei, "EditorIcons"):
+		return get_theme_icon(ei, "EditorIcons")
+	var tn := "arrow" if open else "arrow_collapsed"
+	if has_theme_icon(tn, "Tree"):
+		return get_theme_icon(tn, "Tree")
+	return null
 
 
 ## One client row: the client's name with a ✓ once its config has been written (○ while it
@@ -508,16 +833,17 @@ func _process(delta: float) -> void:
 func _refresh() -> void:
 	var running: bool = server != null and server.is_running()
 
-	_status_pill_label.text = "Running" if running else "Stopped"
-	_status_pill_label.add_theme_color_override("font_color",
-		_color("success_color", Color(0.3, 0.8, 0.4)) if running else _dim())
-	_status_pill.add_theme_stylebox_override("panel", _pill_on if running else _pill_off)
+	var sc := _color("success_color", Color(0.3, 0.8, 0.4)) if running else _dim()
+	_paint_dot(_status_dot, sc, true)
+	_status_text.text = "Running · port %d" % _port() if running else "Stopped"
+	_status_text.add_theme_color_override("font_color",
+		_color("font_color", Color(0.9, 0.9, 0.9)) if running else _dim())
 
 	_toggle_btn.text = "Stop Server" if running else "Start Server"
 	_toggle_btn.icon = _eicon("Stop") if running else _eicon("Play")
 
 	_url_btn.text = "http://127.0.0.1:%d/mcp" % _port()
-	_url_btn.modulate.a = 1.0 if running else 0.6
+	_url_btn.modulate.a = 1.0 if running else 0.5
 
 	_game_label.visible = server != null and server.bridge != null and server.bridge.is_game_connected()
 	_refresh_client_line(running)
@@ -560,24 +886,31 @@ func _refresh_clients() -> void:
 ## The live connection line under Server: which client is actually talking and when it
 ## last called. Authoritative (from initialize), unlike the Clients card's "configured".
 func _refresh_client_line(running: bool) -> void:
-	if _client_label == null:
+	if _client_row == null:
 		return
 	if not running:
-		_client_label.visible = false
+		_client_row.visible = false
 		return
+	_client_row.visible = true
 	var cs: Dictionary = server.client_status() if server != null and server.has_method("client_status") else {}
 	var idle: int = int(cs.get("idle_ms", -1))
-	_client_label.visible = true
 	if idle < 0:
-		_client_label.text = "↳ waiting for a client to connect…"
+		# Waiting: a hollow amber dot + a gently cycling ellipsis so it reads as pending.
+		_wait_phase = (_wait_phase + 1) % 3
+		_paint_dot(_client_dot, _color("warning_color", Color(0.9, 0.7, 0.2)), false)  # hollow = pending
+		_client_label.add_theme_color_override("font_color", _dim())
+		_client_label.text = "waiting for a client to connect" + ".".repeat(_wait_phase + 1)
 		return
+	# Connected: a filled green dot + who's talking and when it last called.
 	var who := str(cs.get("name", ""))
 	if who.is_empty():
 		who = str(cs.get("ua", ""))
 	if who.is_empty():
 		who = "unknown client"
 	var ver := str(cs.get("version", ""))
-	_client_label.text = "↳ %s%s · %s" % [who, (" " + ver) if ver != "" else "", _ago(idle)]
+	_paint_dot(_client_dot, _color("success_color", Color(0.3, 0.8, 0.4)), true)
+	_client_label.add_theme_color_override("font_color", _color("font_color", Color(0.9, 0.9, 0.9)))
+	_client_label.text = "%s%s · %s" % [who, (" " + ver) if ver != "" else "", _ago(idle)]
 
 
 ## Humanize a milliseconds-since-last-call into a short phrase.
@@ -615,6 +948,38 @@ func _on_copy_url() -> void:
 func _on_copy() -> void:
 	DisplayServer.clipboard_set(MCPClientConfig.config_json(_port()))
 	_flash("Client config copied ✓")
+
+
+## Toggle the activity feed between the recent few and the whole ring (forces a rebuild).
+func _toggle_show_all() -> void:
+	_show_all = not _show_all
+	_audit_sig = ""
+	_refresh_activity()
+
+
+## Copy every call in the audit ring (newest first) as one paste-friendly block.
+func _on_copy_all() -> void:
+	var txt := _all_calls_text()
+	if txt == "":
+		_flash("No calls to copy", false)
+		return
+	DisplayServer.clipboard_set(txt)
+	var n: int = server.audit_log().size() if server != null and server.has_method("audit_log") else 0
+	_flash("Copied %d call%s ✓" % [n, "s" if n != 1 else ""])
+
+
+func _all_calls_text() -> String:
+	if server == null or not server.has_method("audit_log"):
+		return ""
+	var audit: Array = server.audit_log()
+	var lines := PackedStringArray()
+	for i in range(audit.size() - 1, -1, -1):  # newest first, same order as the feed
+		var e: Dictionary = audit[i]
+		var tool_name := str(e.get("tool", "?"))
+		var tier: int = MCPEffortScript.tier_of(tool_name)
+		var tier_name := str(MCPEffortScript.LEVELS.get(tier, {}).get("name", "L%d" % tier))
+		lines.append(_call_summary(tool_name, tier, tier_name, e, bool(e.get("ok", true)), str(e.get("args", ""))))
+	return "\n\n".join(lines)
 
 
 ## One button, every detected client: project configs + Claude Desktop's global file.
