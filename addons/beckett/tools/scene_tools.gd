@@ -119,7 +119,9 @@ func _create_node(args: Dictionary) -> Dictionary:
 	ur.add_do_reference(node)
 	ur.add_undo_method(parent, "remove_child", node)
 	ur.commit_action()
-	return {"text": "created %s '%s' under %s" % [type, node.name, parent.name]}
+	# Focus the NEW node (not the parent) — get_path_to is valid now it's in the tree.
+	return {"text": "created %s '%s' under %s" % [type, node.name, parent.name],
+		"focus": {"kind": "node", "target": str(root.get_path_to(node))}}
 
 
 func _delete_node(args: Dictionary) -> Dictionary:
@@ -154,7 +156,9 @@ func _rename_node(args: Dictionary) -> Dictionary:
 	ur.add_do_property(node, "name", new_name)
 	ur.add_undo_property(node, "name", node.name)
 	ur.commit_action()
-	return {"text": "renamed to %s" % new_name}
+	var root := EditorInterface.get_edited_scene_root()
+	return {"text": "renamed to %s" % new_name,
+		"focus": {"kind": "node", "target": str(root.get_path_to(node))}}
 
 
 func _reparent_node(args: Dictionary) -> Dictionary:
@@ -177,7 +181,8 @@ func _reparent_node(args: Dictionary) -> Dictionary:
 	ur.add_undo_method(old_parent, "add_child", node)
 	ur.add_undo_method(node, "set_owner", root)
 	ur.commit_action()
-	return {"text": "reparented %s under %s" % [node.name, new_parent.name]}
+	return {"text": "reparented %s under %s" % [node.name, new_parent.name],
+		"focus": {"kind": "node", "target": str(root.get_path_to(node))}}
 
 
 func _instance_scene(args: Dictionary) -> Dictionary:
@@ -201,7 +206,8 @@ func _instance_scene(args: Dictionary) -> Dictionary:
 	ur.add_do_reference(inst)
 	ur.add_undo_method(parent, "remove_child", inst)
 	ur.commit_action()
-	return {"text": "instanced %s as '%s'" % [scene_path, inst.name]}
+	return {"text": "instanced %s as '%s'" % [scene_path, inst.name],
+		"focus": {"kind": "node", "target": str(root.get_path_to(inst))}}
 
 
 func _save_scene(args: Dictionary) -> Dictionary:
@@ -246,7 +252,8 @@ func _duplicate_node(args: Dictionary) -> Dictionary:
 	ur.add_do_reference(dup)
 	ur.add_undo_method(parent, "remove_child", dup)
 	ur.commit_action()
-	return {"text": "duplicated %s as '%s'" % [node.name, dup.name]}
+	return {"text": "duplicated %s as '%s'" % [node.name, dup.name],
+		"focus": {"kind": "node", "target": str(root.get_path_to(dup))}}
 
 
 func _move_node(args: Dictionary) -> Dictionary:
@@ -263,7 +270,9 @@ func _move_node(args: Dictionary) -> Dictionary:
 	ur.add_do_method(parent, "move_child", node, to_index)
 	ur.add_undo_method(parent, "move_child", node, from_index)
 	ur.commit_action()
-	return {"text": "moved %s to index %d" % [node.name, to_index]}
+	var root := EditorInterface.get_edited_scene_root()
+	return {"text": "moved %s to index %d" % [node.name, to_index],
+		"focus": {"kind": "node", "target": str(root.get_path_to(node))}}
 
 
 # ---------------------------------------------------------------- helpers

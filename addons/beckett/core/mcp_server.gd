@@ -386,7 +386,7 @@ func _call_tool(id: Variant, params: Dictionary) -> Dictionary:
 			rprev = JSON.stringify(r["json"])
 		else:
 			rprev = JSON.stringify(r)
-	_audit_record(name, args, Time.get_ticks_msec() - t0, str(r.get("error", "")), rprev)
+	_audit_record(name, args, Time.get_ticks_msec() - t0, str(r.get("error", "")), rprev, r.get("focus", {}))
 
 	if not idem.is_empty():
 		if _idempotency.size() >= IDEMPOTENCY_MAX:
@@ -398,7 +398,7 @@ func _call_tool(id: Variant, params: Dictionary) -> Dictionary:
 ## Append one entry to the audit ring (D6: see who/what ran, when, how long).
 ## Args are stored compactly (keys + truncated JSON) — enough to reconstruct intent
 ## without bloating memory or leaking huge file bodies into the ring.
-func _audit_record(tool_name: String, args: Dictionary, ms: int, error: String, result := "") -> void:
+func _audit_record(tool_name: String, args: Dictionary, ms: int, error: String, result := "", result_focus: Dictionary = {}) -> void:
 	var brief := JSON.stringify(args)
 	if brief.length() > 200:
 		brief = brief.substr(0, 200) + "…"
@@ -413,10 +413,62 @@ func _audit_record(tool_name: String, args: Dictionary, ms: int, error: String, 
 		entry["error"] = error.substr(0, 200)
 	elif result != "":
 		entry["result"] = result.substr(0, 200) + ("…" if result.length() > 200 else "")
+	# Where this call points in the editor, for the dock's reveal button — a handler-supplied
+	# focus (exact node) wins over the tool+args guess. Resolved live; scene stamped for jumps.
+	var focus: Dictionary = result_focus if not result_focus.is_empty() else _focus_hint(tool_name, args)
+	if not focus.is_empty():
+		if focus.get("kind") == "node" and not focus.has("scene") and Engine.is_editor_hint():
+			var root := EditorInterface.get_edited_scene_root()
+			if root != null and root.scene_file_path != "":
+				focus["scene"] = root.scene_file_path
+		entry["focus"] = focus
 	_audit.append(entry)
 	_audit_total += 1
 	if _audit.size() > AUDIT_MAX:
 		_audit.pop_front()
+
+
+## Map a tool call to a "reveal this in the editor" hint for the dock's activity feed —
+## {kind, target|path|name}. Pure function of tool + args; the dock resolves the target
+## against the live scene at click time. Returns {} for tools with no editor subject
+## (reads of class API, runtime/L4 calls on the played game, exports, batch).
+static func _focus_hint(tool_name: String, args: Dictionary) -> Dictionary:
+	# nodes — the arg holds the node path directly (these don't move the node).
+	if tool_name in ["set_property", "call_method", "attach_script", "set_resource", "list_signals"]:
+		var t := str(args.get("target", ""))
+		return {"kind": "node", "target": t} if t != "" else {}
+	# nodes — the emitter side of a signal wiring.
+	if tool_name in ["connect_signal", "disconnect_signal"]:
+		var f := str(args.get("from", ""))
+		return {"kind": "node", "target": f} if f != "" else {}
+	# Node create/move tools return their own exact focus from the handler (root.get_path_to,
+	# see scene_tools.gd); this parent is only a create_node/instance_scene fallback.
+	if tool_name in ["create_node", "instance_scene"]:
+		var p := str(args.get("parent", ""))
+		return {"kind": "node", "target": p if p != "" else "."}
+	# scripts — open in the script editor.
+	if tool_name in ["write_script", "read_script", "script_patch", "validate_script"]:
+		var p := str(args.get("path", ""))
+		return {"kind": "script", "path": p} if p != "" else {}
+	# resource — open in the inspector.
+	if tool_name == "create_resource":
+		var p := str(args.get("path", ""))
+		return {"kind": "resource", "path": p} if p != "" else {}
+	# scenes — open it (save_scene only carries a path on save-as).
+	if tool_name in ["open_scene", "save_scene"]:
+		var p := str(args.get("path", ""))
+		return {"kind": "scene", "path": p} if p != "" else {}
+	# files — reveal in the FileSystem dock.
+	if tool_name in ["write_file", "read_file", "list_dir"]:
+		var p := str(args.get("path", ""))
+		return {"kind": "file", "path": p} if p != "" else {}
+	# main-screen switches.
+	if tool_name in ["asset_lib_search", "asset_lib_info", "asset_lib_install"]:
+		return {"kind": "screen", "name": "AssetLib"}
+	# runtime/playtest tools act on the played game — jump to the Game view (dock gates it on playing).
+	if tool_name in ["screenshot", "compare_screenshots", "simulate_input", "click_button_by_text", "click_control", "click_node3d", "click_world", "scroll", "drag", "get_control_rect", "find_ui_elements", "record_input", "replay_input", "runtime_call", "runtime_get_property", "runtime_set_property", "get_remote_tree", "find_nodes", "wait_for_node", "monitor_properties", "assert_node_state", "assert_screen_text"]:
+		return {"kind": "screen", "name": "Game"}
+	return {}
 
 
 ## Read-only view for the audit:// resource and the dock panel.

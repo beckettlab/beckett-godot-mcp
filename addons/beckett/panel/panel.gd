@@ -12,6 +12,7 @@ extends VBoxContainer
 
 const MCPClientConfig := preload("res://addons/beckett/core/client_config.gd")
 const MCPEffortScript := preload("res://addons/beckett/core/effort.gd")
+const MCPReflectScript := preload("res://addons/beckett/core/reflection.gd")  # node-path resolver, shared with the tools
 
 var server   # mcp_server node
 var plugin   # EditorPlugin
@@ -42,7 +43,11 @@ var _activity_box: VBoxContainer
 var _activity_scroll: ScrollContainer  # bounds the feed's height; scrolls when it overflows
 var _activity_empty: Label
 var _activity_count: Button  # footer toggle: "View all N calls" / "Show recent"
-var _feedback: Label
+var _feedback: PanelContainer  # toast: animated action-feedback chip under the cards
+var _fb_margin: MarginContainer  # animated top inset = the slide-in offset
+var _fb_icon: Label
+var _fb_label: Label
+var _fb_total := 0.0  # total visible duration of the current flash (drives the fade curve)
 var _accum := 0.0
 var _clients_accum := 999.0  # refresh client detection immediately on first tick
 var _audit_sig := ""
@@ -66,10 +71,29 @@ func _ready() -> void:
 	if _is_lite():
 		_build_upgrade_button()
 
-	_feedback = Label.new()
-	_feedback.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_feedback.add_theme_font_size_override("font_size", int(12 * _es))
+	# Toast chip: an accent-tinted card with a ✓/✗ icon, animated by _animate_feedback.
+	_feedback = PanelContainer.new()
 	_feedback.visible = false
+	_feedback.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_fb_margin = MarginContainer.new()  # only margin_top animates (the slide offset)
+	_fb_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_feedback.add_child(_fb_margin)
+	var fb_row := HBoxContainer.new()
+	fb_row.add_theme_constant_override("separation", int(7 * _es))
+	fb_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_fb_margin.add_child(fb_row)
+	_fb_icon = Label.new()
+	_fb_icon.add_theme_font_size_override("font_size", int(13 * _es))
+	_fb_icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_fb_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	fb_row.add_child(_fb_icon)
+	_fb_label = Label.new()
+	_fb_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_fb_label.add_theme_font_size_override("font_size", int(12 * _es))
+	_fb_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_fb_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_fb_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	fb_row.add_child(_fb_label)
 	add_child(_feedback)
 
 	set_process(true)
@@ -434,6 +458,12 @@ func _refresh_activity() -> void:
 			name_lbl.add_theme_font_override("font", mono)
 		head.add_child(name_lbl)
 
+		# Right cluster: ms · reveal · fold-arrow, kept compact together at the row's end. The
+		# reveal's external icon stays distinct from the chevron fold arrow beside it.
+		var right := HBoxContainer.new()
+		right.add_theme_constant_override("separation", int(3 * _es))
+		right.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
 		var meta := Label.new()
 		meta.text = "%dms" % int(e.get("ms", 0))
 		meta.add_theme_font_size_override("font_size", int(10 * _es))
@@ -441,7 +471,27 @@ func _refresh_activity() -> void:
 		meta.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		if mono != null:
 			meta.add_theme_font_override("font", mono)
-		head.add_child(meta)
+		right.add_child(meta)
+
+		if e.has("focus"):
+			var focus: Dictionary = e["focus"]
+			var loc := Button.new()
+			loc.flat = true
+			loc.icon = _locate_icon()
+			loc.add_theme_constant_override("icon_max_width", int(13 * _es))
+			loc.focus_mode = Control.FOCUS_NONE
+			loc.modulate.a = 0.8
+			loc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			loc.tooltip_text = _focus_tip(focus)
+			loc.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+			loc.add_theme_stylebox_override("normal", StyleBoxEmpty.new())  # no padding → compact
+			loc.add_theme_stylebox_override("hover", StyleBoxEmpty.new())
+			loc.add_theme_stylebox_override("pressed", StyleBoxEmpty.new())
+			if loc.icon == null:
+				loc.text = "↗"
+				loc.add_theme_font_size_override("font_size", int(11 * _es))
+			loc.pressed.connect(func() -> void: _focus(focus))
+			right.add_child(loc)
 
 		# Editor tree arrows are guaranteed in the theme (a glyph like ▸ renders blank in
 		# the mono font); right = folded, down = open.
@@ -451,7 +501,8 @@ func _refresh_activity() -> void:
 		arrow.custom_minimum_size = Vector2(12 * _es, 0)
 		arrow.modulate = _dim()
 		arrow.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		head.add_child(arrow)
+		right.add_child(arrow)
+		head.add_child(right)
 		body.add_child(head)
 
 		# ── detail (folds away): a divider, then when it ran · its tier, the args it
@@ -605,6 +656,82 @@ func _row_card_style(accent: Color, hot: bool) -> StyleBoxFlat:
 	sb.content_margin_top = 4 * _es
 	sb.content_margin_bottom = 4 * _es
 	return sb
+
+
+## A short tooltip for the row's "reveal" jump button, by focus kind.
+func _focus_tip(f: Dictionary) -> String:
+	match str(f.get("kind", "")):
+		"node": return "Reveal the node — selects it and opens its 2D/3D view"
+		"script": return "Open in the Script editor"
+		"resource": return "Open in the Inspector"
+		"scene": return "Open this scene"
+		"file": return "Reveal in the FileSystem dock"
+		"screen": return "Switch to the %s screen" % str(f.get("name", ""))
+	return "Reveal in editor"
+
+
+## Jump the editor to a row's subject — select a node, open a script/resource/scene, or
+## switch the main screen. Resolved live, so a deleted/renamed target fails with a flash.
+func _focus(f: Dictionary) -> void:
+	match str(f.get("kind", "")):
+		"node":
+			await _focus_node(f)
+		"script":
+			var p := str(f.get("path", ""))
+			if ResourceLoader.exists(p):
+				var s: Variant = load(p)
+				if s is Script:
+					EditorInterface.edit_script(s, int(f.get("line", 0)), 0, true)
+					EditorInterface.set_main_screen_editor("Script")
+					return
+			_flash("Couldn't open script: %s" % p, false)
+		"resource":
+			var p := str(f.get("path", ""))
+			if ResourceLoader.exists(p):
+				var r: Variant = load(p)
+				if r is Resource:
+					EditorInterface.edit_resource(r)
+					return
+			_flash("Couldn't open resource: %s" % p, false)
+		"scene":
+			var p := str(f.get("path", ""))
+			if ResourceLoader.exists(p):
+				EditorInterface.open_scene_from_path(p)
+			else:
+				_flash("Scene not found: %s" % p, false)
+		"file":
+			EditorInterface.select_file(str(f.get("path", "")))
+		"screen":
+			var nm := str(f.get("name", "2D"))
+			if nm == "Game" and not EditorInterface.is_playing_scene():
+				_flash("Game isn't running — press Play to see it", false)
+				return
+			EditorInterface.set_main_screen_editor(nm)
+
+
+## Reveal a node: reopen its scene first if it lived in another one, then resolve the
+## path (shared resolver) and select it in the Scene dock + Inspector.
+func _focus_node(f: Dictionary) -> void:
+	var want := str(f.get("scene", ""))
+	var root := EditorInterface.get_edited_scene_root()
+	var cur := root.scene_file_path if root != null else ""
+	if want != "" and want != cur and ResourceLoader.exists(want):
+		EditorInterface.open_scene_from_path(want)
+		await get_tree().process_frame  # let the freshly opened scene become the edited one
+		await get_tree().process_frame
+	var obj: Object = MCPReflectScript.resolve(str(f.get("target", "")))
+	if obj is Node:
+		var sel := EditorInterface.get_selection()
+		sel.clear()
+		sel.add_node(obj)
+		EditorInterface.edit_node(obj)
+		# Selecting alone keeps the current screen (e.g. Script); show the node's viewport.
+		EditorInterface.set_main_screen_editor("3D" if obj is Node3D else "2D")
+	elif obj is Resource:
+		# A node-path into a sub-resource (e.g. "Sprite2D/texture") resolves to a Resource.
+		EditorInterface.edit_resource(obj)
+	else:
+		_flash("Node not found — renamed or deleted?", false)
 
 
 # ---------------------------------------------------------------- upgrade (Lite)
@@ -781,6 +908,15 @@ func _disc_icon(open: bool) -> Texture2D:
 	return null
 
 
+## Icon for a row's "reveal in editor" button — an external/open-there glyph (it sits in
+## the row header, after the tool name). First editor icon that exists wins.
+func _locate_icon() -> Texture2D:
+	for n in ["ExternalLink", "Edit", "Tools"]:
+		if has_theme_icon(n, "EditorIcons"):
+			return get_theme_icon(n, "EditorIcons")
+	return null
+
+
 ## One client row: the client's name with a ✓ once its config has been written (○ while it
 ## is only detected). Installed-only, so the list stays short on a typical machine.
 func _make_client_row(client_name: String, configured: bool) -> Control:
@@ -806,14 +942,51 @@ func _make_client_row(client_name: String, configured: bool) -> Control:
 	return row
 
 
-## Transient action feedback under the cards — never overwritten by the
-## 0.5 s status refresh (the old single status label lost "copied ✓" instantly).
+## Transient action feedback under the cards — an accent-tinted toast that fades/slides in,
+## holds, then fades out (see _animate_feedback). Outlives the 0.5 s status refresh.
 func _flash(msg: String, ok := true) -> void:
-	_feedback.text = msg
-	_feedback.add_theme_color_override("font_color",
-		_color("success_color", Color(0.3, 0.8, 0.4)) if ok else _color("error_color", Color(0.9, 0.3, 0.3)))
+	var accent := _color("success_color", Color(0.3, 0.8, 0.4)) if ok else _color("error_color", Color(0.9, 0.3, 0.3))
+	_fb_label.text = msg
+	_fb_label.add_theme_color_override("font_color", _color("font_color", Color(0.9, 0.9, 0.9)))
+	_fb_icon.text = "✓" if ok else "✗"
+	_fb_icon.add_theme_color_override("font_color", accent)
+	_feedback.add_theme_stylebox_override("panel", _toast_style(accent))
 	_feedback.visible = true
-	_feedback_left = 3.5
+	_fb_total = 3.6 if ok else 4.4  # errors linger a touch longer
+	_feedback_left = _fb_total
+	_animate_feedback()  # seed the opening frame so it starts hidden, not popped
+
+
+## Drive the toast's fade + slide from the time left: ramp in (0.16 s), hold, ramp out
+## (0.5 s), smoothstep-eased. Per-frame from _process — no Tween (dependable in-editor).
+func _animate_feedback() -> void:
+	var in_dur := 0.16
+	var out_dur := 0.5
+	var elapsed := _fb_total - _feedback_left
+	var a := 1.0
+	if elapsed < in_dur:
+		a = elapsed / in_dur
+	elif _feedback_left < out_dur:
+		a = _feedback_left / out_dur
+	a = clampf(a, 0.0, 1.0)
+	a = a * a * (3.0 - 2.0 * a)  # smoothstep ease
+	_feedback.modulate.a = a
+	_fb_margin.add_theme_constant_override("margin_top", int(round(7.0 * _es * (1.0 - a))))
+
+
+## The toast background: an accent-tinted fill with a solid left stripe and rounded
+## corners — the same visual family as the activity row cards.
+func _toast_style(accent: Color) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(accent.r, accent.g, accent.b, 0.16)
+	sb.set_corner_radius_all(int(5 * _es))
+	sb.border_width_left = int(3 * _es)
+	sb.border_color = Color(accent.r, accent.g, accent.b, 0.85)
+	sb.content_margin_left = 9 * _es
+	sb.content_margin_right = 9 * _es
+	sb.content_margin_top = 6 * _es
+	sb.content_margin_bottom = 6 * _es
+	return sb
 
 
 # ---------------------------------------------------------------- refresh loop
@@ -821,6 +994,7 @@ func _flash(msg: String, ok := true) -> void:
 func _process(delta: float) -> void:
 	if _feedback_left > 0.0:
 		_feedback_left -= delta
+		_animate_feedback()
 		if _feedback_left <= 0.0:
 			_feedback.visible = false
 	_accum += delta
