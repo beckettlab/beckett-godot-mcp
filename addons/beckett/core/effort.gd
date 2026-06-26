@@ -20,13 +20,13 @@ class_name BeckettEffort
 const MAX_LEVEL := 5
 const DEFAULT_LEVEL := 5  # full surface — dialing down is opt-in, never a silent loss
 
-# Human-facing label + the capability each level adds (shown on the dock).
+# Human-facing label and a short tagline for each level (shown on the dock).
 const LEVELS := {
-	1: {"name": "Inspect",  "adds": "read-only: explore scenes, scripts, class API, project"},
-	2: {"name": "Author",   "adds": "+ edit scenes, scripts, resources, signals"},
-	3: {"name": "Run",      "adds": "+ play the game, read logs (you play, the AI watches)"},
-	4: {"name": "Playtest", "adds": "+ the AI plays it: input, screenshots, asserts, tests, animation"},
-	5: {"name": "Ship",     "adds": "+ export, asset library, project-wide analysis"},
+	1: {"name": "Inspect",  "tag": "Read-only recon"},
+	2: {"name": "Author",   "tag": "Edit and build"},
+	3: {"name": "Run",      "tag": "Dev loop"},
+	4: {"name": "Playtest", "tag": "AI drives and verifies"},
+	5: {"name": "Max",      "tag": "Orchestrate and ship"},
 }
 
 # Tools UNLOCKED AT each level (the delta over the level below). Grouped by the
@@ -59,6 +59,8 @@ const _DELTA := {
 		"connect_signal", "disconnect_signal", "list_signals",
 		# files & project (write)
 		"write_file", "set_project_setting",
+		# scaffold from a bundled/project template
+		"apply_template",
 		# batching authoring steps
 		"batch_execute",
 	],
@@ -82,7 +84,7 @@ const _DELTA := {
 		"get_control_rect", "find_ui_elements",
 		"record_input", "replay_input",
 		# verify it
-		"assert_node_state", "assert_screen_text", "compare_screenshots",
+		"assert_node_state", "assert_screen_text", "assert_scene", "compare_screenshots",
 		"test_run",
 		# animation authoring + playback
 		"animation_manage",
@@ -113,6 +115,12 @@ static func tier_of(tool_name: String) -> int:
 ## Is `tool_name` advertised at this effort `level`?
 static func allows(tool_name: String, level: int) -> bool:
 	return tier_of(tool_name) <= level
+
+
+## The tools UNLOCKED at exactly this level — the delta over the level below (drives the
+## dock's "what this tier adds" list). Empty for an out-of-range level.
+static func adds_at(level: int) -> Array:
+	return _DELTA.get(level, [])
 
 
 ## Clamp any caller-supplied level into the valid 1..MAX_LEVEL range.

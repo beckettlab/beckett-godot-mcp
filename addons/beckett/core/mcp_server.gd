@@ -69,6 +69,7 @@ var _token: String = ""
 var _readonly: bool = false
 var _confirm_destructive: bool = false
 var _allowlist: Array[String] = []  # regex strings; empty = allow all
+var _disabled: Dictionary = {}       # tool name -> true: dock per-tool off switches (beckett/disabled_tools)
 var _idempotency: Dictionary = {}    # key -> cached result dict (FIFO-capped at IDEMPOTENCY_MAX)
 var _audit: Array = []               # ring of {t, tool, ms, ok, args[, error|result]} — who did what (D6)
 var _audit_total := 0                # total calls this session (the ring keeps only the last AUDIT_MAX)
@@ -125,6 +126,7 @@ func setup() -> void:
 	# (L4) and ship (L5) layers are Full.
 	_max_effort = MCPEffortScript.MAX_LEVEL if ResourceLoader.exists(SENTINEL_FULL_MODULE) else 3
 	_effort = clampi(int(ProjectSettings.get_setting("beckett/effort", MCPEffortScript.DEFAULT_LEVEL)), 1, _max_effort)
+	_load_disabled()
 
 	_register_tools()
 
@@ -184,6 +186,69 @@ func max_effort() -> int:
 
 func is_lite() -> bool:
 	return _max_effort < MCPEffortScript.MAX_LEVEL
+
+
+## Per-tool off switches the dock owns, kept SEPARATE from the env _allowlist (which stays a
+## CI/headless control). Stored comma-joined in project.godot so the choice survives a restart.
+func _load_disabled() -> void:
+	_disabled.clear()
+	for n in str(ProjectSettings.get_setting("beckett/disabled_tools", "")).split(",", false):
+		var nm := n.strip_edges()
+		if nm != "":
+			_disabled[nm] = true
+
+
+## Is `name` switched on right now? Off tools are user-disabled from the dock — they vanish
+## from tools/list (see effective_specs) AND are blocked at the gate (defense-in-depth).
+func is_tool_enabled(name: String) -> bool:
+	return not _disabled.has(name)
+
+
+## Flip one tool on/off from the dock. Persists, then — like set_effort — pushes
+## tools/list_changed so live clients re-fetch the surface. Returns streams notified.
+func set_tool_enabled(name: String, on: bool) -> int:
+	if on == (not _disabled.has(name)):
+		return 0  # no change
+	if on:
+		_disabled.erase(name)
+	else:
+		_disabled[name] = true
+	_save_disabled()
+	return _notify_list_changed()
+
+
+## Re-enable every switched-off tool in one shot (the dock's Reset).
+func enable_all_tools() -> int:
+	if _disabled.is_empty():
+		return 0
+	_disabled.clear()
+	_save_disabled()
+	return _notify_list_changed()
+
+
+## Tool names the dock has switched off (for the panel to reflect each row's state).
+func disabled_tools() -> PackedStringArray:
+	return PackedStringArray(_disabled.keys())
+
+
+## The tools actually advertised right now: effort-tier filtered, minus the off switches.
+## Single source of truth shared by tools/list and the dock's count so they never disagree.
+func effective_specs(level: int) -> Array:
+	var specs: Array = registry.list_specs(level)
+	if _disabled.is_empty():
+		return specs
+	return specs.filter(func(s: Dictionary) -> bool: return not _disabled.has(str(s.get("name", ""))))
+
+
+func _save_disabled() -> void:
+	ProjectSettings.set_setting("beckett/disabled_tools", ",".join(PackedStringArray(_disabled.keys())))
+	ProjectSettings.save()
+
+
+func _notify_list_changed() -> int:
+	if http == null or not http.running:
+		return 0
+	return http.sse_broadcast(MCPJsonRpcScript.make_notification("notifications/tools/list_changed"))
 
 
 # ---------------------------------------------------------------- HTTP entry
@@ -247,11 +312,11 @@ func _instructions() -> String:
 	if is_lite():
 		return ("Beckett — MCP for Godot, free Lite edition (inspect + author + run). " + core
 			+ " Dev loop: edit -> play_scene -> wait_until play_started -> the USER plays and reports -> logs_read level=error -> fix."
-			+ " Lite cannot SEE or DRIVE the running game: screenshots, input injection, UI clicks, assertions, the test runner, animation_manage, background exports and the 35 skill packs are Full-edition features."
+			+ " Lite cannot SEE or DRIVE the running game: screenshots, input injection, UI clicks, assertions, the test runner, animation_manage, background exports and the 36 skill packs are Full-edition features."
 			+ " If the user asks for one of those, say it needs the Full edition (upgrade link on the Beckett dock panel).")
 	return ("Beckett — MCP for Godot, Full edition. " + core
 		+ " Loop: author -> play_scene -> wait_until game_connected -> playtest (screenshot, simulate_input, click_button_by_text, assert_*, test_run) -> logs_read -> fix -> export_project (background; poll job_status)."
-		+ " Call list_skills early: 35 knowledge packs name the exact classes/properties/methods per domain (physics, shaders, animation, multiplayer, ...)."
+		+ " Call list_skills early: 36 knowledge packs name the exact classes/properties/methods per domain (physics, shaders, animation, multiplayer, ...)."
 		+ " For a 'make me a game' request, however vague: load_skill name=game-oneshot FIRST and follow it — it expands the idea, routes to a genre blueprint pack, and gates each build phase.")
 
 func _dispatch(id: Variant, rpc_method: String, params: Dictionary) -> Dictionary:
@@ -293,7 +358,7 @@ func _dispatch(id: Variant, rpc_method: String, params: Dictionary) -> Dictionar
 			return _body(MCPJsonRpcScript.result(id, {}))
 
 		"tools/list":
-			return _body(MCPJsonRpcScript.result(id, {"tools": registry.list_specs(_effort)}))
+			return _body(MCPJsonRpcScript.result(id, {"tools": effective_specs(_effort)}))
 
 		"tools/call":
 			return _call_tool(id, params)
@@ -508,6 +573,8 @@ func _gate(name: String, tool: Dictionary, args: Dictionary) -> String:
 		return "Tool '%s' requires the Full edition (this build is capped at L%d)." % [name, _max_effort]
 	if _readonly and not bool(tool.get("readonly", false)):
 		return "Server is in read-only mode; '%s' is a mutating tool." % name
+	if _disabled.has(name):
+		return "Tool '%s' is switched off in the Beckett dock; turn it back on there to use it." % name
 	if not _allowlist.is_empty():
 		var ok := false
 		for pat in _allowlist:
