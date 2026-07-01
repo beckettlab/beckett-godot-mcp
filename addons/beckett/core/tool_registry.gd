@@ -47,7 +47,7 @@ func names() -> Array:
 
 
 ## MCP tools/list payload: [{name, description, inputSchema}].
-## Only tools at or below `max_level` (the AI effort tier, 1..5) are advertised —
+## Only tools at or below `max_level` (the AI effort tier, 1..6) are advertised —
 ## a lower tier ships fewer tools, so the model pays less prompt context.
 func list_specs(max_level: int = -1) -> Array:
 	if max_level < 0:

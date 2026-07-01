@@ -740,8 +740,9 @@ func _row_accent(ok: bool, tier: int) -> Color:
 	match tier:
 		2: return Color(0.36, 0.62, 0.92)  # Author — blue
 		3: return Color(0.38, 0.78, 0.46)  # Run — green
-		4: return Color(0.93, 0.70, 0.36)  # Playtest — amber
-		5: return Color(0.72, 0.52, 0.92)  # Max — violet
+		4: return Color(0.93, 0.70, 0.36)  # See — amber
+		5: return Color(0.72, 0.52, 0.92)  # Drive — violet
+		6: return Color(0.95, 0.45, 0.68)  # Max — magenta
 	return _color("font_color", Color(0.86, 0.87, 0.9))  # Inspect / unmapped — neutral
 
 
@@ -843,7 +844,7 @@ func _build_upgrade_button() -> void:
 	btn.text = "★ Get Full — the AI plays & tests your game"
 	btn.custom_minimum_size = Vector2(0, 30 * _es)
 	btn.add_theme_color_override("font_color", _color("accent_color", Color(0.4, 0.6, 1.0)))
-	btn.tooltip_text = "$15 one-time, lifetime updates. Unlocks L4 Playtest (screenshots, input, asserts, tests, animation) + L5 Max (export jobs, asset library) + 32 skill packs. Opens the store page."
+	btn.tooltip_text = "$15 one-time, lifetime updates. Lite already SEES the running game (screenshots, live tree, runtime reads). Full unlocks L5 Drive (input, UI/3D clicks, drag/scroll, asserts, tests, animation) + L6 Max (export jobs, asset library) + the skill packs. Opens the store page."
 	btn.pressed.connect(_on_buy_full)
 	add_child(btn)
 

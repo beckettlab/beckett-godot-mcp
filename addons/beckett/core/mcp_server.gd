@@ -26,7 +26,9 @@ const TOOL_MODULES := [
 	"res://addons/beckett/tools/reflection_tools.gd",
 	"res://addons/beckett/tools/scene_tools.gd",
 	"res://addons/beckett/tools/script_tools.gd",
+	"res://addons/beckett/tools/csharp_tools.gd",
 	"res://addons/beckett/tools/run_tools.gd",
+	"res://addons/beckett/tools/runtime_observe_tools.gd",
 	"res://addons/beckett/tools/runtime_tools.gd",
 	"res://addons/beckett/tools/signal_tools.gd",
 	"res://addons/beckett/tools/resource_tools.gd",
@@ -44,8 +46,10 @@ const TOOL_MODULES := [
 	"res://addons/beckett/tools/test_tools.gd",
 ]
 
-# Sentinel: an L4 module the Lite build trims. Present => Full edition (effort 1..5);
-# absent => Lite edition (capped at L3 — inspect, author, run). See setup().
+# Sentinel: an L5 (drive) module the Lite build trims. Present => Full edition
+# (effort 1..6); absent => Lite edition (capped at L4 — inspect, author, run, SEE).
+# Lite still ships runtime_observe_tools.gd (L4 See, a core module) so the free tier
+# can watch the running game; only this drive module is Full. See setup().
 const SENTINEL_FULL_MODULE := "res://addons/beckett/tools/runtime_tools.gd"
 const RuntimeBridgeScript := preload("res://addons/beckett/core/runtime_bridge.gd")
 const ResourcesScript := preload("res://addons/beckett/resources/resources.gd")
@@ -77,8 +81,8 @@ var _client_info: Dictionary = {}    # clientInfo {name, version} from the last 
 var _client_ua: String = ""          # last request's User-Agent (best-effort fallback identity)
 var _last_activity_ms: int = 0       # Time.get_ticks_msec() of the last request (0 = none yet)
 var _tool_modules: Array = []        # keep tool-module instances alive (their Callables hold them)
-var _effort: int = 5                 # AI effort tier 1..5; caps which tools tools/list advertises (see effort.gd)
-var _max_effort: int = 5             # edition ceiling: Full=5, Lite=3 (its L4/L5 modules aren't shipped)
+var _effort: int = 6                 # AI effort tier 1..6; caps which tools tools/list advertises (see effort.gd)
+var _max_effort: int = 6             # edition ceiling: Full=6, Lite=4 (its L5/L6 modules aren't shipped)
 
 
 func _process(_delta: float) -> void:
@@ -119,13 +123,25 @@ func setup() -> void:
 		for part in al.split(",", false):
 			_allowlist.append(part.strip_edges())
 
-	# AI effort tier (1..5): how much of the tool surface we advertise. Lower =
+	# AI effort tier (1..6): how much of the tool surface we advertise. Lower =
 	# cheaper model context, fewer capabilities. Persisted in project.godot and
-	# driven by the dock panel. The edition ceiling caps it: Full=5, Lite=3 — the
-	# free edition keeps the whole inspect/author/run loop; only the agent-plays
-	# (L4) and ship (L5) layers are Full.
-	_max_effort = MCPEffortScript.MAX_LEVEL if ResourceLoader.exists(SENTINEL_FULL_MODULE) else 3
-	_effort = clampi(int(ProjectSettings.get_setting("beckett/effort", MCPEffortScript.DEFAULT_LEVEL)), 1, _max_effort)
+	# driven by the dock panel. The edition ceiling caps it: Full=6, Lite=4 — the
+	# free edition keeps the whole inspect/author/run loop AND seeing the running
+	# game; only the agent-DRIVES (L5) and ship (L6) layers are Full.
+	_max_effort = MCPEffortScript.MAX_LEVEL if ResourceLoader.exists(SENTINEL_FULL_MODULE) else 4
+	# Effort-tier schema migration. v1 had 5 tiers (… Playtest=4, Max=5). v2 (2026-07)
+	# split Playtest into See=4 + Drive=5 and pushed ship to Max=6. Remap a v1-persisted
+	# dial so a user who sat at the old max keeps the WHOLE surface (old 4->5, old 5->6)
+	# instead of silently losing the ship tools — "dialing down is opt-in, never a silent loss".
+	var saved := int(ProjectSettings.get_setting("beckett/effort", MCPEffortScript.DEFAULT_LEVEL))
+	if int(ProjectSettings.get_setting("beckett/effort_schema", 1)) < 2:
+		if ProjectSettings.has_setting("beckett/effort"):
+			if saved >= 4:
+				saved += 1
+			ProjectSettings.set_setting("beckett/effort", saved)
+		ProjectSettings.set_setting("beckett/effort_schema", 2)
+		ProjectSettings.save()
+	_effort = clampi(saved, 1, _max_effort)
 	_load_disabled()
 
 	_register_tools()
@@ -159,7 +175,7 @@ func is_running() -> bool:
 	return http != null and http.running
 
 
-## AI effort tier (1..5) — caps which tools tools/list advertises. The dock panel
+## AI effort tier (1..6) — caps which tools tools/list advertises. The dock panel
 ## calls this; it persists to project.godot so the choice survives an editor restart.
 ## Applies LIVE: we push notifications/tools/list_changed down the SSE stream and
 ## list-changed-aware clients (Claude Code, Cursor, …) re-fetch tools/list on the
@@ -179,7 +195,7 @@ func get_effort() -> int:
 	return _effort
 
 
-## Edition ceiling for effort (Full=5, Lite=3). The panel uses it to bound the slider.
+## Edition ceiling for effort (Full=6, Lite=4). The panel uses it to bound the slider.
 func max_effort() -> int:
 	return _max_effort
 
@@ -310,13 +326,13 @@ func handle_http(req: Dictionary) -> Dictionary:
 func _instructions() -> String:
 	var core := "Reflection tools (find_classes, describe_class, set_property, call_method) reach every engine class — prefer them when no dedicated tool fits. Script writes are parse-validated before touching disk; scene edits are undoable; batch_execute rolls back on failure."
 	if is_lite():
-		return ("Beckett — MCP for Godot, free Lite edition (inspect + author + run). " + core
-			+ " Dev loop: edit -> play_scene -> wait_until play_started -> the USER plays and reports -> logs_read level=error -> fix."
-			+ " Lite cannot SEE or DRIVE the running game: screenshots, input injection, UI clicks, assertions, the test runner, animation_manage, background exports and the 36 skill packs are Full-edition features."
+		return ("Beckett — MCP for Godot, free Lite edition (inspect + author + run + SEE the running game). " + core
+			+ " Dev loop: edit -> play_scene -> wait_until game_connected -> SEE it (screenshot, get_remote_tree, runtime_get_property, game_logs) -> diagnose -> fix."
+			+ " Lite can SEE the running game but cannot DRIVE it: input injection, UI/3D clicks, drag/scroll, runtime writes, assertions, the test runner, animation_manage, background exports and the skill packs are Full-edition features."
 			+ " If the user asks for one of those, say it needs the Full edition (upgrade link on the Beckett dock panel).")
 	return ("Beckett — MCP for Godot, Full edition. " + core
 		+ " Loop: author -> play_scene -> wait_until game_connected -> playtest (screenshot, simulate_input, click_button_by_text, assert_*, test_run) -> logs_read -> fix -> export_project (background; poll job_status)."
-		+ " Call list_skills early: 36 knowledge packs name the exact classes/properties/methods per domain (physics, shaders, animation, multiplayer, ...)."
+		+ " Call list_skills early: 37 knowledge packs name the exact classes/properties/methods per domain (physics, shaders, animation, multiplayer, ...)."
 		+ " For a 'make me a game' request, however vague: load_skill name=game-oneshot FIRST and follow it — it expands the idea, routes to a genre blueprint pack, and gates each build phase.")
 
 func _dispatch(id: Variant, rpc_method: String, params: Dictionary) -> Dictionary:
@@ -564,7 +580,7 @@ func client_status() -> Dictionary:
 
 ## Returns "" if allowed, otherwise an error message explaining the block.
 func _gate(name: String, tool: Dictionary, args: Dictionary) -> String:
-	# Edition cap (Lite=3): a tool above the edition's ceiling may not run even if
+	# Edition cap (Lite=4): a tool above the edition's ceiling may not run even if
 	# it somehow got registered (defense-in-depth — premium modules are also
 	# physically absent from the Lite package). Note this checks _max_effort (the
 	# edition), NOT _effort (the user's context dial): dialing effort down only

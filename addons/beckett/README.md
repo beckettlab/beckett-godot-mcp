@@ -5,13 +5,14 @@ No Node.js, no Python, no second process. Enable the plugin in Project
 Settings > Plugins; it auto-starts and writes .mcp.json so Claude / Cursor /
 VS Code connect over local HTTP. Try "get_scene_tree".
 
-This free Lite edition does the whole basic loop: the AI inspects any node
-via reflection, authors scenes/scripts/resources (every script parse-checked
-before it touches disk), runs your game and reads its logs while you play.
+This free Lite edition does the whole basic loop AND lets the AI SEE your
+running game: it inspects any node via reflection, authors scenes/scripts/
+resources (every script parse-checked before it touches disk), runs the game,
+and reads the screen + live scene tree + runtime state to tell you what is wrong.
 
-The Full edition makes the AI the playtester - it sees the screen, presses
-the buttons and asserts the results - and adds animation tools, background
-exports, and the bundled knowledge packs:
+The Full edition makes the AI the playtester - it PLAYS the game (presses the
+buttons, drives input, asserts the results) - and adds animation tools,
+background exports, and the bundled knowledge packs:
 https://beckettlabs.itch.io/beckett-godot-mcp
 
 MIT licensed (see LICENSE in this folder). Beckett is a third-party tool,

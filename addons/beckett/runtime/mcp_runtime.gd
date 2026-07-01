@@ -27,11 +27,16 @@ var _rec_t0 := 0
 # no file logging, no editor debugger needed (the engine routes built-in error/output
 # to the internal debugger, not to EditorDebuggerPlugin captures — so we tap them here,
 # at the source, in the game process itself).
+#
+# The Logger base class + OS.add_logger() are Godot 4.5+. On older engines (4.2–4.4)
+# there's no such API, so capture gracefully no-ops and game_logs returns empty (see
+# _install_log_sink). Everything Logger-typed is kept out of parse scope — typed Object
+# here, the sink compiled at runtime — so this file still parses/loads on 4.2–4.4.
 const _LOG_CAP := 800
 var _log_ring: Array = []
 var _log_dropped := 0
 var _log_mutex := Mutex.new()
-var _logger: Logger = null
+var _logger: Object = null
 
 
 func _ready() -> void:
@@ -46,14 +51,15 @@ func _ready() -> void:
 	set_process(true)
 	set_process_input(true)
 	# Tap the game's own log stream (errors/warnings/stack traces/prints).
-	_logger = _LogSink.new()
-	_logger.host = self
-	OS.add_logger(_logger)
+	# Logger + OS.add_logger() are Godot 4.5+; on 4.2–4.4 this is a graceful no-op.
+	_install_log_sink()
 
 
 func _exit_tree() -> void:
 	if _logger != null:
-		OS.remove_logger(_logger)
+		# OS.call(): OS.remove_logger() is compile-checked and absent on < 4.5; _logger is
+		# only ever non-null on 4.5+, so this dynamic call is only reached where it exists.
+		OS.call("remove_logger", _logger)
 		_logger = null
 
 
@@ -922,7 +928,10 @@ func _on_message(message: String, error: bool) -> void:
 func _on_error(function: String, file: String, line: int, code: String, rationale: String, error_type: int, script_backtraces: Array) -> void:
 	var bt := ""
 	for b in script_backtraces:
-		if b != null and b is ScriptBacktrace and not b.is_empty():
+		# Duck-typed instead of `b is ScriptBacktrace`: that class is Godot 4.5+, and a
+		# parse-time type reference would break this file on < 4.5. We only reach here from
+		# the 4.5+ sink anyway, where these are genuine ScriptBacktraces.
+		if b is Object and b.has_method("format") and b.has_method("is_empty") and not b.is_empty():
 			bt += b.format(0, 2)
 	_push_log({
 		"type": _err_type_name(error_type),
@@ -934,12 +943,14 @@ func _on_error(function: String, file: String, line: int, code: String, rational
 
 
 func _err_type_name(t: int) -> String:
+	# Logger.ERROR_TYPE_* values (Godot 4.5+): ERROR=0, WARNING=1, SCRIPT=2, SHADER=3.
+	# Inlined as literals so this file parses on < 4.5 where the Logger class is absent.
 	match t:
-		Logger.ERROR_TYPE_WARNING:
+		1:
 			return "warning"
-		Logger.ERROR_TYPE_SCRIPT:
+		2:
 			return "script"
-		Logger.ERROR_TYPE_SHADER:
+		3:
 			return "shader"
 		_:
 			return "error"
@@ -974,7 +985,10 @@ func _logs_cmd(msg: Dictionary) -> Dictionary:
 		out.append(e)
 	if out.size() > limit:
 		out = out.slice(out.size() - limit, out.size())
-	return {"ok": true, "entries": out, "count": out.size(), "dropped": dropped, "buffer_size": snapshot.size()}
+	# capture_active tells the editor side whether the log sink is actually installed —
+	# false on Godot < 4.5 (no Logger API), where an empty buffer means "capture off",
+	# NOT "the game logged nothing". game_logs surfaces that distinction to the agent.
+	return {"ok": true, "entries": out, "count": out.size(), "dropped": dropped, "buffer_size": snapshot.size(), "capture_active": _logger != null}
 
 
 func _level_pass(ty: String, level: String) -> bool:
@@ -1008,15 +1022,40 @@ func _serialize_event(e: InputEvent) -> Dictionary:
 	return {}
 
 
-## Custom OS Logger: forwards the played game's log stream to the autoload's ring
-## buffer. Kept tiny and print-free — anything it logs would re-enter the logger.
-class _LogSink extends Logger:
-	var host
+## Install a custom OS Logger that forwards the played game's log stream (prints,
+## warnings, errors, script stack traces) into our ring buffer. The Logger class and
+## OS.add_logger() are Godot 4.5+; on 4.2–4.4 there's no such API, so this is a graceful
+## no-op (game_logs just returns an empty buffer) and the runtime module still loads.
+func _install_log_sink() -> void:
+	if not ClassDB.class_exists("Logger") or not OS.has_method("add_logger"):
+		return
+	var sink := _make_log_sink()
+	if sink == null:
+		return
+	_logger = sink
+	OS.call("add_logger", _logger)
 
-	func _log_message(message: String, error: bool) -> void:
-		if host != null:
-			host._on_message(message, error)
 
-	func _log_error(function: String, file: String, line: int, code: String, rationale: String, editor_notify: bool, error_type: int, script_backtraces: Array) -> void:
-		if host != null:
-			host._on_error(function, file, line, code, rationale, error_type, script_backtraces)
+## Build the Logger sink by compiling it from source at runtime. It `extends Logger` — a
+## base class absent before 4.5 — so it can't live as a parsed inner class here: that is
+## exactly what broke parsing on older engines. Compiling from a string keeps every
+## Logger reference out of this file's parse scope; the source is only compiled on 4.5+.
+## Kept tiny and print-free — anything the sink itself logged would re-enter the logger.
+func _make_log_sink() -> Object:
+	var src := "\n".join([
+		"extends Logger",
+		"var host",
+		"func _log_message(message, error):",
+		"\tif host != null: host._on_message(message, error)",
+		"func _log_error(function, file, line, code, rationale, editor_notify, error_type, script_backtraces):",
+		"\tif host != null: host._on_error(function, file, line, code, rationale, error_type, script_backtraces)",
+	])
+	var gd := GDScript.new()
+	gd.source_code = src
+	if gd.reload() != OK:
+		return null
+	var sink: Object = gd.new()
+	if sink == null:
+		return null
+	sink.set("host", self)
+	return sink

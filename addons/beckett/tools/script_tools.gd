@@ -23,7 +23,7 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "write_script",
-		"description": "Write a GDScript file under res:// (validated first by default — refuses to write code that doesn't compile). Set validate=false to force.",
+		"description": "Write a GDScript (or other text, e.g. .cs) file under res://. GDScript is validated first by default — refuses code that doesn't compile; non-.gd files (C#, config…) are written as-is (use build_csharp to compile-check C#). Set validate=false to force.",
 		"destructive": true,
 		"input_schema": {"type": "object", "properties": {
 			"path": {"type": "string", "description": "res:// path, e.g. res://player.gd"},
@@ -89,7 +89,9 @@ func _write_script(args: Dictionary) -> Dictionary:
 	if not guard.is_empty():
 		return {"error": guard}
 	var content := str(args.get("content", ""))
-	var validate := bool(args.get("validate", true))
+	# The compile-gate is GDScript-only (in-process GDScript.reload). C#/.cs and other text
+	# files can't be gated here — C# compiles out-of-process; check it with build_csharp.
+	var validate := bool(args.get("validate", true)) and path.ends_with(".gd")
 	if validate:
 		var v := _compile(content)
 		if not v["valid"]:
@@ -106,6 +108,8 @@ func _write_script(args: Dictionary) -> Dictionary:
 	# Make the editor pick up the new/changed file.
 	if Engine.is_editor_hint():
 		EditorInterface.get_resource_filesystem().update_file(path)
+	if path.ends_with(".cs"):
+		return {"text": "wrote %d bytes to %s — C# not compile-checked; run build_csharp to verify it compiles" % [content.length(), path]}
 	return {"text": "wrote %d bytes to %s" % [content.length(), path]}
 
 

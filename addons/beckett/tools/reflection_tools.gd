@@ -21,7 +21,7 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "find_classes",
-		"description": "Search engine classes by name substring. Optional 'base' restricts to subclasses (e.g. base=Node2D). The discovery entry point — pair with describe_class.",
+		"description": "Search classes by name substring — engine classes AND your project's own types (GDScript class_name + C# [GlobalClass]). Optional 'base' restricts to subclasses (e.g. base=Node2D). The discovery entry point — pair with describe_class.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"query": {"type": "string", "description": "case-insensitive name substring"},
@@ -112,12 +112,36 @@ func _find_classes(args: Dictionary) -> Dictionary:
 			out.append({"name": String(c), "parent": String(ClassDB.get_parent_class(c))})
 			if out.size() >= maxn:
 				break
+	# Also surface user-defined global classes (GDScript class_name + C# [GlobalClass]) —
+	# ClassDB never lists these. Tagged with language + script path so the agent knows they
+	# are project types (drive them the same way: create_node / set_property / call_method).
+	if out.size() < maxn:
+		for e in _global_classes():
+			var nm := String(e.get("class", ""))
+			if nm.is_empty():
+				continue
+			if not query.is_empty() and not nm.to_lower().contains(query):
+				continue
+			if not base.is_empty() and String(e.get("base", "")) != base:
+				continue
+			out.append({
+				"name": nm,
+				"parent": String(e.get("base", "")),
+				"kind": "script",
+				"language": String(e.get("language", "")),
+				"script": String(e.get("path", "")),
+			})
+			if out.size() >= maxn:
+				break
 	return {"json": {"count": out.size(), "truncated": out.size() >= maxn, "classes": out}}
 
 
 func _describe_class(args: Dictionary) -> Dictionary:
 	var cls := str(args.get("class", ""))
 	if not ClassDB.class_exists(cls):
+		var gentry := _global_class_entry(cls)
+		if not gentry.is_empty():
+			return _describe_global_class(cls, gentry)
 		return {"error": "No such class: %s" % cls, "suggestion": _did_you_mean(cls)}
 	var no_inh := not bool(args.get("inherited", false))
 	var props: Array = []
@@ -164,7 +188,7 @@ func _describe_object(args: Dictionary) -> Dictionary:
 	var target := str(args.get("target", ""))
 	var obj := Reflect.resolve(target)
 	if obj == null:
-		if ClassDB.class_exists(target):
+		if ClassDB.class_exists(target) or not _global_class_entry(target).is_empty():
 			return _describe_class({"class": target, "inherited": args.get("inherited", false)})
 		return {
 			"error": "Could not resolve target: %s" % target,
@@ -254,6 +278,65 @@ func _did_you_mean(cls: String) -> String:
 			hits.append(String(c))
 			if hits.size() >= 5:
 				break
+	for e in _global_classes():  # include the project's own types in suggestions
+		if hits.size() >= 5:
+			break
+		var nm := String(e.get("class", ""))
+		if not nm.is_empty() and nm.to_lower().contains(q) and not hits.has(nm):
+			hits.append(nm)
 	if hits.is_empty():
 		return "Use find_classes to search for the right class name."
 	return "Did you mean: %s" % ", ".join(hits)
+
+
+## User-defined global classes (GDScript class_name + C# [GlobalClass]) — the surface
+## ClassDB does not track. Fresh each call so it reflects scripts added mid-session.
+func _global_classes() -> Array:
+	if ProjectSettings.has_method("get_global_class_list"):
+		return ProjectSettings.get_global_class_list()
+	return []
+
+
+func _global_class_entry(name: String) -> Dictionary:
+	if name.is_empty():
+		return {}
+	for e in _global_classes():
+		if String(e.get("class", "")) == name:
+			return e
+	return {}
+
+
+## Describe a user global class from its Script resource. get_script_method_list /
+## get_script_property_list work for BOTH GDScript and CSharpScript — but C# type info
+## is only populated after a successful build, so an empty result folds in the base class.
+func _describe_global_class(cls: String, entry: Dictionary) -> Dictionary:
+	var base := String(entry.get("base", ""))
+	var lang := String(entry.get("language", ""))
+	var path := String(entry.get("path", ""))
+	var scr: Variant = load(path) if not path.is_empty() else null
+	var props: Array = []
+	var methods: Array = []
+	if scr != null and scr is Script:
+		for p in (scr as Script).get_script_property_list():
+			var usage := int(p.get("usage", 0))
+			if (usage & PROPERTY_USAGE_GROUP) != 0 or (usage & PROPERTY_USAGE_CATEGORY) != 0:
+				continue
+			props.append({"name": String(p.get("name", "")), "type": Reflect._type_name(p)})
+		for m in (scr as Script).get_script_method_list():
+			methods.append({"name": String(m.get("name", "")), "signature": Reflect.method_signature(m)})
+	var result := {
+		"class": cls,
+		"parent": base,
+		"language": lang,
+		"script": path,
+		"properties": props,
+		"methods": methods,
+	}
+	if props.is_empty() and methods.is_empty():
+		var why := " — C# type info needs a successful build (run build_csharp)" if lang == "C#" else ""
+		result["note"] = "No script members resolved%s. Showing the base class '%s' instead." % [why, base]
+		if ClassDB.class_exists(base):
+			var bd := _describe_class({"class": base})
+			if bd.has("json"):
+				result["base_class"] = bd["json"]
+	return {"json": result}
