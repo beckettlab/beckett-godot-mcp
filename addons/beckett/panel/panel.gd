@@ -841,7 +841,7 @@ func _focus_node(f: Dictionary) -> void:
 
 func _build_upgrade_button() -> void:
 	var btn := Button.new()
-	btn.text = "★ Get Full — the AI plays & tests your game"
+	btn.text = "★ Get Full — the AI playtests your game"
 	btn.custom_minimum_size = Vector2(0, 30 * _es)
 	btn.add_theme_color_override("font_color", _color("accent_color", Color(0.4, 0.6, 1.0)))
 	btn.tooltip_text = "$15 one-time, lifetime updates. Lite already SEES the running game (screenshots, live tree, runtime reads). Full unlocks L5 Drive (input, UI/3D clicks, drag/scroll, asserts, tests, animation) + L6 Max (export jobs, asset library) + the skill packs. Opens the store page."

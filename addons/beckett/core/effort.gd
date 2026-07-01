@@ -27,7 +27,7 @@ const LEVELS := {
 	2: {"name": "Author",   "tag": "Edit and build"},
 	3: {"name": "Run",      "tag": "Dev loop"},
 	4: {"name": "See",      "tag": "AI sees the running game"},
-	5: {"name": "Drive",    "tag": "AI plays and verifies"},
+	5: {"name": "Drive",    "tag": "AI drives and verifies"},
 	6: {"name": "Max",      "tag": "Orchestrate and ship"},
 }
 
@@ -83,7 +83,7 @@ const _DELTA := {
 		"monitor_properties", "get_performance_monitors", "game_logs",
 		"runtime_get_property",
 	],
-	# L5 — DRIVE & verify: the agent plays the game (input, clicks, drag/scroll,
+	# L5 — DRIVE & verify: the agent drives the game (input, clicks, drag/scroll,
 	# runtime writes/calls, record/replay) and checks results (asserts, test_run),
 	# plus the authoring power tools that loop needs (animation, scatter). Full-only:
 	# runtime_tools.gd is the trimmed sentinel that flags the Lite/Full boundary.

@@ -10,7 +10,7 @@ running game: it inspects any node via reflection, authors scenes/scripts/
 resources (every script parse-checked before it touches disk), runs the game,
 and reads the screen + live scene tree + runtime state to tell you what is wrong.
 
-The Full edition makes the AI the playtester - it PLAYS the game (presses the
+The Full edition makes the AI the playtester - it drives the game (presses the
 buttons, drives input, asserts the results) - and adds animation tools,
 background exports, and the bundled knowledge packs:
 https://beckettlabs.itch.io/beckett-godot-mcp
