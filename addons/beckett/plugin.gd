@@ -49,9 +49,38 @@ func _enter_tree() -> void:
 
 	# Dock panel — status, Start/Stop, set up client, copy config.
 	_panel = PanelScript.new()
+	_panel.name = "Beckett"  # set BEFORE add so the dock tab title is correct on 4.2-4.4 too
 	_panel.server = _server
 	_panel.plugin = self
 	add_control_to_dock(EditorPlugin.DOCK_SLOT_RIGHT_UL, _panel)
+	_reveal_dock_once()
+
+
+## First time the plugin is enabled in a project, bring our dock tab to the front so it's
+## discoverable. The editor's right dock can overflow, hiding a 4th tab (ours) behind the
+## tab-scroll arrows — and on Godot 4.2-4.4 a control renamed *after* add_control_to_dock
+## keeps a blank tab title, so without this the tab is effectively invisible. Gated by a
+## project flag so we reveal once (first enable / first launch after update) and never
+## fight the user's chosen layout afterward.
+func _reveal_dock_once() -> void:
+	if bool(ProjectSettings.get_setting("beckett/dock_revealed", false)):
+		return
+	ProjectSettings.set_setting("beckett/dock_revealed", true)
+	ProjectSettings.save()
+	# Defer past the editor's own dock-layout restore, which runs after _enter_tree.
+	get_tree().create_timer(0.7).timeout.connect(_bring_dock_to_front)
+
+
+func _bring_dock_to_front() -> void:
+	if not is_instance_valid(_panel):
+		return
+	var p: Node = _panel.get_parent()
+	while p != null and not (p is TabContainer):
+		p = p.get_parent()
+	if p is TabContainer:
+		var idx := _panel.get_index()
+		if idx >= 0:
+			(p as TabContainer).current_tab = idx
 
 
 func _exit_tree() -> void:
