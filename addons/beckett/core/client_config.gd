@@ -99,6 +99,19 @@ static func detect() -> Array:
 		{"id": "desktop", "name": "Claude Desktop",
 			"installed": DirAccess.dir_exists_absolute(_appdata_dir("Claude")),
 			"configured": _configured(desktop_config_path(), "mcpServers")},
+		{"id": "codex", "name": "Codex",
+			"installed": DirAccess.dir_exists_absolute(_home().path_join(".codex")),
+			"configured": _toml_has_section(codex_config_path())},
+		{"id": "windsurf", "name": "Windsurf",
+			"installed": DirAccess.dir_exists_absolute(_home().path_join(".codeium/windsurf")),
+			"configured": _configured(windsurf_config_path(), "mcpServers")},
+		{"id": "gemini_cli", "name": "Gemini CLI",
+			"installed": DirAccess.dir_exists_absolute(_home().path_join(".gemini")),
+			"configured": _configured(gemini_config_path(), "mcpServers")},
+		{"id": "antigravity", "name": "Antigravity",
+			"installed": DirAccess.dir_exists_absolute(_home().path_join(".gemini/config")) \
+				or DirAccess.dir_exists_absolute(_home().path_join(".gemini/antigravity")),
+			"configured": _configured(antigravity_config_path(), "mcpServers")},
 	]
 
 
@@ -127,6 +140,18 @@ static func ensure_all(port: int) -> Array:
 		out.append(_tag("VS Code (Cline)", ensure_cline(port)))
 	if DirAccess.dir_exists_absolute(_appdata_dir("Claude")):
 		out.append(_tag("Claude Desktop", _merge(desktop_config_path(), "mcpServers", desktop_entry(port))))
+	# Home-dir clients (Codex / Windsurf / Gemini CLI / Antigravity): global configs like Cline
+	# & Desktop, so button-only (never auto). Each gated on its own dir so we don't seed a config
+	# for a client the user doesn't have.
+	if DirAccess.dir_exists_absolute(_home().path_join(".codex")):
+		out.append(_tag("Codex", ensure_codex(port)))
+	if DirAccess.dir_exists_absolute(_home().path_join(".codeium/windsurf")):
+		out.append(_tag("Windsurf", ensure_windsurf(port)))
+	if DirAccess.dir_exists_absolute(_home().path_join(".gemini")):
+		out.append(_tag("Gemini CLI", ensure_gemini(port)))
+	if DirAccess.dir_exists_absolute(_home().path_join(".gemini/config")) \
+			or DirAccess.dir_exists_absolute(_home().path_join(".gemini/antigravity")):
+		out.append(_tag("Antigravity", ensure_antigravity(port)))
 	return out
 
 
@@ -156,6 +181,135 @@ static func ensure_vscode(port: int) -> Dictionary:
 # autoApprove/disabled/timeout on our entry survive a re-Connect — see _merge_into_entry.
 static func ensure_cline(port: int) -> Dictionary:
 	return _merge_into_entry(cline_settings_path(), "mcpServers", cline_entry(port))
+
+
+# ---------------------------------------------------------------- home-dir clients
+# Codex / Windsurf / Gemini CLI / Antigravity all keep a GLOBAL config under the user's home
+# (not the project), so — like Cline / Claude Desktop — they're button-only via ensure_all,
+# never auto-written on plugin start. Paths + URL-field names below are each client's own
+# schema (not interchangeable): Windsurf/Antigravity use `serverUrl`, Gemini CLI uses `httpUrl`,
+# Codex is TOML with a `url`. The three JSON ones reuse _merge_into_entry (creates the dir,
+# field-merges, preserves user-set keys, backs up unparseable files).
+
+static func windsurf_config_path() -> String:
+	return _home().path_join(".codeium/windsurf/mcp_config.json")
+
+
+static func gemini_config_path() -> String:
+	return _home().path_join(".gemini/settings.json")
+
+
+static func antigravity_config_path() -> String:
+	return _home().path_join(".gemini/config/mcp_config.json")
+
+
+static func codex_config_path() -> String:
+	return _home().path_join(".codex/config.toml")
+
+
+# Windsurf speaks Streamable HTTP through a `serverUrl` field (not `url`).
+static func ensure_windsurf(port: int) -> Dictionary:
+	return _merge_into_entry(windsurf_config_path(), "mcpServers", {"serverUrl": "http://127.0.0.1:%d/mcp" % port})
+
+
+# Gemini CLI keys a streamable-HTTP server under `httpUrl`.
+static func ensure_gemini(port: int) -> Dictionary:
+	return _merge_into_entry(gemini_config_path(), "mcpServers", {"httpUrl": "http://127.0.0.1:%d/mcp" % port})
+
+
+# Antigravity (Google's agentic IDE) shares Gemini's tree but under config/, and uses `serverUrl`
+# like Windsurf. We leave `disabled` unset — absent == enabled — so re-Connect never stomps a
+# user who toggled the server off in the UI.
+static func ensure_antigravity(port: int) -> Dictionary:
+	return _merge_into_entry(antigravity_config_path(), "mcpServers", {"serverUrl": "http://127.0.0.1:%d/mcp" % port})
+
+
+## Codex is TOML, not JSON, so it needs its own minimal upsert: rewrite (or append) exactly our
+## [mcp_servers.beckett] table and touch nothing else — Codex users routinely keep model/approval
+## settings and other MCP servers in this file. We only ever replace our own section, never
+## blind-overwrite, and skip the write when it is already correct (no churn), mirroring _merge.
+static func ensure_codex(port: int) -> Dictionary:
+	var path := codex_config_path()
+	var existed := FileAccess.file_exists(path)
+	var existing := FileAccess.get_file_as_string(path) if existed else ""
+	var res := _codex_upsert(existing, port)
+	if not bool(res["changed"]):
+		return {"ok": true, "action": "unchanged", "path": path}
+	var dir := path.get_base_dir()
+	if dir != "" and not DirAccess.dir_exists_absolute(dir):
+		DirAccess.make_dir_recursive_absolute(dir)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return {"ok": false, "error": error_string(FileAccess.get_open_error()), "path": path}
+	f.store_string(String(res["text"]))
+	f.close()
+	return {"ok": true, "action": ("merged" if existed else "created"), "path": path}
+
+
+## Pure text transform behind ensure_codex (no file IO) — so the section-replace is unit-testable
+## and provably never disturbs other tables. Rewrites exactly our [mcp_servers.<name>] table (from
+## its header to the next TOML header or EOF); everything else is copied verbatim. Returns
+## {text, changed}; changed=false when our table is already present exactly (skip the write).
+static func _codex_upsert(existing: String, port: int) -> Dictionary:
+	var header := "[mcp_servers.%s]" % SERVER_KEY
+	var desired: Array[String] = [header, "url = \"http://127.0.0.1:%d/mcp\"" % port, "enabled = true"]
+
+	var lines: Array[String] = []
+	if existing != "":
+		for l in existing.split("\n"):
+			lines.append(l)
+
+	# Locate our table: header line → up to the next TOML header (a line starting with "[") or EOF.
+	var start := -1
+	for i in lines.size():
+		var s := lines[i].strip_edges()
+		if s == header or s == "[mcp_servers.\"%s\"]" % SERVER_KEY:
+			start = i
+			break
+
+	var out: Array[String] = []
+	if start == -1:
+		out.append_array(lines)
+		if not out.is_empty() and out[out.size() - 1].strip_edges() != "":
+			out.append("")  # blank line before a fresh table
+		out.append_array(desired)
+	else:
+		var stop := lines.size()
+		for j in range(start + 1, lines.size()):
+			if lines[j].strip_edges().begins_with("["):
+				stop = j
+				break
+		if _rstrip_blanks(lines.slice(start, stop)) == desired:
+			return {"text": existing, "changed": false}
+		for k in start:
+			out.append(lines[k])
+		out.append_array(desired)
+		for k in range(stop, lines.size()):
+			out.append(lines[k])
+
+	var payload := "\n".join(PackedStringArray(out))
+	if not payload.ends_with("\n"):
+		payload += "\n"
+	return {"text": payload, "changed": true}
+
+
+## Drop trailing all-blank lines so a section that only differs by trailing whitespace reads equal.
+static func _rstrip_blanks(arr: Array[String]) -> Array[String]:
+	var out: Array[String] = arr.duplicate()
+	while not out.is_empty() and out[out.size() - 1].strip_edges() == "":
+		out.remove_at(out.size() - 1)
+	return out
+
+
+## Does `path` (a TOML file) already declare our [mcp_servers.<name>] table (quoted or bare)?
+static func _toml_has_section(path: String) -> bool:
+	if not FileAccess.file_exists(path):
+		return false
+	for l in FileAccess.get_file_as_string(path).split("\n"):
+		var s := l.strip_edges()
+		if s == "[mcp_servers.%s]" % SERVER_KEY or s == "[mcp_servers.\"%s\"]" % SERVER_KEY:
+			return true
+	return false
 
 
 static func _mkdir(dir_name: String) -> void:

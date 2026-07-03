@@ -278,7 +278,7 @@ func _build_clients_card() -> void:
 	copy_btn.flat = true
 	copy_btn.icon = _eicon("ActionCopy")
 	copy_btn.add_theme_font_size_override("font_size", int(11 * _es))
-	copy_btn.tooltip_text = "Copy a generic MCP client config — for Windsurf, Cline, or anything not auto-detected"
+	copy_btn.tooltip_text = "Copy a generic MCP client config — for Zed or anything not auto-detected yet"
 	copy_btn.pressed.connect(_on_copy)
 	box.add_child(copy_btn)
 
@@ -1160,7 +1160,7 @@ func _refresh_clients() -> void:
 	_clients_count.visible = installed > 0
 	_clients_count.text = "%d / %d configured" % [configured, installed]
 	_clients_empty.visible = installed == 0
-	_clients_empty.text = "No MCP clients detected (Claude Code, Cursor, VS Code, Claude Desktop)"
+	_clients_empty.text = "No MCP clients detected on this machine"
 
 
 ## The live connection line under Server: which client is actually talking and when it

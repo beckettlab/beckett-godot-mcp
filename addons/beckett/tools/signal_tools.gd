@@ -2,8 +2,7 @@
 extends RefCounted
 class_name BeckettSignalTools
 
-## Signal wiring (P0 — the competitor's headline "no one else has this"). Editor-persisted
-## (CONNECT_PERSIST so it saves into the .tscn) and undoable.
+## Signal wiring: editor-persisted (CONNECT_PERSIST so it saves into the .tscn) and undoable.
 
 const Reflect := preload("res://addons/beckett/core/reflection.gd")
 

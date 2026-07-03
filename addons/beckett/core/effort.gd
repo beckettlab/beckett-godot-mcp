@@ -94,6 +94,8 @@ const _DELTA := {
 		"click_node3d", "click_world", "scroll", "drag",
 		"get_control_rect", "find_ui_elements",
 		"record_input", "replay_input",
+		# deterministic playtest control (freeze / frame-step / step-until / time-scale)
+		"time_control",
 		# verify it
 		"assert_node_state", "assert_screen_text", "assert_scene", "compare_screenshots",
 		"test_run",

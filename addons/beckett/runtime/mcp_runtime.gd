@@ -21,6 +21,27 @@ var _recording := false
 var _rec: Array = []
 var _rec_t0 := 0
 
+# Deterministic playtest control (time_control tool). A stepping WINDOW can't run
+# inside a single bridge handler — physics only advances between frames, and the
+# handler blocks the frame it runs on — so `step`/`step_until` just OPEN the window
+# (unpause + arm the flag) and reply immediately; _physics_process counts the ticks
+# and closes it (re-pause), while the editor polls tc_status. Because this autoload is
+# PROCESS_MODE_ALWAYS, its _physics_process fires even when the tree is paused, so the
+# tick counter is gated on `not get_tree().paused` — it counts ONLY real, unpaused
+# physics ticks during an open window (a naive counter would over-count paused frames).
+var _stepping := false            # a step/step_until window is open
+var _step_kind := ""              # "count" (fixed N frames) or "until" (condition)
+var _step_target := 0             # frames to run for kind=count
+var _step_count := 0              # unpaused physics ticks seen so far this window
+var _step_deadline := 0          # Time.get_ticks_msec() cap for kind=until (timeout)
+var _step_max_frames := 0         # optional frame cap for kind=until (0 = none)
+var _step_cond := ""              # condition source for kind=until
+var _step_expr: Object = null     # compiled Expression for the condition (game-side)
+var _step_result := ""            # terminator that closed the last window: done|condition|timeout|max_frames
+var _step_cond_value = null       # last evaluated condition value (for step_until reporting)
+var _resume_paused := true        # re-pause when the window closes (step always leaves paused)
+var _step_open_frame := 0         # Engine.get_physics_frames() snapshotted when the window opened (delta base)
+
 # Captured game output — runtime script errors WITH stack traces, push_error/warning,
 # and print() — via a custom OS Logger installed in the played game. This is the
 # real-time play->see-error->fix signal the agent reads through the game_logs tool;
@@ -110,6 +131,68 @@ func _process(delta: float) -> void:
 			_dial()
 
 
+# Drive an open stepping window forward one physics tick at a time. Runs in
+# PROCESS_MODE_ALWAYS, so it also fires while the tree is paused — we count ONLY
+# ticks that happen while the tree is genuinely UNPAUSED, so a step of N advances
+# the game by exactly N physics frames (paused ticks in between never count).
+func _physics_process(_delta: float) -> void:
+	if not _stepping:
+		return
+	var tree := get_tree()
+	if tree == null:
+		return
+	# Only a real, UNPAUSED physics tick advances the game — count that one. This gate is
+	# why an ALWAYS-mode autoload doesn't over-count: its _physics_process fires even while
+	# the tree is paused, but those ticks are skipped here.
+	if tree.paused:
+		return
+	_step_count += 1
+	match _step_kind:
+		"count":
+			if _step_count >= _step_target:
+				_close_step("done")
+		"until":
+			# Evaluate the condition AFTER this tick's simulation — the moment it is true we
+			# pause. (An already-true condition is handled at open time with 0 frames run.)
+			if _eval_step_condition():
+				_close_step("condition")
+			elif _step_max_frames > 0 and _step_count >= _step_max_frames:
+				_close_step("max_frames")
+			elif Time.get_ticks_msec() >= _step_deadline:
+				_close_step("timeout")
+
+
+## Close the open stepping window: record the terminator and (for step, always) re-pause
+## the tree so the game holds exactly where the step left it. The reported frame delta is
+## derived as open_frame + _step_count (see _tc_step_status), so it always equals the
+## number of real ticks that ran, even though the raw engine counter keeps ticking while
+## paused between this close and the editor's status poll.
+func _close_step(reason: String) -> void:
+	_stepping = false
+	_step_result = reason
+	_step_expr = null
+	var tree := get_tree()
+	if tree != null and _resume_paused:
+		tree.paused = true
+
+
+## Evaluate the step_until condition against the running scene, game-side, once.
+## Uses a GDScript Expression bound to the current scene root (its properties and
+## methods are in scope, e.g. "get_node(\"Player\").position.y > 500"). Any parse/exec
+## error is treated as "not yet" and stashed so the terminator report can surface it.
+func _eval_step_condition() -> bool:
+	if _step_expr == null:
+		return false
+	var root := _root()
+	var base: Object = root if root != null else self
+	var v: Variant = _step_expr.execute([], base, true)
+	if _step_expr.has_execute_failed():
+		_step_cond_value = "error: " + _step_expr.get_error_text()
+		return false
+	_step_cond_value = _safe(v)
+	return bool(v)
+
+
 func _handle(line: String) -> void:
 	var msg: Variant = JSON.parse_string(line)
 	if not (msg is Dictionary):
@@ -180,6 +263,20 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 		"record_stop":
 			_recording = false
 			return {"ok": true, "events": _rec.duplicate()}
+		"tc_freeze":
+			return _tc_freeze()
+		"tc_unfreeze":
+			return _tc_unfreeze()
+		"tc_step":
+			return _tc_step(msg)
+		"tc_step_until":
+			return _tc_step_until(msg)
+		"tc_step_status":
+			return _tc_step_status()
+		"tc_time_scale":
+			return _tc_time_scale(msg)
+		"tc_status":
+			return _tc_state()
 		_:
 			return {"ok": false, "error": "unknown cmd"}
 
@@ -339,6 +436,150 @@ func _not_found(msg: Dictionary) -> String:
 	if sel.is_empty():
 		return "no path or selector (class/name/text) given"
 	return "no node matches selector %s (nth=%d)" % [", ".join(sel), int(msg.get("nth", 0))]
+
+
+# ---------------------------------------------------------------- time control (deterministic playtest)
+
+## Common state block returned by every time_control op so the agent always sees the
+## same shape: is the game running, is the tree paused, current Engine.time_scale,
+## the physics frame counter, and whether a step window is currently open.
+func _tc_state() -> Dictionary:
+	var tree := get_tree()
+	var paused := tree != null and tree.paused
+	return {
+		"ok": true,
+		"running": tree != null,
+		"paused": paused,
+		"time_scale": Engine.time_scale,
+		"physics_frames": Engine.get_physics_frames(),
+		"in_step": _stepping,
+	}
+
+
+func _tc_freeze() -> Dictionary:
+	var tree := get_tree()
+	if tree == null:
+		return {"ok": false, "error": "no scene tree"}
+	# A pending step window is abandoned by an explicit freeze — the user wants a hard stop.
+	_stepping = false
+	_step_expr = null
+	tree.paused = true
+	return _tc_state()
+
+
+func _tc_unfreeze() -> Dictionary:
+	var tree := get_tree()
+	if tree == null:
+		return {"ok": false, "error": "no scene tree"}
+	_stepping = false
+	_step_expr = null
+	tree.paused = false
+	return _tc_state()
+
+
+## OPEN a fixed-count step window. From ANY state: force paused (known baseline), record
+## the physics frame counter, then unpause with the window armed. _physics_process counts
+## exactly N unpaused ticks and re-pauses. Replies immediately with started=... ; the editor
+## polls tc_step_status until in_step=false, then reads the delta.
+func _tc_step(msg: Dictionary) -> Dictionary:
+	var tree := get_tree()
+	if tree == null:
+		return {"ok": false, "error": "no scene tree"}
+	var frames: int = maxi(1, int(msg.get("frames", 1)))
+	# Baseline: ensure paused so no stray ticks land before the window opens.
+	tree.paused = true
+	_step_kind = "count"
+	_step_target = frames
+	_step_count = 0
+	_step_result = ""
+	_step_cond_value = null
+	_resume_paused = true
+	_step_open_frame = Engine.get_physics_frames()
+	_stepping = true
+	# Unpause so the very next physics tick begins the run.
+	tree.paused = false
+	return {"ok": true, "started": true, "kind": "count", "frames_requested": frames,
+		"physics_frames_before": _step_open_frame}
+
+
+## OPEN a condition step window. Compile the GDScript Expression, evaluate it ONCE
+## against the current state — if already true, close with 0 frames — otherwise unpause
+## with the window armed; _physics_process re-checks each tick and closes on condition,
+## max_frames, or timeout, then re-pauses.
+func _tc_step_until(msg: Dictionary) -> Dictionary:
+	var tree := get_tree()
+	if tree == null:
+		return {"ok": false, "error": "no scene tree"}
+	var cond := str(msg.get("condition", "")).strip_edges()
+	if cond.is_empty():
+		return {"ok": false, "error": "step_until needs a 'condition' expression"}
+	var expr := Expression.new()
+	var perr := expr.parse(cond)
+	if perr != OK:
+		return {"ok": false, "error": "condition parse error: %s" % expr.get_error_text()}
+	_step_cond = cond
+	_step_expr = expr
+	_step_kind = "until"
+	_step_count = 0
+	_step_result = ""
+	_step_cond_value = null
+	_resume_paused = true
+	_step_max_frames = maxi(0, int(msg.get("max_frames", 0)))
+	var timeout_sec: float = clampf(float(msg.get("timeout_sec", 10.0)), 0.1, 120.0)
+	_step_deadline = Time.get_ticks_msec() + int(timeout_sec * 1000.0)
+	_step_open_frame = Engine.get_physics_frames()
+	# Already true? Close immediately with zero frames run — pause and report.
+	if _eval_step_condition():
+		_step_result = "condition"
+		_stepping = false
+		_step_expr = null
+		tree.paused = true
+		return {"ok": true, "started": false, "kind": "until", "immediate": true,
+			"terminator": "condition", "frames": 0,
+			"physics_frames_before": _step_open_frame,
+			"condition_value": _step_cond_value}
+	_stepping = true
+	tree.paused = false
+	return {"ok": true, "started": true, "kind": "until", "immediate": false,
+		"timeout_sec": timeout_sec, "max_frames": _step_max_frames,
+		"physics_frames_before": _step_open_frame}
+
+
+## Poll target for an open step window. While in_step is true the editor keeps polling;
+## once it flips false, this carries the terminator, frames actually run, the physics
+## frame counter before/after (delta must equal frames for kind=count), and — for
+## step_until — the final condition value.
+func _tc_step_status() -> Dictionary:
+	var out := _tc_state()
+	out["kind"] = _step_kind
+	out["frames"] = _step_count
+	# before was snapshotted at open; after = before + counted ticks. Computed (not read live)
+	# so after-before == frames both mid-window and after close, immune to the raw engine
+	# counter drifting while paused between close and this poll.
+	out["physics_frames_before"] = _step_open_frame
+	out["physics_frames_after"] = _step_open_frame + _step_count
+	if not _stepping:
+		out["terminator"] = _step_result
+		if _step_kind == "until":
+			out["condition"] = _step_cond
+			out["condition_value"] = _step_cond_value
+	return out
+
+
+## Set Engine.time_scale. Clamp to [0.01, 10.0]; a value of 0 is rejected (freeze is the
+## way to stop time, and a 0 scale wedges tweens/timers). Reports the clamped value.
+func _tc_time_scale(msg: Dictionary) -> Dictionary:
+	if not msg.has("value"):
+		return {"ok": false, "error": "time_scale needs a 'value'"}
+	var requested := float(msg.get("value", 1.0))
+	if requested == 0.0:
+		return {"ok": false, "error": "time_scale 0 is not allowed — use freeze to stop time (a 0 scale wedges tweens/timers)"}
+	var clamped: float = clampf(requested, 0.01, 10.0)
+	Engine.time_scale = clamped
+	var st := _tc_state()
+	st["requested"] = requested
+	st["clamped"] = clamped
+	return st
 
 
 # ---------------------------------------------------------------- tree (scoped)
