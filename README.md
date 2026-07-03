@@ -13,9 +13,9 @@
 
 **Beckett** is a **zero-sidecar** Model Context Protocol (MCP) server embedded directly in the **Godot 4** editor as a GDScript `EditorPlugin`. AI agents (Claude and others) drive the editor over HTTP — no Node/Python bridge, no second process, no cloud.
 
-This repository is the free, **MIT-licensed Lite edition** — the complete **inspect → author → run** dev loop (41 tools). The paid **Full** edition makes the AI *play* your game (screenshots, input, asserts) and adds a test runner, animation tools, background exports, and 36 knowledge packs — see [What Full adds](#what-full-adds).
+This repository is the free, **MIT-licensed Lite edition**: the complete **inspect → author → run → SEE** dev loop (50 tools), for **GDScript *and* C#**. The AI can now *watch your running game* on the free tier: screenshot it, read the live remote scene tree and node state, poll performance monitors, and tail the game's logs. The paid **Full** edition makes the AI the *playtester* (it drives input, clicks 2D/3D and UI, and asserts the results), plus a test runner, animation tools, `scatter_nodes`, background exports, project-wide analysis, and 37 knowledge packs. See [What Full adds](#what-full-adds).
 
-**Lite: you play, the AI reads the logs. Full: the AI plays.**
+**Lite: the AI sees your game. Full: the AI playtests it.**
 
 ## Demo
 
@@ -28,55 +28,75 @@ Existing Godot MCP servers either shell out to the CLI (can't play the game, scr
 ## Highlights
 
 - **Zero-sidecar** — `TCPServer` HTTP/JSON-RPC server polled on the editor main thread. No marshalling, nothing extra to install beyond the addon.
+- **The AI sees your game (free)** — `screenshot` the running game, read the live remote scene tree (`get_remote_tree` / `find_nodes` / `wait_for_node`), read live node state (`runtime_get_property` / `monitor_properties`), poll `get_performance_monitors`, and tail `game_logs` with stack traces. The free tier can watch and diagnose the running game; **Full closes the loop by driving input and asserting the result.**
+- **GDScript and C#, one addon, zero sidecar** — the C#/.NET dev loop is free too: `build_csharp` runs a `dotnet build` compile-check that returns structured `file:line:col` + CS-code diagnostics (safe while the editor is open, no new dependency beyond the .NET SDK a C# project already needs), `write_script` is `.cs`-aware, and reflection surfaces your C# `[GlobalClass]` types just like GDScript `class_name`.
 - **Reflection-first + discovery** — `find_classes` / `describe_class` / `find_methods` make the whole engine surface searchable; `describe_object` / `set_property` / `call_method` then drive any `Node` / `Resource` / `Object`. Reaches TileMap, GPUParticles, AnimationTree, NavMesh, shaders… with no per-domain code.
 - **GDScript dev-loop with validate-before-write** — `write_script` / `script_patch` parse the code first and refuse to write what doesn't compile (closing the #1 AI-on-Godot failure: hallucinated GDScript). Godot's edge over UE: reload needs no compile step.
 - **Undoable authoring** — every scene/node mutation goes through `EditorUndoRedoManager` (atomic + undoable); `batch_execute` rolls a whole batch back on failure.
 - **One-step install** — enabling the plugin auto-starts the server and writes `.mcp.json`, so `claude`/Cursor connects with zero hand-editing (no Node.js to install — the competitor needs it just to try).
 - **Security** — localhost-only with `Origin` validation (anti DNS-rebind) + optional bearer token; read-only / allowlist / confirm-destructive gates; auto-start is opt-out (`beckett/autostart=false`).
-- **Run + read-the-logs loop** — `play_scene` → `wait_until` → `logs_read` → fix: launch the game and tail its output and errors while you play. (Full closes the loop autonomously — the AI itself sees and drives the running game.) Plus **MCP Resources + Prompts**.
-- **Dock panel** — status, one-click Start/Stop, copy-client-config, and an **AI-effort slider** (1–3 in Lite) that caps how many tools are advertised: cheaper model context when you only need a slice. **Applies live, no reconnect** — the server pushes `notifications/tools/list_changed` over its SSE stream and list-changed-aware clients (Claude Code, Cursor, …) re-fetch on the spot.
+- **Run → see loop** — `play_scene` → `wait_until` → `logs_read` → `screenshot` / `get_remote_tree` → fix: launch the game, tail its output and errors, then look at the running frame and live scene tree to diagnose. (Full closes the loop autonomously: the AI drives the game and asserts.) Plus **MCP Resources + Prompts**.
+- **Dock panel** — status, one-click Start/Stop, copy-client-config, and an **AI-effort slider** (1–4 in Lite; L4 = *See*) that caps how many tools are advertised: cheaper model context when you only need a slice. **Applies live, no reconnect** — the server pushes `notifications/tools/list_changed` over its SSE stream and list-changed-aware clients (Claude Code, Cursor, …) re-fetch on the spot.
 - **Responsive even unfocused** — while MCP traffic is active the server clamps the editor's low-processor sleep, so calls stay fast when you're focused on the terminal instead of the editor (the usual agent setup).
 - **Spec-current MCP** — protocol version negotiation, tool **annotations** (`readOnlyHint`/`destructiveHint`/`openWorldHint`) on every tool, and `structuredContent` (2025-06-18) alongside text results. An **audit ring** (`audit://recent`) records the last 200 tool calls — see everything the AI did.
 
-## Tools (41) · Resources (6) · Prompts (5)
+## Tools (50) · Resources (6) · Prompts (6)
 
-> **Fewer tools, on purpose — that's the moat, not a limitation.** Most Godot MCPs hand-code one tool per task (`create_sprite`, `add_collision`, `make_timer`…) — hundreds that *still* miss classes and flood the model's context (LLMs measurably degrade past ~40 tools). Beckett's are **reflection-generic**: `describe_class` / `set_property` / `call_method` drive *any* of Godot's 1000+ classes through `ClassDB` — TileMap, GPUParticles, AnimationTree, shaders, your own `class_name` — with no per-domain code. **Don't count tools, count coverage:** a smaller, sharper toolset that reaches the *whole* engine beats a hundred narrow wrappers that don't.
+> **Fewer tools, on purpose — that's the moat, not a limitation.** Most Godot MCPs hand-code one tool per task (`create_sprite`, `add_collision`, `make_timer`…) — hundreds that *still* miss classes and flood the model's context (LLMs measurably degrade past ~40 tools). Beckett's are **reflection-generic**: `describe_class` / `set_property` / `call_method` drive *any* of Godot's 1000+ classes through `ClassDB` — TileMap, GPUParticles, AnimationTree, shaders, your own `class_name` or C# `[GlobalClass]` — with no per-domain code. **Don't count tools, count coverage:** a smaller, sharper toolset that reaches the *whole* engine beats a hundred narrow wrappers that don't.
 
-The free Lite edition — the complete inspect → author → run loop:
+The free Lite edition — the complete inspect → author → run → **see** loop, for GDScript and C#:
 
 - **Reflection / discovery:** `get_godot_version`, `find_classes`, `describe_class`, `find_methods`, `describe_object`, `set_property`, `call_method`, `get_scene_tree`
 - **Scene authoring (undoable):** `create_node`, `delete_node`, `rename_node`, `reparent_node`, `duplicate_node`, `move_node`, `instance_scene`, `save_scene`, `open_scene`
 - **GDScript dev-loop:** `validate_script`, `write_script`, `script_patch`, `read_script`, `attach_script`
+- **C#/.NET dev-loop:** `build_csharp` (a `dotnet build` compile-check returning structured `file:line:col` + CS-code diagnostics, safe while the editor is open, zero new dependency; `write_script` is `.cs`-aware and C# `[GlobalClass]` types show up in reflection)
 - **Signals:** `connect_signal`, `disconnect_signal`, `list_signals`
 - **Resource assets:** `create_resource`, `set_resource`
 - **Files / project:** `read_file`, `write_file`, `list_dir`, `search_files`, `get_project_setting`, `set_project_setting`
-- **Run + logs loop:** `play_scene`, `stop_scene`, `get_play_state`, `wait_until`, `logs_read`
+- **Run loop:** `play_scene`, `stop_scene`, `get_play_state`, `wait_until`, `logs_read`
+- **Runtime observation (the AI sees your game):** `screenshot`, `get_remote_tree`, `find_nodes`, `wait_for_node`, `runtime_get_property`, `monitor_properties`, `get_performance_monitors`, `game_logs`
 - **Project / authoring helpers:** `get_project_statistics`, `apply_template`, `batch_execute`
 - **MCP Resources:** `scene://tree`, `scene://selection`, `project://settings`, `assets://list`, `log://output`, `audit://recent`
 - **MCP Prompts:** `inspect_node`, `audit_scene`, `setup_2d_player`, `fix_script_errors`, `build_test_fix`, `make_game`
 
 ## What Full adds
 
-The **Full** edition is the same core plus a premium layer that makes the AI the *playtester* — it sees the screen, presses the buttons, and verifies the result:
+The **Full** edition is the same core plus a premium layer that makes the AI the *playtester*: it sees the screen, presses the buttons, and verifies the result. **80 tools, 37 skill packs** total:
 
-- **The AI plays:** `screenshot`, `get_remote_tree`, `simulate_input`, UI clicks in 2D + 3D (`click_control` / `click_node3d` / `click_world`), `scroll` / `drag`, `find_nodes`, live `game_logs` with stack traces, `record_input` / `replay_input`.
-- **The AI verifies:** `assert_node_state`, `assert_screen_text`, `compare_screenshots`, plus the in-editor **test runner** (`test_run`).
+- **The AI drives:** `simulate_input`, UI clicks in 2D + 3D (`click_button_by_text` / `click_control` / `click_node3d` / `click_world`), `scroll` / `drag`, `get_control_rect` / `find_ui_elements`, live `runtime_call` / `runtime_set_property`, and `record_input` / `replay_input`.
+- **The AI verifies:** `assert_node_state`, `assert_screen_text`, `assert_scene`, `compare_screenshots`, plus the in-editor **test runner** (`test_run`).
 - **Author + ship:** `animation_manage` (keys / tracks / presets), `scatter_nodes` (Scene-Paint mass placement), background `export_project` + `job_status`, project-wide analysis (`find_unused_resources`, `detect_circular_dependencies`), and the Godot **Asset Store / Library** browser-installer (`asset_lib_search` / `asset_lib_info` / `asset_lib_install`).
-- **36 skill knowledge packs** (`list_skills` / `load_skill`): gdscript, particles, animation, ui, physics, multiplayer, and more — so reflection reaches each domain with no per-domain tools.
+- **37 skill knowledge packs** (`list_skills` / `load_skill`): gdscript, particles, animation, ui, physics, multiplayer, mobile, and more, so reflection reaches each domain with no per-domain tools.
 
-Full is a one-time purchase with lifetime updates: **https://beckettlabs.itch.io/beckett-godot-mcp**
+Full is a one-time purchase ($15) with lifetime updates: **https://beckettlabs.itch.io/beckett-godot-mcp**
+
+## How it compares
+
+Beckett is one of only a few *embedded* (zero-sidecar) servers in the field, and the only one that puts *seeing the running game* in a free tier. The other players have real strengths (raw tool count, mindshare, breadth), so here's an honest side-by-side. (Competitor figures are their own published numbers; they ship far more hand-coded per-domain tools, which is a different design choice, not strictly "more capability": see [Why](#why).)
+
+| | **Beckett Lite** (free, MIT) | **Beckett Full** ($15) | **CLI shell-out** (e.g. Coding-Solo, free) | **Sidecar** (godot-mcp-pro, $15, Node 18+) | **Native** (free, embedded, 4.6+ only) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Zero sidecar (no Node/Python) | ✅ | ✅ | ❌ (Node CLI shell-out) | ❌ (Node 18+ + TS server) | ✅ (embedded) |
+| The AI **sees** the running game (screenshot, live tree, live state) | ✅ **free** | ✅ | ⚠️ CLI debug output only | ✅ (paid) | ✅ (free) |
+| The AI **drives + asserts** (playtest: input, clicks, asserts) | ❌ | ✅ | ❌ | ✅ (input record/replay) | ⚠️ partial |
+| Validate-before-write (refuses non-compiling GDScript) | ✅ | ✅ | ❌ | ❌ | ❌ |
+| C# + GDScript | ✅ | ✅ | ❌ (GDScript) | ❌ (GDScript) | ❌ (GDScript) |
+| Godot 4.2+ | ✅ | ✅ | varies | varies | ❌ (4.6+ only) |
+| Tool count | 50 | 80 | ~12 | ~163 | 154 |
+
+*No trash talk intended: Coding-Solo is the mindshare leader (~4,000★), godot-mcp-pro ships the broadest curated toolset (~163) with input record/replay, and Native gives away 154 tools embedded. Beckett's bet is a smaller **reflection-generic** surface that reaches the whole engine, validate-before-write, both languages, 4.2+ reach, and *the AI seeing your game in the free tier*.*
 
 ## Use
 
-1. Copy `addons/beckett/` into your Godot **4.4+** project (verified on 4.4.1, 4.6.2 & 4.7) and enable **Beckett — MCP for Godot** in *Project → Project Settings → Plugins*.
-2. Done — enabling the plugin **auto-starts** the server and **writes `.mcp.json`**. (Opt out: `beckett/autostart=false`, `beckett/auto_write_client_config=false`. Other options: `BECKETT_PORT` default `8770`, `BECKETT_TOKEN`, `BECKETT_READONLY=1`, `BECKETT_ALLOWLIST`, `BECKETT_CONFIRM_DESTRUCTIVE=1`. Panel has Start/Stop.)
+1. **Install from the editor.** In Godot, open the **AssetLib** tab, search **"Beckett"**, and install ([asset #5296](https://godotengine.org/asset-library/asset/5296)). Or copy `addons/beckett/` into your project manually.
+2. Enable **Beckett — MCP for Godot** in *Project → Project Settings → Plugins* (works on Godot **4.2+**; verified on 4.4.1, 4.6.2 & 4.7). Enabling it **auto-starts** the server and **writes `.mcp.json`**. (Opt out: `beckett/autostart=false`, `beckett/auto_write_client_config=false`. Other options: `BECKETT_PORT` default `8770`, `BECKETT_TOKEN`, `BECKETT_READONLY=1`, `BECKETT_ALLOWLIST`, `BECKETT_CONFIRM_DESTRUCTIVE=1`. Panel has Start/Stop.)
 3. Connect your client. For **Claude Code**, just run `claude` in the project — the auto-written [`.mcp.json`](.mcp.json) wires it up (`/mcp` → **beckett**). For Cursor/others, point at `http://127.0.0.1:8770/mcp` (Streamable HTTP) or use the panel's **Set up …** buttons. See [INSTALL.md](INSTALL.md).
 
 ## Status
 
-This is the free, MIT-licensed **Lite** edition — the **inspect + author + run** core: reflection/discovery, scene & script authoring, **signals**, **resource create/assign**, **files & project settings**, the **play → wait → `logs_read`** dev loop, and **Resources + Prompts + dock panel**. **41 tools.** Built and verified live on Godot 4.4.1, 4.6.2 and 4.7 (headless editor + a real HTTP MCP client).
+This is the free, MIT-licensed **Lite** edition — the **inspect → author → run → see** core: reflection/discovery, scene & script authoring for **GDScript and C#** (with `build_csharp` compile-check), **signals**, **resource create/assign**, **files & project settings**, the **play → wait → `logs_read`** dev loop, and the **runtime-observation** tools that let the AI *see* the running game (`screenshot`, `get_remote_tree`, live node state, perf monitors, `game_logs`), plus **Resources + Prompts + dock panel**. **50 tools.** Built and verified live on Godot 4.4.1, 4.6.2 and 4.7 (headless editor + a real HTTP MCP client).
 
-The **Full** edition adds the agent-driven play-test layer (screenshots, input injection, UI clicks, assertions, the test runner, `animation_manage`), background export jobs, and the bundled skill packs — it can *see and drive* the running game.
+The **Full** edition adds the agent-driven play-test layer (the AI drives input, clicks 2D/3D and UI, and asserts results): the test runner (`test_run`), animation tools (`animation_manage`), `scatter_nodes`, background export jobs, project-wide analysis, and the 37 bundled skill packs. It *playtests* the running game.
 
 ## License
 
