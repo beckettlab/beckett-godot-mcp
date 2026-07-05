@@ -1,0 +1,1209 @@
+[
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Instantiate a bundled (or project) template into res:// in one call â copies its files and, if the template declares a main_scene, sets and opens it. Generic: a template can be a game starter, a UI screen, a settings menu, a test harness. Project templates under res://.beckett/templates/ override bundled ones. Call with no \u0027template\u0027 to list what\u0027s available.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "force":  {
+                                                             "description":  "overwrite existing res:// files (default false)",
+                                                             "type":  "boolean"
+                                                         },
+                                               "template":  {
+                                                                "description":  "template name, e.g. platformer-2d",
+                                                                "type":  "string"
+                                                            }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "apply_template"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Attach a script (res:// path) to a node in the open scene (undoable).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "path":  {
+                                                            "type":  "string"
+                                                        },
+                                               "target":  {
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "required":  [
+                                             "target",
+                                             "path"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "attach_script"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Run several tool calls in one request, in order. steps = [{tool, args}]. Stops at the first failure (stop_on_error, default true). When a step fails, scene edits made by the batch are rolled back via the editor undo history (rollback, default true) â file/resource writes are not. Use to collapse multi-step authoring (create node â set props â attach script) into one atomic call.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "rollback":  {
+                                                                "description":  "undo scene edits on failure (default true)",
+                                                                "type":  "boolean"
+                                                            },
+                                               "steps":  {
+                                                             "description":  "ordered [{tool: name, args: {...}}]",
+                                                             "items":  {
+                                                                           "type":  "object"
+                                                                       },
+                                                             "type":  "array"
+                                                         },
+                                               "stop_on_error":  {
+                                                                     "description":  "halt on first failure (default true)",
+                                                                     "type":  "boolean"
+                                                                 }
+                                           },
+                            "required":  [
+                                             "steps"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "batch_execute"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Compile-check a C#/.NET Godot project with `dotnet build`, returning structured diagnostics (errors/warnings with file:line:col + CS-code). Isolated build (scratch output) â never touches the editor\u0027s loaded assembly, so it\u0027s safe while the editor is open. Auto-detects the .csproj if omitted. Needs the .NET SDK (already installed for any C# Godot project). First build restores packages (slower); incremental ~1-3s. Use after editing .cs â the GDScript compile-gate (write_script) does NOT cover C#.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "configuration":  {
+                                                                     "description":  "Debug (default) or Release",
+                                                                     "type":  "string"
+                                                                 },
+                                               "csproj":  {
+                                                              "description":  "res:// or absolute path to the .csproj; auto-detected from the project if omitted",
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "build_csharp"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  true,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Invoke a method on a resolved object. args = a positional array. Returns the result as JSON.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "args":  {
+                                                            "type":  "array"
+                                                        },
+                                               "method":  {
+                                                              "type":  "string"
+                                                          },
+                                               "target":  {
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "required":  [
+                                             "target",
+                                             "method"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "call_method"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Connect a node\u0027s signal to a method on another node, persisted into the scene (undoable). from/to = node path/name in the open scene.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "from":  {
+                                                            "type":  "string"
+                                                        },
+                                               "method":  {
+                                                              "type":  "string"
+                                                          },
+                                               "signal":  {
+                                                              "type":  "string"
+                                                          },
+                                               "to":  {
+                                                          "type":  "string"
+                                                      }
+                                           },
+                            "required":  [
+                                             "from",
+                                             "signal",
+                                             "to",
+                                             "method"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "connect_signal"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Create a node of the given class and add it to the open scene (undoable). parent = a node path/name (default: scene root).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "name":  {
+                                                            "type":  "string"
+                                                        },
+                                               "parent":  {
+                                                              "description":  "parent node path/name; default scene root",
+                                                              "type":  "string"
+                                                          },
+                                               "type":  {
+                                                            "description":  "node class, e.g. Sprite2D",
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "required":  [
+                                             "type"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "create_node"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  true,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Create a Resource of the given class and save it to a res:// path (.tres). Optional \u0027properties\u0027 dict sets initial values.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "class":  {
+                                                             "type":  "string"
+                                                         },
+                                               "path":  {
+                                                            "description":  "res:// path ending in .tres/.res",
+                                                            "type":  "string"
+                                                        },
+                                               "properties":  {
+                                                                  "type":  "object"
+                                                              }
+                                           },
+                            "required":  [
+                                             "class",
+                                             "path"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "create_resource"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  true,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Remove a node from the open scene (undoable).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "target":  {
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "required":  [
+                                             "target"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "delete_node"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "List a class\u0027s properties and methods (with signatures) so you know exactly what to set_property / call_method. The discovery key for full domain coverage.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "class":  {
+                                                             "type":  "string"
+                                                         },
+                                               "inherited":  {
+                                                                 "description":  "include inherited members (default false)",
+                                                                 "type":  "boolean"
+                                                             }
+                                           },
+                            "required":  [
+                                             "class"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "describe_class"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Dump a live object\u0027s properties as JSON. target = a res:// path, a node name/path in the open scene, or a class name (falls back to describe_class).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "target":  {
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "required":  [
+                                             "target"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "describe_object"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Disconnect a previously connected signal (undoable).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "from":  {
+                                                            "type":  "string"
+                                                        },
+                                               "method":  {
+                                                              "type":  "string"
+                                                          },
+                                               "signal":  {
+                                                              "type":  "string"
+                                                          },
+                                               "to":  {
+                                                          "type":  "string"
+                                                      }
+                                           },
+                            "required":  [
+                                             "from",
+                                             "signal",
+                                             "to",
+                                             "method"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "disconnect_signal"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Duplicate a node (with its children) under the same parent (undoable). Optional \u0027name\u0027 for the copy.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "name":  {
+                                                            "type":  "string"
+                                                        },
+                                               "target":  {
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "required":  [
+                                             "target"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "duplicate_node"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Search classes by name substring â engine classes AND your project\u0027s own types (GDScript class_name + C# [GlobalClass]). Optional \u0027base\u0027 restricts to subclasses (e.g. base=Node2D). The discovery entry point â pair with describe_class.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "base":  {
+                                                            "description":  "only subclasses of this class",
+                                                            "type":  "string"
+                                                        },
+                                               "max":  {
+                                                           "description":  "max results (default 50)",
+                                                           "type":  "integer"
+                                                       },
+                                               "query":  {
+                                                             "description":  "case-insensitive name substring",
+                                                             "type":  "string"
+                                                         }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "find_classes"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Search methods by name substring, optionally restricted to a class (incl. inherited). Any result is invokable via call_method.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "class":  {
+                                                             "type":  "string"
+                                                         },
+                                               "max":  {
+                                                           "type":  "integer"
+                                                       },
+                                               "query":  {
+                                                             "type":  "string"
+                                                         }
+                                           },
+                            "required":  [
+                                             "query"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "find_methods"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Find LIVE nodes in the RUNNING game by type and/or name; returns their paths to feed into runtime_call/runtime_get_property/runtime_set_property. \u0027class\u0027 matches native classes AND custom class_name scripts (is_class alone misses custom nodes â they read as @Node@NN). name=substring on the node name. path=scope root (default scene root). recursive=true. max=cap (default 100).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "class":  {
+                                                             "type":  "string"
+                                                         },
+                                               "max":  {
+                                                           "type":  "integer"
+                                                       },
+                                               "name":  {
+                                                            "type":  "string"
+                                                        },
+                                               "path":  {
+                                                            "type":  "string"
+                                                        },
+                                               "recursive":  {
+                                                                 "type":  "boolean"
+                                                             }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "find_nodes"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Read the RUNNING game\u0027s captured output off the runtime channel (real-time, no file logging): runtime SCRIPT errors WITH stack traces, push_error/push_warning, and print(). This is the play-\u003esee-error-\u003efix signal â the blind spot logs_read (file-based) can\u0027t reliably cover. level=error (default: errors+script+shader) | warning (adds warnings) | all (adds print/stderr). limit=newest N (default 100), filter=substring, clear=true empties the buffer after reading.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "clear":  {
+                                                             "type":  "boolean"
+                                                         },
+                                               "filter":  {
+                                                              "type":  "string"
+                                                          },
+                                               "level":  {
+                                                             "description":  "error | warning | all",
+                                                             "type":  "string"
+                                                         },
+                                               "limit":  {
+                                                             "type":  "integer"
+                                                         }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "game_logs"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Return the running Godot engine version info.",
+        "inputSchema":  {
+                            "properties":  {
+
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "get_godot_version"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics). target=game (default when a play session is connected) samples the RUNNING game; target=editor samples the editor.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "target":  {
+                                                              "description":  "game | editor | auto",
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "get_performance_monitors"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Report whether a scene is playing and whether the runtime channel to the game is connected.",
+        "inputSchema":  {
+                            "properties":  {
+
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "get_play_state"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Read a ProjectSettings value by its property path (e.g. application/run/main_scene). Pass it as \u0027setting\u0027 (\u0027name\u0027 is also accepted).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "name":  {
+                                                            "type":  "string"
+                                                        },
+                                               "setting":  {
+                                                               "type":  "string"
+                                                           }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "get_project_setting"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Project overview: file/script/scene/resource counts, total GDScript lines, autoloads, main scene, input-action count, Godot version. Read-only static scan.",
+        "inputSchema":  {
+                            "properties":  {
+
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "get_project_statistics"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Dump the live scene tree of the RUNNING game (runtime counterpart of get_scene_tree). SCOPE IT to stay under token limits â a full game tree blows the budget. path=subtree root (name, relative, or absolute /root/...); depth=levels (-1=all); max_nodes (default 250); max_children per node (default 50); collapse=true groups runs of identical leaf siblings (e.g. \u00278x CPUParticles2D\u0027). Returns {tree, node_count, truncated?}.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "collapse":  {
+                                                                "type":  "boolean"
+                                                            },
+                                               "depth":  {
+                                                             "type":  "integer"
+                                                         },
+                                               "max_children":  {
+                                                                    "type":  "integer"
+                                                                },
+                                               "max_nodes":  {
+                                                                 "type":  "integer"
+                                                             },
+                                               "path":  {
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "get_remote_tree"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Return the node tree of the scene currently open in the editor (name/class/script, nested).",
+        "inputSchema":  {
+                            "properties":  {
+
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "get_scene_tree"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Instantiate a packed scene (res://*.tscn) as a child in the open scene (undoable).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "name":  {
+                                                            "type":  "string"
+                                                        },
+                                               "parent":  {
+                                                              "type":  "string"
+                                                          },
+                                               "scene":  {
+                                                             "description":  "res:// path to a .tscn/.scn",
+                                                             "type":  "string"
+                                                         }
+                                           },
+                            "required":  [
+                                             "scene"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "instance_scene"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "List entries (dirs + files) of a res:// directory.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "path":  {
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "list_dir"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "List a node\u0027s signals and their current connections (target node + method).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "target":  {
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "required":  [
+                                             "target"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "list_signals"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Tail Godot\u0027s log FILE (the editor session and any played game log here). For the RUNNING game\u0027s errors/stack traces/prints in REAL TIME, prefer game_logs (runtime channel, no file needed) â this file reader is a fallback and needs file logging enabled (off by default; the result tells you how). Optional: level=\u0027error\u0027|\u0027warning\u0027, \u0027filter\u0027 substring, \u0027lines\u0027 (default 200), \u0027path\u0027 to override.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "filter":  {
+                                                              "description":  "keep only lines containing this substring",
+                                                              "type":  "string"
+                                                          },
+                                               "level":  {
+                                                             "description":  "error | warning â keep only matching lines",
+                                                             "type":  "string"
+                                                         },
+                                               "lines":  {
+                                                             "description":  "tail this many lines (default 200)",
+                                                             "type":  "integer"
+                                                         },
+                                               "path":  {
+                                                            "description":  "override log path (default the project\u0027s log_path)",
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "logs_read"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Sample a node\u0027s property in the running game over several frames (detect movement/changes). Returns the sample series.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "interval_ms":  {
+                                                                   "type":  "integer"
+                                                               },
+                                               "path":  {
+                                                            "type":  "string"
+                                                        },
+                                               "property":  {
+                                                                "type":  "string"
+                                                            },
+                                               "samples":  {
+                                                               "type":  "integer"
+                                                           }
+                                           },
+                            "required":  [
+                                             "path",
+                                             "property"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "monitor_properties"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Reorder a node within its parent to a new child index (undoable).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "target":  {
+                                                              "type":  "string"
+                                                          },
+                                               "to_index":  {
+                                                                "type":  "integer"
+                                                            }
+                                           },
+                            "required":  [
+                                             "target",
+                                             "to_index"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "move_node"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Open a scene by res:// path in the editor (makes it the edited scene).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "path":  {
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "required":  [
+                                             "path"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "open_scene"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Play a scene in the editor. \u0027scene\u0027 (res://) plays a specific scene; current=true plays the open scene; otherwise the project\u0027s main scene. Then wait_until condition=play_started, and logs_read for errors.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "current":  {
+                                                               "type":  "boolean"
+                                                           },
+                                               "scene":  {
+                                                             "description":  "res:// path; omit for main/current",
+                                                             "type":  "string"
+                                                         }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "play_scene"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Read a text file by res:// (or user://) path.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "path":  {
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "required":  [
+                                             "path"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "read_file"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Read a script/text file from res://.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "path":  {
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "required":  [
+                                             "path"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "read_script"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Rename a node in the open scene (undoable).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "name":  {
+                                                            "type":  "string"
+                                                        },
+                                               "target":  {
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "required":  [
+                                             "target",
+                                             "name"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "rename_node"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Move a node under a new parent in the open scene (undoable).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "new_parent":  {
+                                                                  "type":  "string"
+                                                              },
+                                               "target":  {
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "required":  [
+                                             "target",
+                                             "new_parent"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "reparent_node"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Read a property of a node in the RUNNING game. Address by path (node path/name) OR a live selector: class (native or custom class_name) / name / text [+ nth, default 0]. The selector resolves fresh each call â no need to re-fetch volatile @Node@NN paths. Returns the value plus the \u0027resolved\u0027 path that matched.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "class":  {
+                                                             "type":  "string"
+                                                         },
+                                               "name":  {
+                                                            "type":  "string"
+                                                        },
+                                               "nth":  {
+                                                           "type":  "integer"
+                                                       },
+                                               "path":  {
+                                                            "type":  "string"
+                                                        },
+                                               "property":  {
+                                                                "type":  "string"
+                                                            },
+                                               "text":  {
+                                                            "type":  "string"
+                                                        },
+                                               "under":  {
+                                                             "type":  "string"
+                                                         }
+                                           },
+                            "required":  [
+                                             "property"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "runtime_get_property"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Save the scene currently open in the editor. Pass \u0027path\u0027 (res://) to save-as.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "path":  {
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "save_scene"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Capture an image the agent can see (inline PNG). target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport. region=[x,y,w,h] in pixels crops to that rect (clamped) to save tokens â screenshot full once to learn the size, then crop.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "region":  {
+                                                              "description":  "[x,y,w,h] pixel crop",
+                                                              "type":  "array"
+                                                          },
+                                               "target":  {
+                                                              "description":  "game | editor",
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "screenshot"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  true,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Surgically edit an existing res:// file without rewriting it whole. edits = an ordered array; each item is {find, replace[, all]} (find must match EXACTLY once unless all:true), {append: text}, or {prepend: text}. Atomic + safe: nothing is written if any anchor is missing/ambiguous or (for .gd) the result fails to compile. Prefer this over write_script for small changes.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "edits":  {
+                                                             "description":  "[{find, replace, all?} | {append} | {prepend}] applied in order",
+                                                             "items":  {
+                                                                           "type":  "object"
+                                                                       },
+                                                             "type":  "array"
+                                                         },
+                                               "path":  {
+                                                            "description":  "res:// path to an existing file",
+                                                            "type":  "string"
+                                                        },
+                                               "validate":  {
+                                                                "description":  "compile-check the result before writing (default true, .gd only)",
+                                                                "type":  "boolean"
+                                                            }
+                                           },
+                            "required":  [
+                                             "path",
+                                             "edits"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "script_patch"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Search file contents under res:// for a substring (or regex with regex=true). Returns file:line matches.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "ext":  {
+                                                           "description":  "restrict to one extension, e.g. gd",
+                                                           "type":  "string"
+                                                       },
+                                               "max":  {
+                                                           "type":  "integer"
+                                                       },
+                                               "query":  {
+                                                             "type":  "string"
+                                                         },
+                                               "regex":  {
+                                                             "type":  "boolean"
+                                                         }
+                                           },
+                            "required":  [
+                                             "query"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "search_files"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  true,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Set a ProjectSettings value and persist project.godot. The property path goes in \u0027setting\u0027 (\u0027name\u0027 is also accepted); e.g. set application/run/main_scene to res://main.tscn.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "name":  {
+                                                            "type":  "string"
+                                                        },
+                                               "setting":  {
+                                                               "type":  "string"
+                                                           },
+                                               "value":  {
+
+                                                         }
+                                           },
+                            "required":  [
+                                             "value"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "set_project_setting"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  true,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Set a property on a resolved object (undoable). value is coerced to the property\u0027s type (vectors accept \"x y z\" or [x,y,z]).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "property":  {
+                                                                "type":  "string"
+                                                            },
+                                               "target":  {
+                                                              "type":  "string"
+                                                          },
+                                               "value":  {
+                                                             "description":  "any JSON value"
+                                                         }
+                                           },
+                            "required":  [
+                                             "target",
+                                             "property",
+                                             "value"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "set_property"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Assign a resource to a node\u0027s property (undoable). Use \u0027resource\u0027 (res:// path to load) OR \u0027class\u0027 (mint a new inline sub-resource of that class). e.g. set Sprite2D.texture from a path, or a fresh RectangleShape2D on CollisionShape2D.shape.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "class":  {
+                                                             "description":  "class to instantiate as a new inline sub-resource",
+                                                             "type":  "string"
+                                                         },
+                                               "property":  {
+                                                                "type":  "string"
+                                                            },
+                                               "resource":  {
+                                                                "description":  "res:// path of an existing resource",
+                                                                "type":  "string"
+                                                            },
+                                               "target":  {
+                                                              "type":  "string"
+                                                          }
+                                           },
+                            "required":  [
+                                             "target",
+                                             "property"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "set_resource"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Stop the running play session.",
+        "inputSchema":  {
+                            "properties":  {
+
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "stop_scene"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Parse/compile GDScript WITHOUT writing it. Pass \u0027content\u0027 (source) or \u0027path\u0027 (res://). Returns whether it compiles â use before write_script to catch hallucinated APIs.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "content":  {
+                                                               "type":  "string"
+                                                           },
+                                               "path":  {
+                                                            "description":  "res:// path to validate an existing file",
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "validate_script"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Block until a node appears in the RUNNING game (by path/name) or timeout. Use after play_scene to sync before driving.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "path":  {
+                                                            "type":  "string"
+                                                        },
+                                               "timeout_ms":  {
+                                                                  "type":  "integer"
+                                                              }
+                                           },
+                            "required":  [
+                                             "path"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "wait_for_node"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Wait for a condition. Blocks the editor at most ~1.5 s per call â longer would stall the editor\u0027s own game-launch pipeline and background jobs (they need main-thread frames). If not met yet it answers \u0027not yet\u0027: just call it again. condition = play_started | play_stopped | game_connected | seconds:N | file_exists:res://path.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "condition":  {
+                                                                 "type":  "string"
+                                                             },
+                                               "timeout_ms":  {
+                                                                  "type":  "integer"
+                                                              }
+                                           },
+                            "required":  [
+                                             "condition"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "wait_until"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  true,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Write a text file under res:// (or user://), path-traversal guarded. Refreshes the editor filesystem.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "content":  {
+                                                               "type":  "string"
+                                                           },
+                                               "path":  {
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "required":  [
+                                             "path",
+                                             "content"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "write_file"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  true,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Write a GDScript (or other text, e.g. .cs) file under res://. GDScript is validated first by default â refuses code that doesn\u0027t compile; non-.gd files (C#, configâ¦) are written as-is (use build_csharp to compile-check C#). Set validate=false to force.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "content":  {
+                                                               "type":  "string"
+                                                           },
+                                               "path":  {
+                                                            "description":  "res:// path, e.g. res://player.gd",
+                                                            "type":  "string"
+                                                        },
+                                               "validate":  {
+                                                                "description":  "validate before writing (default true)",
+                                                                "type":  "boolean"
+                                                            }
+                                           },
+                            "required":  [
+                                             "path",
+                                             "content"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "write_script"
+    }
+]

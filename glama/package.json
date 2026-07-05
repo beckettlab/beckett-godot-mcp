@@ -1,0 +1,15 @@
+{
+  "name": "beckett-godot-mcp-glama-shim",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Directory-inspection stdio shim that serves Beckett's tool definitions to the Glama MCP registry (https://glama.ai) for quality scoring. Not the product: Beckett is a zero-sidecar MCP server embedded in the Godot 4 editor.",
+  "type": "commonjs",
+  "main": "server.js",
+  "bin": {
+    "beckett-godot-mcp-glama-shim": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "MIT"
+}
