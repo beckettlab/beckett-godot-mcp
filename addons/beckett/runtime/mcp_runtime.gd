@@ -729,6 +729,30 @@ func _build_event(e: Dictionary) -> InputEvent:
 			mm.position = _vec2(e.get("position", [0, 0]))
 			mm.relative = _vec2(e.get("relative", [0, 0]))
 			return mm
+		"joy_button":
+			var jb := InputEventJoypadButton.new()
+			jb.button_index = int(e.get("button", 0))
+			jb.pressed = bool(e.get("pressed", true))
+			jb.device = int(e.get("device", 0))
+			return jb
+		"joy_axis":
+			var ja := InputEventJoypadMotion.new()
+			ja.axis = int(e.get("axis", 0))
+			ja.axis_value = clampf(float(e.get("value", 0.0)), -1.0, 1.0)
+			ja.device = int(e.get("device", 0))
+			return ja
+		"touch":
+			var st := InputEventScreenTouch.new()
+			st.index = int(e.get("index", 0))
+			st.position = _vec2(e.get("position", [0, 0]))
+			st.pressed = bool(e.get("pressed", true))
+			return st
+		"touch_drag":
+			var sd := InputEventScreenDrag.new()
+			sd.index = int(e.get("index", 0))
+			sd.position = _vec2(e.get("position", [0, 0]))
+			sd.relative = _vec2(e.get("relative", [0, 0]))
+			return sd
 		_:
 			return null
 
@@ -1260,6 +1284,18 @@ func _serialize_event(e: InputEvent) -> Dictionary:
 	if e is InputEventMouseMotion:
 		var mm := e as InputEventMouseMotion
 		return {"type": "mouse_motion", "position": [mm.position.x, mm.position.y], "relative": [mm.relative.x, mm.relative.y]}
+	if e is InputEventJoypadButton:
+		var jb := e as InputEventJoypadButton
+		return {"type": "joy_button", "button": jb.button_index, "pressed": jb.pressed, "device": jb.device}
+	if e is InputEventJoypadMotion:
+		var ja := e as InputEventJoypadMotion
+		return {"type": "joy_axis", "axis": ja.axis, "value": ja.axis_value, "device": ja.device}
+	if e is InputEventScreenTouch:
+		var st := e as InputEventScreenTouch
+		return {"type": "touch", "index": st.index, "position": [st.position.x, st.position.y], "pressed": st.pressed}
+	if e is InputEventScreenDrag:
+		var sd := e as InputEventScreenDrag
+		return {"type": "touch_drag", "index": sd.index, "position": [sd.position.x, sd.position.y], "relative": [sd.relative.x, sd.relative.y]}
 	return {}
 
 

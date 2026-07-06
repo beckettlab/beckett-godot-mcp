@@ -332,7 +332,7 @@ func _instructions() -> String:
 			+ " If the user asks for one of those, say it needs the Full edition (upgrade link on the Beckett dock panel).")
 	return ("Beckett — MCP for Godot, Full edition. " + core
 		+ " Loop: author -> play_scene -> wait_until game_connected -> playtest (screenshot, simulate_input, click_button_by_text, assert_*, test_run) -> logs_read -> fix -> export_project (background; poll job_status)."
-		+ " Call list_skills early: 37 knowledge packs name the exact classes/properties/methods per domain (physics, shaders, animation, multiplayer, ...)."
+		+ " Call list_skills early: 40 knowledge packs name the exact classes/properties/methods per domain (physics, shaders, animation, multiplayer, ...)."
 		+ " For a 'make me a game' request, however vague: load_skill name=game-oneshot FIRST and follow it — it expands the idea, routes to a genre blueprint pack, and gates each build phase.")
 
 func _dispatch(id: Variant, rpc_method: String, params: Dictionary) -> Dictionary:
