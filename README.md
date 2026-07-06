@@ -89,14 +89,14 @@ Beckett is one of only a few *embedded* (zero-sidecar) servers in the field, and
 ## Use
 
 1. **Install from the editor.** In Godot, open the **AssetLib** tab, search **"Beckett"**, and install ([asset #5296](https://godotengine.org/asset-library/asset/5296)). Or copy `addons/beckett/` into your project manually.
-2. Enable **Beckett — MCP for Godot** in *Project → Project Settings → Plugins* (works on Godot **4.2+**; verified on 4.4.1, 4.6.2 & 4.7). Enabling it **auto-starts** the server and **writes `.mcp.json`**. (Opt out: `beckett/autostart=false`, `beckett/auto_write_client_config=false`. Other options: `BECKETT_PORT` default `8770`, `BECKETT_TOKEN`, `BECKETT_READONLY=1`, `BECKETT_ALLOWLIST`, `BECKETT_CONFIRM_DESTRUCTIVE=1`. Panel has Start/Stop.)
+2. Enable **Beckett — MCP for Godot** in *Project → Project Settings → Plugins* (works on Godot **4.2+**; verified on 4.4.1, 4.6.2 & 4.7, CI-tested on Windows, Linux & macOS). Enabling it **auto-starts** the server and **writes `.mcp.json`**. (Opt out: `beckett/autostart=false`, `beckett/auto_write_client_config=false`. Other options: `BECKETT_PORT` default `8770`, `BECKETT_TOKEN`, `BECKETT_READONLY=1`, `BECKETT_ALLOWLIST`, `BECKETT_CONFIRM_DESTRUCTIVE=1`. Panel has Start/Stop.)
 3. Connect your client. For **Claude Code**, just run `claude` in the project — the auto-written [`.mcp.json`](.mcp.json) wires it up (`/mcp` → **beckett**). For Cursor/others, point at `http://127.0.0.1:8770/mcp` (Streamable HTTP) or use the panel's **Set up …** buttons. See [INSTALL.md](INSTALL.md).
 
 ## Status
 
-This is the free, MIT-licensed **Lite** edition — the **inspect → author → run → see** core: reflection/discovery, scene & script authoring for **GDScript and C#** (with `build_csharp` compile-check), **signals**, **resource create/assign**, **files & project settings**, the **play → wait → `logs_read`** dev loop, and the **runtime-observation** tools that let the AI *see* the running game (`screenshot`, `get_remote_tree`, live node state, perf monitors, `game_logs`), plus **Resources + Prompts + dock panel**. **50 tools.** Built and verified live on Godot 4.4.1, 4.6.2 and 4.7 (headless editor + a real HTTP MCP client).
+This is the free, MIT-licensed **Lite** edition — the **inspect → author → run → see** core: reflection/discovery, scene & script authoring for **GDScript and C#** (with `build_csharp` compile-check), **signals**, **resource create/assign**, **files & project settings**, the **play → wait → `logs_read`** dev loop, and the **runtime-observation** tools that let the AI *see* the running game (`screenshot`, `get_remote_tree`, live node state, perf monitors, `game_logs`), plus **Resources + Prompts + dock panel**. **50 tools.** Built and verified live on Godot 4.4.1, 4.6.2 and 4.7 (headless editor + a real HTTP MCP client), and CI-tested on every push across Windows, Linux, and macOS.
 
-The **Full** edition adds the agent-driven play-test layer (the AI drives input, clicks 2D/3D and UI, and asserts results): the test runner (`test_run`), animation tools (`animation_manage`), `scatter_nodes`, background export jobs, project-wide analysis, and the 37 bundled skill packs. It *playtests* the running game.
+The **Full** edition adds the agent-driven play-test layer (the AI drives input, clicks 2D/3D and UI, and asserts results): the test runner (`test_run`), animation tools (`animation_manage`), `scatter_nodes`, background export jobs, project-wide analysis, and the 40 bundled skill packs. It *playtests* the running game.
 
 ## License
 
