@@ -25,7 +25,3 @@ BeckettRuntime="*res://addons/beckett/runtime/mcp_runtime.gd"
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/beckett/plugin.cfg")
-
-[beckett]
-
-effort=3
