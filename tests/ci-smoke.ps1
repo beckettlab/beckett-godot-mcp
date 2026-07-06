@@ -175,6 +175,23 @@ try {
     if ($count -ne $ExpectedTools) {
         $names = (@($tools | ForEach-Object { $_.name }) | Sort-Object) -join ', '
         Write-Host "  tools were: $names" -ForegroundColor DarkYellow
+        # Forensics: distinguish "module never registered" (file missing / loader said no)
+        # from "effort-capped" (registered but filtered out of tools/list).
+        Write-Host "  [diag] addons/beckett/tools/*.gd on disk:" -ForegroundColor DarkYellow
+        Get-ChildItem -Path (Join-Path $ProjectPath 'addons/beckett/tools') -Filter '*.gd' -Name -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "    $_" -ForegroundColor DarkYellow }
+        foreach ($setting in @('beckett/effort', 'beckett/effort_schema')) {
+            try {
+                $v = (Invoke-Rpc @{
+                        jsonrpc = '2.0'; id = 9; method = 'tools/call'
+                        params  = @{ name = 'get_project_setting'; arguments = @{ setting = $setting } }
+                    }).result
+                $txt = (@($v.content | Where-Object { $_.type -eq 'text' }) | Select-Object -First 1).text
+                Write-Host "  [diag] $setting -> $txt" -ForegroundColor DarkYellow
+            } catch {
+                Write-Host "  [diag] $setting -> probe failed: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            }
+        }
     }
 }
 finally {

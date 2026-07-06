@@ -17,3 +17,6 @@ dist/
 nul
 *.tmp
 .tmp_findings/
+
+# Registry publish tool (downloaded per-release, never ship it)
+mcp-publisher.exe
