@@ -20,6 +20,7 @@ var _was_connected := false
 var _recording := false
 var _rec: Array = []
 var _rec_t0 := 0
+var _rec_f0 := 0                  # Engine.get_physics_frames() at record_start; events stamp the frame delta 'f' for deterministic (frame-stepped) replay
 
 # Deterministic playtest control (time_control tool). A stepping WINDOW can't run
 # inside a single bridge handler — physics only advances between frames, and the
@@ -41,6 +42,18 @@ var _step_result := ""            # terminator that closed the last window: done
 var _step_cond_value = null       # last evaluated condition value (for step_until reporting)
 var _resume_paused := true        # re-pause when the window closes (step always leaves paused)
 var _step_open_frame := 0         # Engine.get_physics_frames() snapshotted when the window opened (delta base)
+
+# Deterministic input replay window (playtest op=run). Mirrors the stepping window above:
+# unpause, run UNPAUSED physics ticks, inject each event when the tick index reaches its
+# recorded frame stamp 'f', then re-pause so asserts read a settled, reproducible state.
+# Injection happens mid-frame while UNPAUSED, so both _input() callbacks AND polled Input.*
+# state see it (a paused inject would miss pausable nodes' _input).
+var _replaying := false
+var _replay_events: Array = []
+var _replay_i := 0
+var _replay_tick := 0
+var _replay_end := 0
+var _replay_injected := 0
 
 # Captured game output — runtime script errors WITH stack traces, push_error/warning,
 # and print() — via a custom OS Logger installed in the played game. This is the
@@ -90,6 +103,7 @@ func _input(event: InputEvent) -> void:
 	var d := _serialize_event(event)
 	if not d.is_empty():
 		d["t"] = float(Time.get_ticks_msec() - _rec_t0)
+		d["f"] = Engine.get_physics_frames() - _rec_f0
 		_rec.append(d)
 
 
@@ -136,6 +150,11 @@ func _process(delta: float) -> void:
 # ticks that happen while the tree is genuinely UNPAUSED, so a step of N advances
 # the game by exactly N physics frames (paused ticks in between never count).
 func _physics_process(_delta: float) -> void:
+	if _replaying:
+		var rtree := get_tree()
+		if rtree != null and not rtree.paused:
+			_replay_step_tick()
+		return
 	if not _stepping:
 		return
 	var tree := get_tree()
@@ -191,6 +210,53 @@ func _eval_step_condition() -> bool:
 		return false
 	_step_cond_value = _safe(v)
 	return bool(v)
+
+
+## Open a deterministic replay window: sort events by frame stamp, unpause, and let
+## _physics_process inject them tick-by-tick. The editor polls replay_status until it closes.
+func _replay_open(msg: Dictionary) -> Dictionary:
+	var tree := get_tree()
+	if tree == null:
+		return {"ok": false, "error": "no scene tree"}
+	if _stepping:
+		return {"ok": false, "error": "a time_control step window is open — finish/unfreeze it before replay"}
+	var evs: Array = msg.get("events", []) if msg.get("events", []) is Array else []
+	var ordered := evs.duplicate()
+	ordered.sort_custom(func(a, b): return int(a.get("f", 0)) < int(b.get("f", 0)))
+	_replay_events = ordered
+	_replay_i = 0
+	_replay_tick = 0
+	_replay_injected = 0
+	var settle: int = maxi(0, int(msg.get("settle_frames", 4)))
+	var last_f := 0
+	if ordered.size() > 0:
+		last_f = int(ordered[ordered.size() - 1].get("f", 0))
+	_replay_end = last_f + settle
+	_replaying = true
+	_resume_paused = true
+	tree.paused = false
+	return {"ok": true, "started": true, "events": ordered.size(), "end_frame": _replay_end}
+
+
+## One UNPAUSED physics tick of the replay window (called from _physics_process): fire every
+## event whose recorded frame 'f' has arrived, advance the tick, and re-pause once all events
+## have fired and the settle margin has elapsed.
+func _replay_step_tick() -> void:
+	while _replay_i < _replay_events.size():
+		var ev: Dictionary = _replay_events[_replay_i]
+		if int(ev.get("f", 0)) > _replay_tick:
+			break
+		var ie := _build_event(ev)
+		if ie != null:
+			Input.parse_input_event(ie)
+			_replay_injected += 1
+		_replay_i += 1
+	_replay_tick += 1
+	if _replay_i >= _replay_events.size() and _replay_tick > _replay_end:
+		_replaying = false
+		var tree := get_tree()
+		if tree != null:
+			tree.paused = true
 
 
 func _handle(line: String) -> void:
@@ -259,10 +325,25 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 			_recording = true
 			_rec = []
 			_rec_t0 = Time.get_ticks_msec()
+			_rec_f0 = Engine.get_physics_frames()
 			return {"ok": true}
 		"record_stop":
 			_recording = false
 			return {"ok": true, "events": _rec.duplicate()}
+		"eval":
+			var er := _root()
+			var eb: Object = er if er != null else self
+			var eex := Expression.new()
+			if eex.parse(str(msg.get("expr", ""))) != OK:
+				return {"ok": false, "error": "expr parse error: %s" % eex.get_error_text()}
+			var eval_v: Variant = eex.execute([], eb, true)
+			if eex.has_execute_failed():
+				return {"ok": false, "error": "expr exec error: %s" % eex.get_error_text()}
+			return {"ok": true, "value": _safe(eval_v)}
+		"replay_open":
+			return _replay_open(msg)
+		"replay_status":
+			return {"ok": true, "replaying": _replaying, "injected": _replay_injected, "frames": _replay_tick, "total_events": _replay_events.size(), "remaining": _replay_events.size() - _replay_i, "paused": (get_tree() != null and get_tree().paused)}
 		"tc_freeze":
 			return _tc_freeze()
 		"tc_unfreeze":

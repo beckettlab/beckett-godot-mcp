@@ -99,6 +99,8 @@ const _DELTA := {
 		# verify it
 		"assert_node_state", "assert_screen_text", "assert_scene", "compare_screenshots",
 		"test_run",
+		# save + rerun recorded playtests as regression suites (v1.8)
+		"playtest",
 		# animation authoring + playback
 		"animation_manage",
 		# scene authoring at scale (Scene Paint analog)
