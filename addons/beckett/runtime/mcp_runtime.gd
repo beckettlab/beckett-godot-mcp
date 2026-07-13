@@ -15,6 +15,7 @@ var _buf := PackedByteArray()
 var _port := 8771
 var _since_retry := 0.0
 var _was_connected := false
+var _hello_sent := false  # handshake line sent for the CURRENT connection (v1.9.1)
 
 # Input recording (record_input / replay_input over the bridge).
 var _recording := false
@@ -54,17 +55,12 @@ var _replay_i := 0
 var _replay_tick := 0
 var _replay_end := 0
 var _replay_injected := 0
-# Perf capture across the replay window (v1.9 "measured, not estimated"): real Performance
-# monitors sampled once per UNPAUSED tick — frame_ms = last process frame's cost (the thing
-# you optimize), fps = the engine's own frames-per-second read (what the player experiences,
-# vsync-capped; the engine refreshes it ~1/s so short windows repeat values). Baselines for
-# memory/orphan deltas snapshot at window open. Summarized FLAT in replay_status so playtest
-# perf asserts and baseline diffs address metrics by one stable name each.
-var _replay_perf_ms := PackedFloat64Array()
-var _replay_perf_fps := PackedFloat64Array()
-var _replay_perf_mem0 := 0.0
-var _replay_perf_orphan0 := 0.0
-const _REPLAY_PERF_CAP := 36000  # ~10 min @ 60 ticks/s — bound a runaway window's capture
+# Perf capture across the replay window (v1.9 "measured, not estimated") — extracted to its
+# own module in the v1.9.1 B7 split; see runtime/replay_perf.gd for the how and the why.
+const ReplayPerf := preload("res://addons/beckett/runtime/replay_perf.gd")
+var _replay_perf := ReplayPerf.new()
+# Wire-format <-> InputEvent codec (recorder, `input` cmd, replay injection) — B7 split.
+const InputCodec := preload("res://addons/beckett/runtime/input_codec.gd")
 
 # Captured game output — runtime script errors WITH stack traces, push_error/warning,
 # and print() — via a custom OS Logger installed in the played game. This is the
@@ -77,14 +73,29 @@ const _REPLAY_PERF_CAP := 36000  # ~10 min @ 60 ticks/s — bound a runaway wind
 # there's no such API, so capture gracefully no-ops and game_logs returns empty (see
 # _install_log_sink). Everything Logger-typed is kept out of parse scope — typed Object
 # here, the sink compiled at runtime — so this file still parses/loads on 4.2–4.4.
-const _LOG_CAP := 800
-var _log_ring: Array = []
-var _log_dropped := 0
-var _log_mutex := Mutex.new()
-var _logger: Object = null
+# Ring + runtime-compiled OS Logger — extracted to runtime/game_log_sink.gd (B7 split);
+# the 4.5+ parse-safety story lives there now.
+const GameLogSink := preload("res://addons/beckett/runtime/game_log_sink.gd")
+var _log_sink := GameLogSink.new()
 
 
 func _ready() -> void:
+	# Duplicate-autoload guard (v1.9.1; found by the rpg-village heavy-game test): a project
+	# upgraded across the godot_mcp->beckett rename can carry TWO autoload entries pointing
+	# at this same script. Both twins would dial the bridge with the same valid session
+	# token, and the newer one displaces the older MID-COMMAND — replay windows then report
+	# frames=0 from the wrong twin. Tie-break on child INDEX, not _ready order (Godot adds
+	# all autoloads before readying any, so the lowest-index twin is the deterministic
+	# winner whether _ready fires incrementally or all-at-once); every later twin goes
+	# dormant loudly. Comparing self.get_index() is order-independent — the earlier attempt
+	# that gated on "a same-script sibling exists" made BOTH twins dormant.
+	for sib in get_tree().root.get_children():
+		if sib != self and sib.get_script() == get_script() and sib.get_index() < get_index():
+			push_warning("[beckett] duplicate runtime autoload '%s' (twin of '%s') — staying dormant; remove the stale autoload entry from project.godot" % [name, sib.name])
+			set_process(false)
+			set_physics_process(false)
+			set_process_input(false)
+			return
 	# Keep serving while the game is paused (get_tree().paused = true) — pause
 	# menus and game-over screens are exactly when the agent needs to look at the
 	# game and click buttons; an INHERIT-mode autoload would freeze the channel.
@@ -97,21 +108,17 @@ func _ready() -> void:
 	set_process_input(true)
 	# Tap the game's own log stream (errors/warnings/stack traces/prints).
 	# Logger + OS.add_logger() are Godot 4.5+; on 4.2–4.4 this is a graceful no-op.
-	_install_log_sink()
+	_log_sink.install()
 
 
 func _exit_tree() -> void:
-	if _logger != null:
-		# OS.call(): OS.remove_logger() is compile-checked and absent on < 4.5; _logger is
-		# only ever non-null on 4.5+, so this dynamic call is only reached where it exists.
-		OS.call("remove_logger", _logger)
-		_logger = null
+	_log_sink.uninstall()
 
 
 func _input(event: InputEvent) -> void:
 	if not _recording:
 		return
-	var d := _serialize_event(event)
+	var d: Dictionary = InputCodec.serialize_event(event)
 	if not d.is_empty():
 		d["t"] = float(Time.get_ticks_msec() - _rec_t0)
 		d["f"] = Engine.get_physics_frames() - _rec_f0
@@ -120,6 +127,7 @@ func _input(event: InputEvent) -> void:
 
 func _dial() -> void:
 	_peer = StreamPeerTCP.new()
+	_hello_sent = false
 	_peer.connect_to_host("127.0.0.1", _port)
 
 
@@ -127,6 +135,13 @@ func _process(delta: float) -> void:
 	_peer.poll()
 	var st := _peer.get_status()
 	if st == StreamPeerTCP.STATUS_CONNECTED:
+		if not _hello_sent:
+			_hello_sent = true
+			# v1.9.1 handshake: identify to the editor bridge with the session token the
+			# editor exported into our environment (empty when auth is off — the bridge
+			# accepts either per its own expected_token). Sent exactly once per connection;
+			# the bridge consumes it before promoting us to the live peer.
+			_peer.put_data((JSON.stringify({"hello": OS.get_environment("BECKETT_RUNTIME_TOKEN")}) + "\n").to_utf8_buffer())
 		_was_connected = true
 		var avail := _peer.get_available_bytes()
 		if avail > 0:
@@ -238,10 +253,7 @@ func _replay_open(msg: Dictionary) -> Dictionary:
 	_replay_i = 0
 	_replay_tick = 0
 	_replay_injected = 0
-	_replay_perf_ms = PackedFloat64Array()
-	_replay_perf_fps = PackedFloat64Array()
-	_replay_perf_mem0 = Performance.get_monitor(Performance.MEMORY_STATIC)
-	_replay_perf_orphan0 = Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)
+	_replay_perf.begin()
 	var settle: int = maxi(0, int(msg.get("settle_frames", 4)))
 	var last_f := 0
 	if ordered.size() > 0:
@@ -257,14 +269,12 @@ func _replay_open(msg: Dictionary) -> Dictionary:
 ## event whose recorded frame 'f' has arrived, advance the tick, and re-pause once all events
 ## have fired and the settle margin has elapsed.
 func _replay_step_tick() -> void:
-	if _replay_perf_ms.size() < _REPLAY_PERF_CAP:
-		_replay_perf_ms.append(Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0)
-		_replay_perf_fps.append(Performance.get_monitor(Performance.TIME_FPS))
+	_replay_perf.tick()
 	while _replay_i < _replay_events.size():
 		var ev: Dictionary = _replay_events[_replay_i]
 		if int(ev.get("f", 0)) > _replay_tick:
 			break
-		var ie := _build_event(ev)
+		var ie: InputEvent = InputCodec.build_event(ev)
 		if ie != null:
 			Input.parse_input_event(ie)
 			_replay_injected += 1
@@ -275,42 +285,6 @@ func _replay_step_tick() -> void:
 		var tree := get_tree()
 		if tree != null:
 			tree.paused = true
-
-
-## Flat numeric summary of the replay window's perf capture ({} until a window has sampled).
-## Flat keys keep assert metric names and baseline diffing one-to-one: {type:"perf",
-## metric:"frame_ms_p95", max:16.7} reads exactly this dictionary. All values are measured
-## (Performance monitors), never modeled. Only meaningful for a WINDOWED game — headless has
-## no RHI, so frame_ms/fps/draw_calls there reflect a render-less loop (the headless runner
-## therefore skips those asserts; memory/orphan metrics stay valid everywhere).
-func _replay_perf_summary() -> Dictionary:
-	if _replay_perf_ms.is_empty():
-		return {}
-	var by_ms := _replay_perf_ms.duplicate()
-	by_ms.sort()
-	var n := by_ms.size()
-	var total := 0.0
-	for v in by_ms:
-		total += v
-	var fps_total := 0.0
-	var fps_min := 0.0
-	for i in _replay_perf_fps.size():
-		fps_total += _replay_perf_fps[i]
-		if i == 0 or _replay_perf_fps[i] < fps_min:
-			fps_min = _replay_perf_fps[i]
-	return {
-		"frames": n,
-		"frame_ms_min": by_ms[0],
-		"frame_ms_avg": total / float(n),
-		"frame_ms_p95": by_ms[clampi(int(ceil(float(n) * 0.95)) - 1, 0, n - 1)],
-		"frame_ms_max": by_ms[n - 1],
-		"fps_min": fps_min,
-		"fps_avg": fps_total / float(maxi(1, _replay_perf_fps.size())),
-		"memory_static_end": Performance.get_monitor(Performance.MEMORY_STATIC),
-		"memory_delta": Performance.get_monitor(Performance.MEMORY_STATIC) - _replay_perf_mem0,
-		"orphan_delta": Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT) - _replay_perf_orphan0,
-		"draw_calls_end": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
-	}
 
 
 func _handle(line: String) -> void:
@@ -374,7 +348,7 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 		"perf":
 			return {"ok": true, "monitors": _perf_monitors()}
 		"logs":
-			return _logs_cmd(msg)
+			return _log_sink.snapshot(msg)
 		"record_start":
 			_recording = true
 			_rec = []
@@ -397,7 +371,7 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 		"replay_open":
 			return _replay_open(msg)
 		"replay_status":
-			return {"ok": true, "replaying": _replaying, "injected": _replay_injected, "frames": _replay_tick, "total_events": _replay_events.size(), "remaining": _replay_events.size() - _replay_i, "paused": (get_tree() != null and get_tree().paused), "perf": _replay_perf_summary()}
+			return {"ok": true, "replaying": _replaying, "injected": _replay_injected, "frames": _replay_tick, "total_events": _replay_events.size(), "remaining": _replay_events.size() - _replay_i, "paused": (get_tree() != null and get_tree().paused), "perf": _replay_perf.summary()}
 		"tc_freeze":
 			return _tc_freeze()
 		"tc_unfreeze":
@@ -533,7 +507,7 @@ func _coerce_value(obj: Object, prop: String, value: Variant) -> Variant:
 		TYPE_STRING:
 			return str(value)
 		TYPE_VECTOR2:
-			return _vec2(value)
+			return InputCodec.vec2(value)
 		TYPE_VECTOR3:
 			return _vec3(value)
 		TYPE_COLOR:
@@ -831,73 +805,11 @@ func _run_input(events: Array) -> Dictionary:
 	for e in events:
 		if not (e is Dictionary):
 			continue
-		var ev := _build_event(e)
+		var ev: InputEvent = InputCodec.build_event(e)
 		if ev != null:
 			Input.parse_input_event(ev)
 			count += 1
 	return {"ok": true, "dispatched": count}
-
-
-func _build_event(e: Dictionary) -> InputEvent:
-	match str(e.get("type", "")):
-		"key":
-			var k := InputEventKey.new()
-			var kc: int = OS.find_keycode_from_string(str(e.get("keycode", "")))
-			k.keycode = kc
-			k.physical_keycode = kc
-			k.pressed = bool(e.get("pressed", true))
-			return k
-		"action":
-			var a := InputEventAction.new()
-			a.action = StringName(str(e.get("action", "")))
-			a.pressed = bool(e.get("pressed", true))
-			a.strength = float(e.get("strength", 1.0)) if e.get("pressed", true) else 0.0
-			return a
-		"mouse_button":
-			var mb := InputEventMouseButton.new()
-			mb.button_index = int(e.get("button", 1))
-			mb.pressed = bool(e.get("pressed", true))
-			mb.position = _vec2(e.get("position", [0, 0]))
-			return mb
-		"mouse_motion":
-			var mm := InputEventMouseMotion.new()
-			mm.position = _vec2(e.get("position", [0, 0]))
-			mm.relative = _vec2(e.get("relative", [0, 0]))
-			return mm
-		"joy_button":
-			var jb := InputEventJoypadButton.new()
-			jb.button_index = int(e.get("button", 0))
-			jb.pressed = bool(e.get("pressed", true))
-			jb.device = int(e.get("device", 0))
-			return jb
-		"joy_axis":
-			var ja := InputEventJoypadMotion.new()
-			ja.axis = int(e.get("axis", 0))
-			ja.axis_value = clampf(float(e.get("value", 0.0)), -1.0, 1.0)
-			ja.device = int(e.get("device", 0))
-			return ja
-		"touch":
-			var st := InputEventScreenTouch.new()
-			st.index = int(e.get("index", 0))
-			st.position = _vec2(e.get("position", [0, 0]))
-			st.pressed = bool(e.get("pressed", true))
-			return st
-		"touch_drag":
-			var sd := InputEventScreenDrag.new()
-			sd.index = int(e.get("index", 0))
-			sd.position = _vec2(e.get("position", [0, 0]))
-			sd.relative = _vec2(e.get("relative", [0, 0]))
-			return sd
-		_:
-			return null
-
-
-func _vec2(v: Variant) -> Vector2:
-	if v is Array and v.size() >= 2:
-		return Vector2(v[0], v[1])
-	if v is Dictionary:
-		return Vector2(v.get("x", 0), v.get("y", 0))
-	return Vector2.ZERO
 
 
 # ---------------------------------------------------------------- find (live nodes)
@@ -1205,7 +1117,7 @@ func _scroll_cmd(msg: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "no viewport"}
 	var pos: Vector2
 	if msg.has("position"):
-		pos = _vec2(msg.get("position", []))
+		pos = InputCodec.vec2(msg.get("position", []))
 	else:
 		var n := _resolve_target(msg)
 		if n == null:
@@ -1245,8 +1157,8 @@ func _drag_cmd(msg: Dictionary) -> Dictionary:
 	var t: Variant = msg.get("to", null)
 	if not (f is Array and (f as Array).size() >= 2 and t is Array and (t as Array).size() >= 2):
 		return {"ok": false, "error": "from and to must both be [x, y]"}
-	var from := _vec2(f)
-	var to := _vec2(t)
+	var from := InputCodec.vec2(f)
+	var to := InputCodec.vec2(t)
 	var button := int(msg.get("button", 1))
 	var mask := 1 << (button - 1)
 	var steps: int = clampi(int(msg.get("steps", 8)), 1, 60)
@@ -1317,157 +1229,8 @@ func _perf_monitors() -> Dictionary:
 
 
 # ---------------------------------------------------------------- log capture
-
-## Called by the OS Logger on every print() (and stderr writes).
-func _on_message(message: String, error: bool) -> void:
-	_push_log({"type": "stderr" if error else "print", "t": Time.get_ticks_msec(), "text": message})
+# (extracted to runtime/game_log_sink.gd in the v1.9.1 B7 split; `logs` cmd delegates)
 
 
-## Called by the OS Logger on every error/warning — including runtime SCRIPT errors,
-## with their stack trace(s) in script_backtraces (ScriptBacktrace.format()).
-func _on_error(function: String, file: String, line: int, code: String, rationale: String, error_type: int, script_backtraces: Array) -> void:
-	var bt := ""
-	for b in script_backtraces:
-		# Duck-typed instead of `b is ScriptBacktrace`: that class is Godot 4.5+, and a
-		# parse-time type reference would break this file on < 4.5. We only reach here from
-		# the 4.5+ sink anyway, where these are genuine ScriptBacktraces.
-		if b is Object and b.has_method("format") and b.has_method("is_empty") and not b.is_empty():
-			bt += b.format(0, 2)
-	_push_log({
-		"type": _err_type_name(error_type),
-		"t": Time.get_ticks_msec(),
-		"function": function, "file": file, "line": line,
-		"rationale": rationale if str(rationale) != "" else code,
-		"backtrace": bt,
-	})
-
-
-func _err_type_name(t: int) -> String:
-	# Logger.ERROR_TYPE_* values (Godot 4.5+): ERROR=0, WARNING=1, SCRIPT=2, SHADER=3.
-	# Inlined as literals so this file parses on < 4.5 where the Logger class is absent.
-	match t:
-		1:
-			return "warning"
-		2:
-			return "script"
-		3:
-			return "shader"
-		_:
-			return "error"
-
-
-func _push_log(e: Dictionary) -> void:
-	_log_mutex.lock()
-	_log_ring.append(e)
-	if _log_ring.size() > _LOG_CAP:
-		_log_ring.pop_front()
-		_log_dropped += 1
-	_log_mutex.unlock()
-
-
-func _logs_cmd(msg: Dictionary) -> Dictionary:
-	var level := str(msg.get("level", "error")).to_lower()
-	var needle := str(msg.get("filter", ""))
-	var limit: int = maxi(1, int(msg.get("limit", 100)))
-	_log_mutex.lock()
-	var snapshot: Array = _log_ring.duplicate()
-	var dropped := _log_dropped
-	if bool(msg.get("clear", false)):
-		_log_ring.clear()
-		_log_dropped = 0
-	_log_mutex.unlock()
-	var out: Array = []
-	for e in snapshot:
-		if not _level_pass(str(e.get("type", "")), level):
-			continue
-		if needle != "" and _entry_text(e).findn(needle) == -1:
-			continue
-		out.append(e)
-	if out.size() > limit:
-		out = out.slice(out.size() - limit, out.size())
-	# capture_active tells the editor side whether the log sink is actually installed —
-	# false on Godot < 4.5 (no Logger API), where an empty buffer means "capture off",
-	# NOT "the game logged nothing". game_logs surfaces that distinction to the agent.
-	return {"ok": true, "entries": out, "count": out.size(), "dropped": dropped, "buffer_size": snapshot.size(), "capture_active": _logger != null}
-
-
-func _level_pass(ty: String, level: String) -> bool:
-	if level == "all":
-		return true
-	var is_err := ty == "error" or ty == "script" or ty == "shader"
-	if level == "warning":
-		return is_err or ty == "warning"
-	return is_err
-
-
-func _entry_text(e: Dictionary) -> String:
-	if e.has("text"):
-		return str(e["text"])
-	return "%s %s %s" % [str(e.get("file", "")), str(e.get("rationale", "")), str(e.get("backtrace", ""))]
-
-
-func _serialize_event(e: InputEvent) -> Dictionary:
-	if e is InputEventKey:
-		var k := e as InputEventKey
-		if k.echo:
-			return {}
-		var kc: int = k.keycode if k.keycode != 0 else k.physical_keycode
-		return {"type": "key", "keycode": OS.get_keycode_string(kc), "pressed": k.pressed}
-	if e is InputEventMouseButton:
-		var mb := e as InputEventMouseButton
-		return {"type": "mouse_button", "button": mb.button_index, "position": [mb.position.x, mb.position.y], "pressed": mb.pressed}
-	if e is InputEventMouseMotion:
-		var mm := e as InputEventMouseMotion
-		return {"type": "mouse_motion", "position": [mm.position.x, mm.position.y], "relative": [mm.relative.x, mm.relative.y]}
-	if e is InputEventJoypadButton:
-		var jb := e as InputEventJoypadButton
-		return {"type": "joy_button", "button": jb.button_index, "pressed": jb.pressed, "device": jb.device}
-	if e is InputEventJoypadMotion:
-		var ja := e as InputEventJoypadMotion
-		return {"type": "joy_axis", "axis": ja.axis, "value": ja.axis_value, "device": ja.device}
-	if e is InputEventScreenTouch:
-		var st := e as InputEventScreenTouch
-		return {"type": "touch", "index": st.index, "position": [st.position.x, st.position.y], "pressed": st.pressed}
-	if e is InputEventScreenDrag:
-		var sd := e as InputEventScreenDrag
-		return {"type": "touch_drag", "index": sd.index, "position": [sd.position.x, sd.position.y], "relative": [sd.relative.x, sd.relative.y]}
-	return {}
-
-
-## Install a custom OS Logger that forwards the played game's log stream (prints,
-## warnings, errors, script stack traces) into our ring buffer. The Logger class and
-## OS.add_logger() are Godot 4.5+; on 4.2–4.4 there's no such API, so this is a graceful
-## no-op (game_logs just returns an empty buffer) and the runtime module still loads.
-func _install_log_sink() -> void:
-	if not ClassDB.class_exists("Logger") or not OS.has_method("add_logger"):
-		return
-	var sink := _make_log_sink()
-	if sink == null:
-		return
-	_logger = sink
-	OS.call("add_logger", _logger)
-
-
-## Build the Logger sink by compiling it from source at runtime. It `extends Logger` — a
-## base class absent before 4.5 — so it can't live as a parsed inner class here: that is
-## exactly what broke parsing on older engines. Compiling from a string keeps every
-## Logger reference out of this file's parse scope; the source is only compiled on 4.5+.
-## Kept tiny and print-free — anything the sink itself logged would re-enter the logger.
-func _make_log_sink() -> Object:
-	var src := "\n".join([
-		"extends Logger",
-		"var host",
-		"func _log_message(message, error):",
-		"\tif host != null: host._on_message(message, error)",
-		"func _log_error(function, file, line, code, rationale, editor_notify, error_type, script_backtraces):",
-		"\tif host != null: host._on_error(function, file, line, code, rationale, error_type, script_backtraces)",
-	])
-	var gd := GDScript.new()
-	gd.source_code = src
-	if gd.reload() != OK:
-		return null
-	var sink: Object = gd.new()
-	if sink == null:
-		return null
-	sink.set("host", self)
-	return sink
+# (input codec + Logger sink construction both live in their own runtime/ modules now —
+# input_codec.gd and game_log_sink.gd; see the B7 split notes there.)

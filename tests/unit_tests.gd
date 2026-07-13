@@ -20,6 +20,9 @@ const ClientConfig := preload("res://addons/beckett/core/client_config.gd")
 const MCPServer := preload("res://addons/beckett/core/mcp_server.gd")
 const ScriptTools := preload("res://addons/beckett/tools/script_tools.gd")
 const MCPRuntime := preload("res://addons/beckett/runtime/mcp_runtime.gd")
+const ReplayPerf := preload("res://addons/beckett/runtime/replay_perf.gd")
+const InputCodec := preload("res://addons/beckett/runtime/input_codec.gd")
+const RuntimeBridge := preload("res://addons/beckett/core/runtime_bridge.gd")
 # Full-only modules: loaded dynamically so this suite ALSO runs on the Lite repo's CI,
 # where pack.ps1 physically trims them — their test groups then skip with a note.
 const _PLAYTEST_TOOLS_PATH := "res://addons/beckett/tools/playtest_tools.gd"
@@ -50,6 +53,8 @@ func _init() -> void:
 	else:
 		print("[unit] runner perf group skipped (Lite build: runner trimmed)")
 	_t_perf_summary_runtime()
+	_t_input_codec()
+	_t_bridge_compare()
 	print("")
 	if _fail > 0:
 		print("[unit] FAIL: %d failed, %d passed" % [_fail, _pass])
@@ -206,14 +211,16 @@ func _t_class_name_mask() -> void:
 	var st = ScriptTools.new()
 	var src := "class_name BeckettJobs\nextends RefCounted\nfunc f():\n\treturn 1\n"
 	var own: Dictionary = st._mask_registered_class_name(src, "res://addons/beckett/core/jobs.gd")
-	_ok(not own.has("conflict") and not str(own.get("content", "")).begins_with("class_name"), "registered name + own path: masked")
+	_ok(not own.has("conflict") and str(own.get("content", "")).begins_with("class_name __BeckettValidate"), "registered name + own path: renamed in place")
 	_ok(str(own.get("content", "")).split("\n").size() == src.split("\n").size(), "mask preserves line count")
 	var other: Dictionary = st._mask_registered_class_name(src, "res://somewhere/else.gd")
 	_ok(other.has("conflict") and str(other["conflict"]).contains("BeckettJobs"), "registered name + different path: real conflict reported")
 	var unreg: Dictionary = st._mask_registered_class_name("class_name TotallyNewName\nextends Node\n", "res://new.gd")
 	_ok(str(unreg.get("content", "")).begins_with("class_name TotallyNewName"), "unregistered name: untouched (self-refs need it)")
 	var inline: Dictionary = st._mask_registered_class_name("class_name BeckettJobs extends RefCounted\nfunc f():\n\treturn 1\n", "res://addons/beckett/core/jobs.gd")
-	_ok(str(inline.get("content", "")).begins_with("extends RefCounted"), "one-line form keeps its extends half")
+	_ok(str(inline.get("content", "")).begins_with("class_name __BeckettValidate extends RefCounted"), "one-line form keeps its extends half")
+	var abs: Dictionary = st._mask_registered_class_name("@abstract class_name BeckettJobs extends RefCounted\n@abstract func f() -> int\n", "res://addons/beckett/core/jobs.gd")
+	_ok(str(abs.get("content", "")).begins_with("@abstract class_name __BeckettValidate extends RefCounted"), "4.5+ same-line @abstract form keeps its annotation (empirically compile-verified shape)")
 	var v: Dictionary = st._compile(FileAccess.get_file_as_string("res://addons/beckett/core/jobs.gd"), "res://addons/beckett/core/jobs.gd")
 	_ok(bool(v["valid"]), "THE regression: re-validating a real registered script compiles clean")
 
@@ -277,15 +284,42 @@ func _t_perf_summary_runner() -> void:
 
 
 func _t_perf_summary_runtime() -> void:
-	print("[unit] mcp_runtime._replay_perf_summary (game-side engine)")
-	var rt = MCPRuntime.new()
-	rt._replay_perf_mem0 = Performance.get_monitor(Performance.MEMORY_STATIC)
-	rt._replay_perf_orphan0 = Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)
-	_ok((rt._replay_perf_summary() as Dictionary).is_empty(), "no samples -> empty summary (not fabricated zeros)")
+	print("[unit] runtime/replay_perf.gd (game-side engine, B7 module)")
+	var rp = ReplayPerf.new()
+	_ok((rp.summary() as Dictionary).is_empty(), "no samples -> empty summary (not fabricated zeros)")
+	rp.begin()
 	for i in range(1, 101):
-		rt._replay_perf_ms.append(float(i))
-		rt._replay_perf_fps.append(120.0)
-	var s: Dictionary = rt._replay_perf_summary()
+		rp._ms.append(float(i))
+		rp._fps.append(120.0)
+	var s: Dictionary = rp.summary()
 	_ok(is_equal_approx(float(s["frame_ms_p95"]), 95.0) and int(s["frames"]) == 100, "game-side p95 matches the runner's math")
 	_ok(s.has("memory_delta") and s.has("orphan_delta") and s.has("draw_calls_end"), "summary carries the flat baseline-diff keys")
-	rt.free()
+	rp.begin()
+	_ok((rp.summary() as Dictionary).is_empty(), "begin() resets the capture")
+
+
+func _t_input_codec() -> void:
+	print("[unit] runtime/input_codec.gd round-trip (B7 module)")
+	var key: InputEvent = InputCodec.build_event({"type": "key", "keycode": "Right", "pressed": true})
+	_ok(key is InputEventKey and (key as InputEventKey).pressed, "key builds")
+	var key_wire: Dictionary = InputCodec.serialize_event(key)
+	_ok(str(key_wire.get("type")) == "key" and str(key_wire.get("keycode")) == "Right" and bool(key_wire.get("pressed")), "key round-trips through serialize")
+	var ja: InputEvent = InputCodec.build_event({"type": "joy_axis", "axis": 1, "value": 2.5, "device": 3})
+	_ok(ja is InputEventJoypadMotion and is_equal_approx((ja as InputEventJoypadMotion).axis_value, 1.0), "joy_axis clamps value to -1..1")
+	var ja_wire: Dictionary = InputCodec.serialize_event(ja)
+	_ok(int(ja_wire.get("axis")) == 1 and int(ja_wire.get("device")) == 3, "joy_axis round-trips axis + device")
+	var td: InputEvent = InputCodec.build_event({"type": "touch_drag", "index": 2, "position": [10, 20], "relative": [1, 2]})
+	var td_wire: Dictionary = InputCodec.serialize_event(td)
+	_ok(str(td_wire.get("type")) == "touch_drag" and int(td_wire.get("index")) == 2 and float((td_wire.get("position") as Array)[1]) == 20.0, "touch_drag round-trips index + position")
+	_ok(InputCodec.build_event({"type": "nope"}) == null, "unknown type builds null (skipped, not crashed)")
+	var echo := InputEventKey.new()
+	echo.keycode = KEY_A
+	echo.echo = true
+	_ok((InputCodec.serialize_event(echo) as Dictionary).is_empty(), "echo keys serialize to {} (dropped)")
+
+
+func _t_bridge_compare() -> void:
+	print("[unit] runtime_bridge handshake compare (v1.9.1)")
+	_ok(RuntimeBridge._secure_equals("tok-abc", "tok-abc"), "matching hello accepted")
+	_ok(not RuntimeBridge._secure_equals("tok-abc", "tok-abd"), "wrong hello rejected")
+	_ok(not RuntimeBridge._secure_equals("", "tok-abc"), "empty hello vs required token rejected")

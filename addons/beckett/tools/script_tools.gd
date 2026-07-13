@@ -223,17 +223,16 @@ func _compile(content: String, target_path: String = "") -> Dictionary:
 
 ## Neutralize a `class_name X` declaration ONLY when X is already registered in the global
 ## class list — the case that used to false-error every validate of an existing named script.
-## Line numbers are preserved (the line is commented out, or reduced to its `extends` half
-## when the one-line `class_name X extends Y` form is used). Self-references to X inside the
-## body still resolve — X IS registered, which is exactly why the mask is needed. If X is
+## The masking is a RENAME-IN-PLACE of just the name token (X -> __BeckettValidate, a name
+## nothing registers): line numbers, any inline `extends`, and annotation attachment (`@tool`,
+## `@icon`, the 4.5+ same-line `@abstract class_name X` form — verified empirically on 4.6.2)
+## are all preserved. Self-references to X inside the body still resolve — X IS registered,
+## which is exactly why the mask is needed; the temp name itself is never referenced. If X is
 ## registered by a DIFFERENT file than target_path, that's a real project error the engine
 ## would also reject on save: return it as {conflict} instead of masking it away.
-## Known limit: the 4.5+ SAME-LINE `@abstract class_name X` form is not masked (commenting
-## it would detach the annotation) — that rare shape keeps the old behavior. Annotations on
-## their own lines (`@tool`, `@icon`, `@abstract` above class_name) are unaffected.
 func _mask_registered_class_name(content: String, target_path: String) -> Dictionary:
 	var re := RegEx.new()
-	re.compile("(?m)^class_name[ \\t]+([A-Za-z_][A-Za-z0-9_]*)[ \\t]*(extends[ \\t].+)?$")
+	re.compile("(?m)^(?:@[A-Za-z_]+[ \\t]+)*class_name[ \\t]+([A-Za-z_][A-Za-z0-9_]*)")
 	var m := re.search(content)
 	if m == null:
 		return {"content": content}
@@ -247,9 +246,7 @@ func _mask_registered_class_name(content: String, target_path: String) -> Dictio
 		return {"content": content}  # unregistered name: nothing to mask, self-refs need the line
 	if not target_path.is_empty() and registered_path != target_path:
 		return {"conflict": "class_name %s is already registered by %s — two scripts cannot share one class_name. Pick another name (or update that file instead)." % [cname, registered_path]}
-	var tail := m.get_string(2)  # the inline `extends …` half, if the one-line form was used
-	var replacement := tail if not tail.is_empty() else "#" + m.get_string(0)
-	var out := content.substr(0, m.get_start(0)) + replacement + content.substr(m.get_end(0))
+	var out := content.substr(0, m.get_start(1)) + "__BeckettValidate" + content.substr(m.get_end(1))
 	return {"content": out}
 
 

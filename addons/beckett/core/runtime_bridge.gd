@@ -13,9 +13,16 @@ class_name BeckettRuntimeBridge
 
 var running: bool = false
 var port: int = 8771
+## Shared secret for the game handshake (v1.9.1). Set per editor session by mcp_server and
+## exported to launched games via BECKETT_RUNTIME_TOKEN (children inherit the environment).
+## Empty = handshake not required (BECKETT_AUTH=0 / legacy runtimes).
+var expected_token: String = ""
 
 var _tcp := TCPServer.new()
 var _peer: StreamPeerTCP = null
+var _pending: StreamPeerTCP = null      # connected, hello not yet verified
+var _pending_buf := PackedByteArray()
+var _pending_t0 := 0
 var _seq: int = 0
 
 
@@ -33,6 +40,9 @@ func stop() -> void:
 	if _peer != null:
 		_peer.disconnect_from_host()
 		_peer = null
+	if _pending != null:
+		_pending.disconnect_from_host()
+		_pending = null
 	if _tcp.is_listening():
 		_tcp.stop()
 
@@ -44,6 +54,12 @@ func _process(_delta: float) -> void:
 ## Accept a pending game connection and refresh peer status. Exposed so a blocking
 ## tool (wait_until) can pump the bridge while it holds the main thread — otherwise the
 ## game could never connect during the wait.
+##
+## v1.9.1: new connections park in a single PENDING slot until their hello line verifies
+## (see _pump_pending). Only a VERIFIED newcomer may displace a live peer — "newest play
+## session wins" survives for real stop→play restarts (the new game carries the session
+## token), while an unauthenticated local process can neither become the game nor kick
+## the real game off the channel.
 func poll_once() -> void:
 	if not running:
 		return
@@ -51,12 +67,82 @@ func poll_once() -> void:
 		var p := _tcp.take_connection()
 		if p != null:
 			p.set_no_delay(true)
-			_peer = p  # newest play session wins
+			if _pending != null:
+				_pending.disconnect_from_host()
+			_pending = p
+			_pending_buf = PackedByteArray()
+			_pending_t0 = Time.get_ticks_msec()
+	_pump_pending()
 	if _peer != null:
 		_peer.poll()
 		var st := _peer.get_status()
 		if st == StreamPeerTCP.STATUS_ERROR or st == StreamPeerTCP.STATUS_NONE:
 			_peer = null
+
+
+## Read the pending peer's first line ({"hello": <token>}) and promote or drop it. The
+## hello is consumed HERE either way, so it can never surface as a stray reply inside
+## send_command's line reads.
+func _pump_pending() -> void:
+	if _pending == null:
+		return
+	_pending.poll()
+	var st := _pending.get_status()
+	if st == StreamPeerTCP.STATUS_ERROR or st == StreamPeerTCP.STATUS_NONE:
+		_pending = null
+		return
+	if st != StreamPeerTCP.STATUS_CONNECTED:
+		if Time.get_ticks_msec() - _pending_t0 > 3000:
+			_pending.disconnect_from_host()
+			_pending = null
+		return
+	var avail := _pending.get_available_bytes()
+	if avail > 0:
+		var res: Array = _pending.get_partial_data(avail)
+		if res[0] == OK:
+			_pending_buf.append_array(res[1])
+	var nl := _pending_buf.find(10)
+	if nl == -1:
+		# No hello line yet. Auth off: promote a silent peer after a short grace so an
+		# OLDER runtime (predates the handshake) still connects. Auth on: silence past
+		# the window is a strike-out — the real game sends hello immediately.
+		if Time.get_ticks_msec() - _pending_t0 > 1500:
+			if expected_token.is_empty():
+				_promote()
+			else:
+				_pending.disconnect_from_host()
+				_pending = null
+		return
+	var line := _pending_buf.slice(0, nl).get_string_from_utf8()
+	_pending_buf = _pending_buf.slice(nl + 1)
+	var parsed: Variant = JSON.parse_string(line)
+	var has_hello: bool = parsed is Dictionary and (parsed as Dictionary).has("hello")
+	if expected_token.is_empty():
+		_promote()  # hello (or junk) consumed; nothing to verify with auth off
+		return
+	if has_hello and _secure_equals(str((parsed as Dictionary).get("hello", "")), expected_token):
+		_promote()
+		return
+	push_warning("[beckett] runtime channel: rejected a peer with a missing/invalid handshake token")
+	_pending.disconnect_from_host()
+	_pending = null
+
+
+func _promote() -> void:
+	_peer = _pending
+	_pending = null
+	_pending_buf = PackedByteArray()
+
+
+## Constant-time compare (mirrors mcp_server._secure_equals; kept local so the bridge
+## stays dependency-free).
+static func _secure_equals(a: String, b: String) -> bool:
+	var ab := a.to_utf8_buffer()
+	var bb := b.to_utf8_buffer()
+	var diff := ab.size() ^ bb.size()
+	for i in mini(ab.size(), bb.size()):
+		diff |= ab[i] ^ bb[i]
+	return diff == 0
 
 
 func is_game_connected() -> bool:

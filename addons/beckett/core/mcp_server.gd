@@ -76,6 +76,7 @@ var _runtime_port: int = 8771
 
 var _session_id: String = ""
 var _token: String = ""
+var _runtime_token: String = ""  # game-channel handshake secret (v1.9.1; see start_server)
 var _readonly: bool = false
 var _confirm_destructive: bool = false
 var _allowlist: Array[String] = []  # regex strings; empty = allow all
@@ -190,6 +191,20 @@ func start_server(port: int) -> int:
 		if rp_err != OK:
 			push_error("[beckett] runtime bridge could not bind %d..%d — play-session tools will not connect" % [_runtime_port, _runtime_port + 9])
 		OS.set_environment("BECKETT_RUNTIME_PORT", str(_runtime_port))
+		# v1.9.1: per-session shared secret for the game handshake, delivered to launched
+		# games the same way the port is (children inherit this editor's environment).
+		# BECKETT_AUTH=0 disables it alongside HTTP auth; a preset BECKETT_RUNTIME_TOKEN
+		# (e.g. wiring up a standalone game run) is honored instead of minting one.
+		var kill := OS.get_environment("BECKETT_AUTH").to_lower()
+		if kill == "0" or kill == "false":
+			_runtime_token = ""
+		elif not OS.get_environment("BECKETT_RUNTIME_TOKEN").is_empty():
+			_runtime_token = OS.get_environment("BECKETT_RUNTIME_TOKEN")
+		else:
+			_runtime_token = Crypto.new().generate_random_bytes(16).hex_encode()
+		bridge.expected_token = _runtime_token
+		if not _runtime_token.is_empty():
+			OS.set_environment("BECKETT_RUNTIME_TOKEN", _runtime_token)
 	_write_port_discovery(http.port)
 	return OK
 

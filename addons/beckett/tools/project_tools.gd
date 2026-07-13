@@ -289,7 +289,11 @@ func _doctor(_args: Dictionary) -> Dictionary:
 		"effort": {"level": effort, "ceiling": ceiling, "source": effort_source},
 		"tools": {"advertised_now": advertised, "at_ceiling": at_ceiling, "disabled": Array(disabled)},
 		"server": {"running": running, "port": port, "auth": ("token on" if auth_on else "off")},
-		"game_bridge": {"connected": server.bridge != null and server.bridge.is_game_connected()},
+		"game_bridge": {
+			"connected": server.bridge != null and server.bridge.is_game_connected(),
+			"auth": ("handshake on" if server.bridge != null and not str(server.bridge.expected_token).is_empty() else "off"),
+			"port": server.bridge.port if server.bridge != null else 0,
+		},
 		"clients": clients,
 		"warnings": warnings,
 	}}
