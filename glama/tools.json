@@ -314,6 +314,21 @@
         "annotations":  {
                             "destructiveHint":  false,
                             "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Beckett self-diagnosis â one call answers \u0027why can\u0027t the agent see or do X?\u0027. Reports: edition (Lite/Full), the effort dial vs its ceiling AND where the cap comes from (a beckett/effort= line committed in project.godot silently trims every clone\u0027s tool list), advertised-vs-ceiling tool counts, dock-disabled tools, server/port/auth state, per-client config freshness (does each written config still carry the CURRENT endpoint URL?), and runtime-bridge liveness. Run this FIRST when tools seem missing, counts look wrong, or calls fail unexpectedly.",
+        "inputSchema":  {
+                            "properties":  {
+
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "doctor"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
         "description":  "Duplicate a node (with its children) under the same parent (undoable). Optional \u0027name\u0027 for the copy.",
@@ -462,9 +477,21 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics). target=game (default when a play session is connected) samples the RUNNING game; target=editor samples the editor.",
+        "description":  "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics) â measured engine counters, never estimates. target=game (default when a play session is connected) reads the RUNNING game; target=editor reads the editor. duration_s\u003e0 (game only, max 30) SAMPLES OVER TIME: polls every interval_ms (default 100, min 30) while the game keeps running, then returns per-monitor stats {min,avg,p95,max} â e.g. fps.p95 or process_time.max over a stress window; series=true also returns the raw per-sample series (token-heavy). Editor-target sampling is refused honestly: a tool call blocks the editor\u0027s own loop, so an over-time editor read would only measure a stalled editor.",
         "inputSchema":  {
                             "properties":  {
+                                               "duration_s":  {
+                                                                  "description":  "sampling window in seconds (0 = single snapshot; max 30; game target only)",
+                                                                  "type":  "number"
+                                                              },
+                                               "interval_ms":  {
+                                                                   "description":  "sampling interval (default 100, min 30)",
+                                                                   "type":  "integer"
+                                                               },
+                                               "series":  {
+                                                              "description":  "include the raw per-sample series, capped at 300 samples (default false)",
+                                                              "type":  "boolean"
+                                                          },
                                                "target":  {
                                                               "description":  "game | editor | auto",
                                                               "type":  "string"
@@ -1092,14 +1119,14 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Parse/compile GDScript WITHOUT writing it. Pass \u0027content\u0027 (source) or \u0027path\u0027 (res://). Returns whether it compiles â use before write_script to catch hallucinated APIs.",
+        "description":  "Parse/compile GDScript WITHOUT writing it. Pass \u0027content\u0027 (source) or \u0027path\u0027 (res://). Returns whether it compiles â use before write_script to catch hallucinated APIs. Scripts whose class_name is already registered validate correctly (v1.9; the old false \u0027hides a global class\u0027 error is fixed); when validating \u0027content\u0027 destined for an existing file, ALSO pass its \u0027path\u0027 so a real cross-file class_name duplicate is still reported as the error it is.",
         "inputSchema":  {
                             "properties":  {
                                                "content":  {
                                                                "type":  "string"
                                                            },
                                                "path":  {
-                                                            "description":  "res:// path to validate an existing file",
+                                                            "description":  "res:// path â the file to validate, or (with content) the file the content is destined for",
                                                             "type":  "string"
                                                         }
                                            },
