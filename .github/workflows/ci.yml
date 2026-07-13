@@ -3,7 +3,7 @@
 # Authored in the monorepo (source of truth) and staged into the public Lite repo
 # by `pack.ps1 -StageDir` (see the .github staging block in pack.ps1). It boots the
 # zero-sidecar addon headless on Windows, Linux, and macOS against pinned Godot
-# builds and asserts the live MCP endpoint answers with the full 50-tool Lite
+# builds and asserts the live MCP endpoint answers with the full 51-tool Lite
 # surface - so a release can claim "Verified on Windows, Linux, macOS" with a green
 # badge on the repo.
 #
@@ -215,6 +215,16 @@ jobs:
           if ($bad -gt 0) { throw "$bad script(s) failed the parse check" }
           Write-Host "all $($scripts.Count) scripts parsed clean"
 
+      # Headless unit suite (v1.9 B3): pure-logic coverage — framing, tier math, the
+      # serializer, auth compare, codex upsert, perf math, the class_name mask. Runs on
+      # the Lite checkout too (Full-only test groups self-skip when modules are trimmed).
+      - name: Unit suite
+        shell: pwsh
+        run: |
+          $out = & "$env:GODOT_BIN" --headless --path . --script tests/unit_tests.gd 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch '\[unit\] all \d+ checks passed') { throw "unit suite failed" }
+
       # Boot headless + probe the live MCP endpoint (initialize + tools/list).
       # ci-smoke.ps1 owns the boot, the wait, the assertions, and ALWAYS kills the
       # editor in its finally block. One code path for CI and local runs.
@@ -222,7 +232,7 @@ jobs:
         shell: pwsh
         run: |
           & "$env:GODOT_BIN" --headless --version | Out-Null
-          ./tests/ci-smoke.ps1 -GodotExe "$env:GODOT_BIN" -Port ([int]$env:BECKETT_CI_PORT) -ProjectPath . -ExpectedTools 50
+          ./tests/ci-smoke.ps1 -GodotExe "$env:GODOT_BIN" -Port ([int]$env:BECKETT_CI_PORT) -ProjectPath . -ExpectedTools 51
 
       # Belt-and-suspenders: guarantee no Godot process outlives the job even if a
       # step above died before ci-smoke.ps1's finally ran.

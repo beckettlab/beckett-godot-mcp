@@ -45,6 +45,9 @@ const _DELTA := {
 		"read_script", "read_file", "list_dir", "search_files", "get_project_setting",
 		# project overview (read) + lazy knowledge packs
 		"get_project_statistics", "list_skills", "load_skill",
+		# self-diagnosis (v1.9): must survive ANY effort cap — it is how a capped
+		# surface explains itself (the 1.7.0 "42-tool trap" postmortem)
+		"doctor",
 	],
 	# L2 — author static content: the core editor authoring loop.
 	2: [

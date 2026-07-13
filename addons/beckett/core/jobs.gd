@@ -17,6 +17,36 @@ class_name BeckettJobs
 
 const _OUTPUT_CAP := 65536  # keep at most this much tail per job
 
+
+## v1.9 (B2): the ONE blocking-poll primitive every synchronous tool handler shares.
+## The zero-sidecar constraint means a handler that must wait does so by blocking the
+## editor thread in a bounded loop; before v1.9 each tool hand-rolled that loop (deadline
+## arithmetic, pump, delay) with subtle drift between the copies. poll_until owns the
+## shape: run `pump` (optional — e.g. the runtime bridge's poll_once, which must run
+## because we hold the very main thread that would otherwise service it), then `tick`;
+## a non-empty Dictionary from tick is the result and ends the wait, {} keeps polling.
+## After `timeout_ms` it returns {"timeout": true} — which callers treat as failure
+## (wait_for_node) or as completion (a fixed sampling window).
+##
+## What does NOT belong here: transport-internal pump loops (runtime_bridge.send_command's
+## bounded byte-read, asset_lib's HTTPClient connect/request/body phases) — those are the
+## channel itself, not a handler waiting on a condition; and build_csharp, which is a
+## synchronous OS.execute with no loop at all.
+static func poll_until(timeout_ms: int, interval_ms: int, tick: Callable, pump: Callable = Callable()) -> Dictionary:
+	var t0 := Time.get_ticks_msec()
+	var out: Dictionary = {}
+	while out.is_empty():
+		if pump.is_valid():
+			pump.call()
+		var r: Variant = tick.call()
+		if r is Dictionary and not (r as Dictionary).is_empty():
+			out = r
+		elif Time.get_ticks_msec() - t0 >= timeout_ms:
+			out = {"timeout": true}
+		else:
+			OS.delay_msec(maxi(1, interval_ms))
+	return out
+
 # id -> {id, kind, pid, started, meta, output:String, stdio:FileAccess?, stderr:FileAccess?,
 #        done:bool, exit_code:int}
 var _jobs: Dictionary = {}

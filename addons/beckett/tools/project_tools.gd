@@ -8,6 +8,7 @@ class_name BeckettProjectTools
 var server
 
 const _TEXT_EXTS := ["gd", "tscn", "tres", "cfg", "json", "md", "txt", "gdshader", "shader", "cs", "import", "godot"]
+const MCPClientConfigScript := preload("res://addons/beckett/core/client_config.gd")
 
 
 func _register(registry) -> void:
@@ -61,6 +62,13 @@ func _register(registry) -> void:
 			"setting": {"type": "string"}, "name": {"type": "string"}, "value": {},
 		}, "required": ["value"]},
 		"handler": Callable(self, "_set_setting"),
+	})
+	registry.register({
+		"name": "doctor",
+		"description": "Beckett self-diagnosis — one call answers 'why can't the agent see or do X?'. Reports: edition (Lite/Full), the effort dial vs its ceiling AND where the cap comes from (a beckett/effort= line committed in project.godot silently trims every clone's tool list), advertised-vs-ceiling tool counts, dock-disabled tools, server/port/auth state, per-client config freshness (does each written config still carry the CURRENT endpoint URL?), and runtime-bridge liveness. Run this FIRST when tools seem missing, counts look wrong, or calls fail unexpectedly.",
+		"readonly": true,
+		"input_schema": {"type": "object", "properties": {}},
+		"handler": Callable(self, "_doctor"),
 	})
 	# NOTE: logs_read (L3) lives in test_tools.gd — premium modules keep ALL their
 	# code out of the Lite build; nothing tier-3+ may be implemented in this file.
@@ -223,6 +231,68 @@ static func _setting_value(value: Variant) -> Variant:
 				psa.append(str(e))
 			return psa
 	return value
+
+
+## v1.9 (B6): the support checklist as one call — born from the 1.7.0 postmortem, where a
+## committed beckett/effort=3 in the public repo's project.godot silently capped every
+## git-clone user at 42 tools for a month and nothing in the product could say why.
+## Reports state + a compiled warnings list; ok=true means nothing needs attention.
+## The token VALUE is deliberately never echoed (this output lands in agent transcripts).
+func _doctor(_args: Dictionary) -> Dictionary:
+	var warnings: Array = []
+	var effort: int = server.get_effort()
+	var ceiling: int = server.max_effort()
+
+	var effort_source := "default (no beckett/effort persisted)"
+	if ProjectSettings.has_setting("beckett/effort"):
+		effort_source = "project.godot beckett/effort=%d — if that line is committed, every clone inherits it" % int(ProjectSettings.get_setting("beckett/effort", effort))
+	if effort < ceiling:
+		warnings.append("effort dial at L%d < ceiling L%d: tools/list is trimmed to the lower tier (%s). Raise it on the Beckett dock." % [effort, ceiling, effort_source])
+
+	var advertised: int = (server.effective_specs(effort) as Array).size()
+	var at_ceiling: int = (server.effective_specs(ceiling) as Array).size()
+	var disabled: PackedStringArray = server.disabled_tools()
+	if disabled.size() > 0:
+		warnings.append("%d tool(s) switched off on the dock: %s" % [disabled.size(), ", ".join(disabled)])
+
+	var running: bool = server.is_running()
+	if not running:
+		warnings.append("server is NOT running — Start Server on the Beckett dock (or beckett/autostart=true)")
+	var auth_on: bool = server.auth_enabled()
+	if not auth_on:
+		warnings.append("token auth is OFF — any local process can call this server; enable it on the Beckett dock (auth row → Enable)")
+	if OS.get_environment("BECKETT_PORT") != "":
+		warnings.append("BECKETT_PORT env override active (=%s) — configs written for the project-setting port will not match this session" % OS.get_environment("BECKETT_PORT"))
+	if server.is_readonly():
+		warnings.append("BECKETT_READONLY is on — every mutating tool is blocked this session")
+
+	var penv := OS.get_environment("BECKETT_PORT")
+	var base_port: int = penv.to_int() if penv != "" and penv.is_valid_int() else int(ProjectSettings.get_setting("beckett/port", 8770))
+	var port: int = server.http.port if running and server.http != null else base_port
+	if running and port != base_port:
+		warnings.append("configured port %d was busy — serving on %d (B5 walk; client configs were regenerated for the live port, but anything hand-pointed at %d will not reach this editor)" % [base_port, port, base_port])
+	var clients: Array = MCPClientConfigScript.staleness(port, server.auth_token())
+	for c in clients:
+		if not bool(c.get("current", true)):
+			warnings.append("%s config (%s) does not carry the current endpoint URL — reconnect from the dock (Set up clients)" % [str(c.get("client", "?")), str(c.get("path", ""))])
+
+	var ver := ""
+	var cfg := ConfigFile.new()
+	if cfg.load("res://addons/beckett/plugin.cfg") == OK:
+		ver = str(cfg.get_value("plugin", "version", ""))
+
+	return {"json": {
+		"ok": warnings.is_empty(),
+		"edition": "Lite" if server.is_lite() else "Full",
+		"beckett_version": ver,
+		"godot_version": String(Engine.get_version_info().get("string", "")),
+		"effort": {"level": effort, "ceiling": ceiling, "source": effort_source},
+		"tools": {"advertised_now": advertised, "at_ceiling": at_ceiling, "disabled": Array(disabled)},
+		"server": {"running": running, "port": port, "auth": ("token on" if auth_on else "off")},
+		"game_bridge": {"connected": server.bridge != null and server.bridge.is_game_connected()},
+		"clients": clients,
+		"warnings": warnings,
+	}}
 
 
 # (logs_read moved to test_tools.gd — see the note in _register.)

@@ -13,11 +13,11 @@ var server  # mcp_server node
 func _register(registry) -> void:
 	registry.register({
 		"name": "validate_script",
-		"description": "Parse/compile GDScript WITHOUT writing it. Pass 'content' (source) or 'path' (res://). Returns whether it compiles — use before write_script to catch hallucinated APIs.",
+		"description": "Parse/compile GDScript WITHOUT writing it. Pass 'content' (source) or 'path' (res://). Returns whether it compiles — use before write_script to catch hallucinated APIs. Scripts whose class_name is already registered validate correctly (v1.9; the old false 'hides a global class' error is fixed); when validating 'content' destined for an existing file, ALSO pass its 'path' so a real cross-file class_name duplicate is still reported as the error it is.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"content": {"type": "string"},
-			"path": {"type": "string", "description": "res:// path to validate an existing file"},
+			"path": {"type": "string", "description": "res:// path — the file to validate, or (with content) the file the content is destined for"},
 		}},
 		"handler": Callable(self, "_validate_script"),
 	})
@@ -67,16 +67,18 @@ func _register(registry) -> void:
 
 func _validate_script(args: Dictionary) -> Dictionary:
 	var content: String
+	var vpath := ""
 	if args.has("content"):
 		content = str(args["content"])
+		vpath = str(args.get("path", ""))  # optional: lets the class_name mask know the target
 	elif args.has("path"):
-		var path := str(args["path"])
-		if not FileAccess.file_exists(path):
-			return {"error": "No file at: %s" % path}
-		content = FileAccess.get_file_as_string(path)
+		vpath = str(args["path"])
+		if not FileAccess.file_exists(vpath):
+			return {"error": "No file at: %s" % vpath}
+		content = FileAccess.get_file_as_string(vpath)
 	else:
 		return {"error": "Provide 'content' or 'path'."}
-	var v := _compile(content)
+	var v := _compile(content, vpath)
 	if v["valid"]:
 		return {"text": "OK — script compiles."}
 	return {"error": "Script does not compile: %s" % v["detail"],
@@ -93,7 +95,7 @@ func _write_script(args: Dictionary) -> Dictionary:
 	# files can't be gated here — C# compiles out-of-process; check it with build_csharp.
 	var validate := bool(args.get("validate", true)) and path.ends_with(".gd")
 	if validate:
-		var v := _compile(content)
+		var v := _compile(content, path)
 		if not v["valid"]:
 			return {"error": "Refusing to write: script does not compile (%s)." % v["detail"],
 				"suggestion": "Fix the error or pass validate=false to force. Use describe_class/find_methods to confirm the API."}
@@ -185,7 +187,7 @@ func _script_patch(args: Dictionary) -> Dictionary:
 		applied += 1
 	var validate := bool(args.get("validate", true)) and path.ends_with(".gd")
 	if validate:
-		var v := _compile(text)
+		var v := _compile(text, path)
 		if not v["valid"]:
 			return {"error": "Refusing to write: result does not compile (%s)." % v["detail"],
 				"suggestion": "Adjust the edits, or pass validate=false to force."}
@@ -202,13 +204,53 @@ func _script_patch(args: Dictionary) -> Dictionary:
 # ---------------------------------------------------------------- helpers
 
 ## Compile GDScript source in-memory. Returns {valid:bool, detail:String}.
-func _compile(content: String) -> Dictionary:
+func _compile(content: String, target_path: String = "") -> Dictionary:
+	# v1.9 B4 root-fix: a detached GDScript.reload() false-errors on ANY script whose
+	# class_name is already registered ("hides a global script class") — which is every
+	# re-validate of an existing named script. Mask the declaration (line numbers preserved)
+	# when the registration is legitimate; keep the honest failure when it's a real
+	# cross-file duplicate. See _mask_registered_class_name.
+	var masked := _mask_registered_class_name(content, target_path)
+	if masked.has("conflict"):
+		return {"valid": false, "detail": str(masked["conflict"])}
 	var gd := GDScript.new()
-	gd.source_code = content
+	gd.source_code = str(masked["content"])
 	var err := gd.reload(false)
 	if err == OK:
 		return {"valid": true, "detail": ""}
 	return {"valid": false, "detail": "%s — see the Godot Output panel (or get_log) for the line." % error_string(err)}
+
+
+## Neutralize a `class_name X` declaration ONLY when X is already registered in the global
+## class list — the case that used to false-error every validate of an existing named script.
+## Line numbers are preserved (the line is commented out, or reduced to its `extends` half
+## when the one-line `class_name X extends Y` form is used). Self-references to X inside the
+## body still resolve — X IS registered, which is exactly why the mask is needed. If X is
+## registered by a DIFFERENT file than target_path, that's a real project error the engine
+## would also reject on save: return it as {conflict} instead of masking it away.
+## Known limit: the 4.5+ SAME-LINE `@abstract class_name X` form is not masked (commenting
+## it would detach the annotation) — that rare shape keeps the old behavior. Annotations on
+## their own lines (`@tool`, `@icon`, `@abstract` above class_name) are unaffected.
+func _mask_registered_class_name(content: String, target_path: String) -> Dictionary:
+	var re := RegEx.new()
+	re.compile("(?m)^class_name[ \\t]+([A-Za-z_][A-Za-z0-9_]*)[ \\t]*(extends[ \\t].+)?$")
+	var m := re.search(content)
+	if m == null:
+		return {"content": content}
+	var cname := m.get_string(1)
+	var registered_path := ""
+	for gc in ProjectSettings.get_global_class_list():
+		if str(gc.get("class", "")) == cname:
+			registered_path = str(gc.get("path", ""))
+			break
+	if registered_path.is_empty():
+		return {"content": content}  # unregistered name: nothing to mask, self-refs need the line
+	if not target_path.is_empty() and registered_path != target_path:
+		return {"conflict": "class_name %s is already registered by %s — two scripts cannot share one class_name. Pick another name (or update that file instead)." % [cname, registered_path]}
+	var tail := m.get_string(2)  # the inline `extends …` half, if the one-line form was used
+	var replacement := tail if not tail.is_empty() else "#" + m.get_string(0)
+	var out := content.substr(0, m.get_start(0)) + replacement + content.substr(m.get_end(0))
+	return {"content": out}
 
 
 ## Project-scope + traversal guard for writes.

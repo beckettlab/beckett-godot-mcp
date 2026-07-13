@@ -54,6 +54,17 @@ var _replay_i := 0
 var _replay_tick := 0
 var _replay_end := 0
 var _replay_injected := 0
+# Perf capture across the replay window (v1.9 "measured, not estimated"): real Performance
+# monitors sampled once per UNPAUSED tick — frame_ms = last process frame's cost (the thing
+# you optimize), fps = the engine's own frames-per-second read (what the player experiences,
+# vsync-capped; the engine refreshes it ~1/s so short windows repeat values). Baselines for
+# memory/orphan deltas snapshot at window open. Summarized FLAT in replay_status so playtest
+# perf asserts and baseline diffs address metrics by one stable name each.
+var _replay_perf_ms := PackedFloat64Array()
+var _replay_perf_fps := PackedFloat64Array()
+var _replay_perf_mem0 := 0.0
+var _replay_perf_orphan0 := 0.0
+const _REPLAY_PERF_CAP := 36000  # ~10 min @ 60 ticks/s — bound a runaway window's capture
 
 # Captured game output — runtime script errors WITH stack traces, push_error/warning,
 # and print() — via a custom OS Logger installed in the played game. This is the
@@ -227,6 +238,10 @@ func _replay_open(msg: Dictionary) -> Dictionary:
 	_replay_i = 0
 	_replay_tick = 0
 	_replay_injected = 0
+	_replay_perf_ms = PackedFloat64Array()
+	_replay_perf_fps = PackedFloat64Array()
+	_replay_perf_mem0 = Performance.get_monitor(Performance.MEMORY_STATIC)
+	_replay_perf_orphan0 = Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)
 	var settle: int = maxi(0, int(msg.get("settle_frames", 4)))
 	var last_f := 0
 	if ordered.size() > 0:
@@ -242,6 +257,9 @@ func _replay_open(msg: Dictionary) -> Dictionary:
 ## event whose recorded frame 'f' has arrived, advance the tick, and re-pause once all events
 ## have fired and the settle margin has elapsed.
 func _replay_step_tick() -> void:
+	if _replay_perf_ms.size() < _REPLAY_PERF_CAP:
+		_replay_perf_ms.append(Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0)
+		_replay_perf_fps.append(Performance.get_monitor(Performance.TIME_FPS))
 	while _replay_i < _replay_events.size():
 		var ev: Dictionary = _replay_events[_replay_i]
 		if int(ev.get("f", 0)) > _replay_tick:
@@ -257,6 +275,42 @@ func _replay_step_tick() -> void:
 		var tree := get_tree()
 		if tree != null:
 			tree.paused = true
+
+
+## Flat numeric summary of the replay window's perf capture ({} until a window has sampled).
+## Flat keys keep assert metric names and baseline diffing one-to-one: {type:"perf",
+## metric:"frame_ms_p95", max:16.7} reads exactly this dictionary. All values are measured
+## (Performance monitors), never modeled. Only meaningful for a WINDOWED game — headless has
+## no RHI, so frame_ms/fps/draw_calls there reflect a render-less loop (the headless runner
+## therefore skips those asserts; memory/orphan metrics stay valid everywhere).
+func _replay_perf_summary() -> Dictionary:
+	if _replay_perf_ms.is_empty():
+		return {}
+	var by_ms := _replay_perf_ms.duplicate()
+	by_ms.sort()
+	var n := by_ms.size()
+	var total := 0.0
+	for v in by_ms:
+		total += v
+	var fps_total := 0.0
+	var fps_min := 0.0
+	for i in _replay_perf_fps.size():
+		fps_total += _replay_perf_fps[i]
+		if i == 0 or _replay_perf_fps[i] < fps_min:
+			fps_min = _replay_perf_fps[i]
+	return {
+		"frames": n,
+		"frame_ms_min": by_ms[0],
+		"frame_ms_avg": total / float(n),
+		"frame_ms_p95": by_ms[clampi(int(ceil(float(n) * 0.95)) - 1, 0, n - 1)],
+		"frame_ms_max": by_ms[n - 1],
+		"fps_min": fps_min,
+		"fps_avg": fps_total / float(maxi(1, _replay_perf_fps.size())),
+		"memory_static_end": Performance.get_monitor(Performance.MEMORY_STATIC),
+		"memory_delta": Performance.get_monitor(Performance.MEMORY_STATIC) - _replay_perf_mem0,
+		"orphan_delta": Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT) - _replay_perf_orphan0,
+		"draw_calls_end": Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
+	}
 
 
 func _handle(line: String) -> void:
@@ -343,7 +397,7 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 		"replay_open":
 			return _replay_open(msg)
 		"replay_status":
-			return {"ok": true, "replaying": _replaying, "injected": _replay_injected, "frames": _replay_tick, "total_events": _replay_events.size(), "remaining": _replay_events.size() - _replay_i, "paused": (get_tree() != null and get_tree().paused)}
+			return {"ok": true, "replaying": _replaying, "injected": _replay_injected, "frames": _replay_tick, "total_events": _replay_events.size(), "remaining": _replay_events.size() - _replay_i, "paused": (get_tree() != null and get_tree().paused), "perf": _replay_perf_summary()}
 		"tc_freeze":
 			return _tc_freeze()
 		"tc_unfreeze":

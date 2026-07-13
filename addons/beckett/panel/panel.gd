@@ -28,6 +28,9 @@ var _status_dot: Panel
 var _status_text: Label
 var _toggle_btn: Button
 var _url_btn: Button
+var _auth_label: Label
+var _auth_btn: Button
+var _auth_off_btn: Button
 var _game_label: Label
 var _client_label: Label
 var _client_dot: Panel
@@ -211,6 +214,29 @@ func _build_server_card() -> void:
 	_url_btn.tooltip_text = "Click to copy the MCP endpoint URL"
 	_url_btn.pressed.connect(_on_copy_url)
 	box.add_child(_url_btn)
+
+	# Auth row (v1.9): token state + enable/rotate/off. The token rides in the endpoint URL,
+	# so every change here immediately re-writes the detected client configs to match.
+	var auth_row := HBoxContainer.new()
+	auth_row.add_theme_constant_override("separation", int(5 * _es))
+	auth_row.tooltip_text = "Loopback auth: requests must carry the project's token (in the URL or an Authorization header).\nOn = only clients set up by Beckett can call the server. Rotate re-keys and re-writes client configs."
+	_auth_label = Label.new()
+	_auth_label.add_theme_font_size_override("font_size", int(11 * _es))
+	_auth_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	auth_row.add_child(_auth_label)
+	_auth_btn = Button.new()
+	_auth_btn.focus_mode = Control.FOCUS_NONE
+	_auth_btn.add_theme_font_size_override("font_size", int(10 * _es))
+	_auth_btn.pressed.connect(_on_auth_enable_or_rotate)
+	auth_row.add_child(_auth_btn)
+	_auth_off_btn = Button.new()
+	_auth_off_btn.text = "Off"
+	_auth_off_btn.focus_mode = Control.FOCUS_NONE
+	_auth_off_btn.add_theme_font_size_override("font_size", int(10 * _es))
+	_auth_off_btn.tooltip_text = "Disable token auth (any local process can call the server again)"
+	_auth_off_btn.pressed.connect(_on_auth_disable)
+	auth_row.add_child(_auth_off_btn)
+	box.add_child(auth_row)
 
 	# Live connection: a dot + who's talking (green) or a pending "waiting…" (amber). The
 	# authoritative state from the initialize handshake — distinct from "config written".
@@ -1122,8 +1148,9 @@ func _refresh() -> void:
 	_toggle_btn.text = "Stop Server" if running else "Start Server"
 	_toggle_btn.icon = _eicon("Stop") if running else _eicon("Play")
 
-	_url_btn.text = "http://127.0.0.1:%d/mcp" % _port()
+	_url_btn.text = MCPClientConfig.mcp_url(_port(), _auth_token())
 	_url_btn.modulate.a = 1.0 if running else 0.5
+	_refresh_auth_row()
 
 	_game_label.visible = server != null and server.bridge != null and server.bridge.is_game_connected()
 	_refresh_client_line(running)
@@ -1221,13 +1248,63 @@ func _on_toggle_server() -> void:
 
 
 func _on_copy_url() -> void:
-	DisplayServer.clipboard_set("http://127.0.0.1:%d/mcp" % _port())
+	DisplayServer.clipboard_set(MCPClientConfig.mcp_url(_port(), _auth_token()))
 	_flash("Endpoint URL copied ✓")
 
 
 func _on_copy() -> void:
-	DisplayServer.clipboard_set(MCPClientConfig.config_json(_port()))
+	DisplayServer.clipboard_set(MCPClientConfig.config_json(_port(), _auth_token()))
 	_flash("Client config copied ✓")
+
+
+# ---------------------------------------------------------------- auth (v1.9)
+
+func _auth_token() -> String:
+	return str(server.auth_token()) if server != null and server.has_method("auth_token") else ""
+
+
+func _auth_enabled() -> bool:
+	return _auth_token() != ""
+
+
+func _refresh_auth_row() -> void:
+	if _auth_label == null:
+		return
+	var on := _auth_enabled()
+	_auth_label.text = "auth: token on" if on else "auth: off (any local process can call)"
+	_auth_label.add_theme_color_override("font_color",
+		_color("success_color", Color(0.3, 0.8, 0.4)) if on else _dim())
+	_auth_btn.text = "Rotate" if on else "Enable"
+	_auth_btn.tooltip_text = "Re-key the token and update client configs" if on \
+		else "Generate a token; only clients set up by Beckett can call the server"
+	_auth_off_btn.visible = on
+
+
+## Enable auth (mint the first token) or rotate the existing one, then immediately re-write
+## every detected client config so nothing starts 401ing with a stale URL.
+func _on_auth_enable_or_rotate() -> void:
+	if server == null or not server.has_method("rotate_auth_token"):
+		return
+	var was_on := _auth_enabled()
+	var tok: String = server.rotate_auth_token()
+	if tok == "":
+		_flash("Could not write the token file (see editor log)", false)
+		return
+	MCPClientConfig.ensure_all(_port(), tok)
+	_clients_accum = 999.0  # re-detect on the next tick
+	_flash(("Token rotated" if was_on else "Token auth enabled") + " · client configs updated ✓")
+	_refresh()
+
+
+## Turn auth off and strip the token from client-config URLs so the state stays in lockstep.
+func _on_auth_disable() -> void:
+	if server == null or not server.has_method("set_auth_disabled"):
+		return
+	server.set_auth_disabled()
+	MCPClientConfig.ensure_all(_port(), "")
+	_clients_accum = 999.0
+	_flash("Token auth disabled")
+	_refresh()
 
 
 ## Toggle the activity feed between the recent few and the whole ring (forces a rebuild).
@@ -1264,7 +1341,7 @@ func _all_calls_text() -> String:
 
 ## One button, every detected client: project configs + Claude Desktop's global file.
 func _on_connect_clients() -> void:
-	var results: Array = MCPClientConfig.ensure_all(_port())
+	var results: Array = MCPClientConfig.ensure_all(_port(), _auth_token())
 	if results.is_empty():
 		_flash("No MCP clients detected on this machine", false)
 		return

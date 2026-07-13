@@ -16,6 +16,8 @@ class_name BeckettRuntimeObserveTools
 
 var server  # mcp_server node (exposes .bridge)
 
+const MCPJobsScript := preload("res://addons/beckett/core/jobs.gd")  # poll_until (B2)
+
 
 func _register(registry) -> void:
 	registry.register({
@@ -84,10 +86,13 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "get_performance_monitors",
-		"description": "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics). target=game (default when a play session is connected) samples the RUNNING game; target=editor samples the editor.",
+		"description": "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics) — measured engine counters, never estimates. target=game (default when a play session is connected) reads the RUNNING game; target=editor reads the editor. duration_s>0 (game only, max 30) SAMPLES OVER TIME: polls every interval_ms (default 100, min 30) while the game keeps running, then returns per-monitor stats {min,avg,p95,max} — e.g. fps.p95 or process_time.max over a stress window; series=true also returns the raw per-sample series (token-heavy). Editor-target sampling is refused honestly: a tool call blocks the editor's own loop, so an over-time editor read would only measure a stalled editor.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string", "description": "game | editor | auto"},
+			"duration_s": {"type": "number", "description": "sampling window in seconds (0 = single snapshot; max 30; game target only)"},
+			"interval_ms": {"type": "integer", "description": "sampling interval (default 100, min 30)"},
+			"series": {"type": "boolean", "description": "include the raw per-sample series, capped at 300 samples (default false)"},
 		}},
 		"handler": Callable(self, "_get_perf"),
 	})
@@ -189,14 +194,13 @@ func _wait_for_node(args: Dictionary) -> Dictionary:
 		return {"error": "game not running"}
 	var path := str(args.get("path", ""))
 	var timeout: int = clampi(int(args.get("timeout_ms", 5000)), 100, 60000)
-	var t0 := Time.get_ticks_msec()
-	while Time.get_ticks_msec() - t0 < timeout:
-		server.bridge.poll_once()
+	var tick := func() -> Dictionary:
 		var r: Dictionary = server.bridge.send_command({"cmd": "exists", "path": path}, 1000)
-		if bool(r.get("exists", false)):
-			return {"text": "node appeared: %s" % path}
-		OS.delay_msec(120)
-	return {"error": "timeout waiting for node: %s" % path}
+		return {"found": true} if bool(r.get("exists", false)) else {}
+	var res: Dictionary = MCPJobsScript.poll_until(timeout, 120, tick, Callable(server.bridge, "poll_once"))
+	if res.has("timeout"):
+		return {"error": "timeout waiting for node: %s" % path}
+	return {"text": "node appeared: %s" % path}
 
 
 func _monitor_properties(args: Dictionary) -> Dictionary:
@@ -206,18 +210,23 @@ func _monitor_properties(args: Dictionary) -> Dictionary:
 	var prop := str(args.get("property", ""))
 	var n: int = clampi(int(args.get("samples", 10)), 1, 120)
 	var interval: int = clampi(int(args.get("interval_ms", 50)), 10, 2000)
-	var series: Array = []
-	for i in n:
-		server.bridge.poll_once()
+	var series: Array = []  # captured by reference into the tick lambda
+	var tick := func() -> Dictionary:
 		var r: Dictionary = server.bridge.send_command({"cmd": "get", "path": path, "prop": prop}, 1000)
 		series.append(r.get("value"))
-		OS.delay_msec(interval)
+		return {"done": true} if series.size() >= n else {}
+	MCPJobsScript.poll_until(n * interval + 5000, interval, tick, Callable(server.bridge, "poll_once"))
 	return {"json": {"path": path, "property": prop, "samples": series}}
 
 
 func _get_perf(args: Dictionary) -> Dictionary:
 	var target := str(args.get("target", "auto"))
 	var use_game: bool = target == "game" or (target == "auto" and server.bridge != null and server.bridge.is_game_connected())
+	var duration_s: float = clampf(float(args.get("duration_s", 0.0)), 0.0, 30.0)
+	if duration_s > 0.0:
+		if not use_game:
+			return {"error": "duration_s sampling needs target=game with a play session connected — a tool call blocks the editor's own loop, so an over-time editor sample would only measure a stalled editor. Use single snapshots for the editor."}
+		return _sample_perf(duration_s, clampi(int(args.get("interval_ms", 100)), 30, 2000), bool(args.get("series", false)))
 	if use_game:
 		var r: Dictionary = server.bridge.send_command({"cmd": "perf"})
 		if not bool(r.get("ok", false)):
@@ -227,6 +236,49 @@ func _get_perf(args: Dictionary) -> Dictionary:
 	for pair in _perf_pairs():
 		out[pair[0]] = Performance.get_monitor(pair[1])
 	return {"json": {"target": "editor", "monitors": out}}
+
+
+## Sample the running game's monitors over a window (v1.9): poll cmd=perf every interval,
+## then reduce each numeric monitor to {min, avg, p95, max}. The handler blocks the EDITOR
+## for the window (sync-handler constraint) while the GAME — its own process — keeps running
+## frames, so the numbers are real gameplay measurements. Measured, never modeled.
+func _sample_perf(duration_s: float, interval_ms: int, want_series: bool) -> Dictionary:
+	if not server.bridge.is_game_connected():
+		return {"error": "game not running (runtime channel not connected) — play_scene, then wait_until game_connected"}
+	var series: Array = []  # captured by reference; poll_until's timeout IS the window end
+	var t0 := Time.get_ticks_msec()
+	var tick := func() -> Dictionary:
+		var r: Dictionary = server.bridge.send_command({"cmd": "perf"}, 1000)
+		if bool(r.get("ok", false)) and r.get("monitors", {}) is Dictionary:
+			series.append(r.get("monitors"))
+		return {}
+	MCPJobsScript.poll_until(int(duration_s * 1000.0), interval_ms, tick, Callable(server.bridge, "poll_once"))
+	if series.is_empty():
+		return {"error": "no samples collected — the game stopped answering during the window"}
+	var stats: Dictionary = {}
+	var first: Dictionary = series[0]
+	for key in first:
+		var vals := PackedFloat64Array()
+		for s in series:
+			var v: Variant = (s as Dictionary).get(key)
+			if v is int or v is float:
+				vals.append(float(v))
+		if vals.is_empty():
+			continue
+		vals.sort()
+		var total := 0.0
+		for v in vals:
+			total += v
+		stats[key] = {
+			"min": vals[0],
+			"avg": total / float(vals.size()),
+			"p95": vals[clampi(int(ceil(float(vals.size()) * 0.95)) - 1, 0, vals.size() - 1)],
+			"max": vals[vals.size() - 1],
+		}
+	var out := {"target": "game", "samples": series.size(), "window_ms": Time.get_ticks_msec() - t0, "interval_ms": interval_ms, "stats": stats}
+	if want_series:
+		out["series"] = series.slice(0, 300)
+	return {"json": out}
 
 
 func _perf_pairs() -> Array:

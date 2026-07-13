@@ -12,7 +12,7 @@
       2. waits for the embedded HTTP/JSON-RPC server to answer,
       3. POSTs initialize to http://127.0.0.1:<port>/mcp and asserts the response
          carries protocolVersion + serverInfo,
-      4. POSTs tools/list and asserts EXACTLY 50 tools (the Lite surface), and
+      4. POSTs tools/list and asserts EXACTLY the expected Lite tool count, and
       5. ALWAYS kills the editor process on the way out (finally block).
 
     Compatible with BOTH Windows PowerShell 5.1 (local dev) and PowerShell 7
@@ -37,7 +37,7 @@
     root two levels up from this script.
 
 .PARAMETER ExpectedTools
-    Expected tool count from tools/list. Default 50 (the Lite surface).
+    Expected tool count from tools/list. Default 51 (the Lite surface since v1.9's doctor).
 
 .PARAMETER BootTimeoutSec
     How long to wait for the server to start answering before failing. Default 120
@@ -56,7 +56,7 @@ param(
 
     [string]$ProjectPath,
 
-    [int]$ExpectedTools = 50,
+    [int]$ExpectedTools = 51,
 
     [int]$BootTimeoutSec = 120
 )
@@ -117,10 +117,13 @@ Write-Host "  expect  : $ExpectedTools tools (Lite surface)"
 
 # Isolated, deterministic boot: enable the server, pin both ports, and never let the
 # boot rewrite the repo's client config. These are read by plugin.gd / mcp_server.gd.
+# BECKETT_AUTH=0 (v1.9): a CI checkout is exactly the fresh-setup case where token auth
+# defaults ON — without the kill switch every probe below would 401.
 $env:BECKETT_ENABLE = '1'
 $env:BECKETT_PORT = "$Port"
 $env:BECKETT_RUNTIME_PORT = "$($Port + 1)"
 $env:BECKETT_AUTO_CONFIG = '0'
+$env:BECKETT_AUTH = '0'
 
 $logOut = Join-Path ([System.IO.Path]::GetTempPath()) "beckett-ci-$Port.out.log"
 $logErr = Join-Path ([System.IO.Path]::GetTempPath()) "beckett-ci-$Port.err.log"
@@ -205,6 +208,7 @@ finally {
     Remove-Item Env:BECKETT_PORT -ErrorAction SilentlyContinue
     Remove-Item Env:BECKETT_RUNTIME_PORT -ErrorAction SilentlyContinue
     Remove-Item Env:BECKETT_AUTO_CONFIG -ErrorAction SilentlyContinue
+    Remove-Item Env:BECKETT_AUTH -ErrorAction SilentlyContinue
 }
 
 Write-Host ""

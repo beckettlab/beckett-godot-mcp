@@ -12,22 +12,31 @@ class_name BeckettClientConfig
 const SERVER_KEY := "beckett"
 
 
-static func entry(port: int) -> Dictionary:
-	return {"type": "http", "url": "http://127.0.0.1:%d/mcp" % port}
+## The one place the endpoint URL is built. With auth on (v1.9), the token rides as a URL
+## path segment (/mcp/<token>) rather than a header — every client can carry a URL, while
+## only some config schemas can carry custom headers. The server accepts either form.
+static func mcp_url(port: int, token: String = "") -> String:
+	if token.is_empty():
+		return "http://127.0.0.1:%d/mcp" % port
+	return "http://127.0.0.1:%d/mcp/%s" % [port, token]
+
+
+static func entry(port: int, token: String = "") -> Dictionary:
+	return {"type": "http", "url": mcp_url(port, token)}
 
 
 ## stdio bridge for clients that can't speak HTTP directly (Claude Desktop, etc.).
-static func desktop_entry(port: int) -> Dictionary:
-	return {"command": "npx", "args": ["mcp-remote", "http://127.0.0.1:%d/mcp" % port]}
+static func desktop_entry(port: int, token: String = "") -> Dictionary:
+	return {"command": "npx", "args": ["mcp-remote", mcp_url(port, token)]}
 
 
-static func config_json(port: int) -> String:
-	return JSON.stringify({"mcpServers": {SERVER_KEY: entry(port)}}, "  ")
+static func config_json(port: int, token: String = "") -> String:
+	return JSON.stringify({"mcpServers": {SERVER_KEY: entry(port, token)}}, "  ")
 
 
 ## Snippet for Claude Desktop's claude_desktop_config.json (global; user pastes it).
-static func desktop_json(port: int) -> String:
-	return JSON.stringify({"mcpServers": {SERVER_KEY: desktop_entry(port)}}, "  ")
+static func desktop_json(port: int, token: String = "") -> String:
+	return JSON.stringify({"mcpServers": {SERVER_KEY: desktop_entry(port, token)}}, "  ")
 
 
 # ---------------------------------------------------------------- detection
@@ -64,8 +73,47 @@ static func cline_settings_path() -> String:
 
 
 ## Cline wants `type:"streamableHttp"` (not `"http"`) for a Streamable-HTTP server.
-static func cline_entry(port: int) -> Dictionary:
-	return {"url": "http://127.0.0.1:%d/mcp" % port, "type": "streamableHttp"}
+static func cline_entry(port: int, token: String = "") -> Dictionary:
+	return {"url": mcp_url(port, token), "type": "streamableHttp"}
+
+
+## Any PROJECT-LOCAL config already carrying our server entry? This is the fresh-setup test
+## behind default-on auth (v1.9): a project whose configs predate tokens must NOT get one
+## silently — that would 401 every already-connected client on upgrade. Enable via the dock.
+static func any_entry_in_project() -> bool:
+	return _configured("res://.mcp.json", "mcpServers") \
+		or _configured("res://.cursor/mcp.json", "mcpServers") \
+		or _configured("res://.vscode/mcp.json", "servers")
+
+
+## Per-client config freshness (doctor, v1.9): for each config file that mentions our entry,
+## does it carry the CURRENT endpoint URL (port + token)? A crude text scan on purpose — one
+## check that works across every schema shape (url / serverUrl / httpUrl / args / TOML)
+## instead of nine parsers. Tokenless expectation matches a tokened file too, which is right:
+## with auth off the server accepts any /mcp/* path.
+static func staleness(port: int, token: String = "") -> Array:
+	var expect := mcp_url(port, token)
+	var files := {
+		"Claude Code": "res://.mcp.json",
+		"Cursor": "res://.cursor/mcp.json",
+		"VS Code": "res://.vscode/mcp.json",
+		"VS Code (Cline)": cline_settings_path(),
+		"Claude Desktop": desktop_config_path(),
+		"Codex": codex_config_path(),
+		"Windsurf": windsurf_config_path(),
+		"Gemini CLI": gemini_config_path(),
+		"Antigravity": antigravity_config_path(),
+	}
+	var out: Array = []
+	for cname in files:
+		var path: String = files[cname]
+		if not FileAccess.file_exists(path):
+			continue
+		var text := FileAccess.get_file_as_string(path)
+		if not text.contains(SERVER_KEY):
+			continue
+		out.append({"client": cname, "path": path, "current": text.contains(expect)})
+	return out
 
 
 ## Does `path`'s config already carry our server entry (any port)?
@@ -121,37 +169,37 @@ static func detect() -> Array:
 ## when that app exists on this machine (so we never drop a junk config dir into a
 ## project for an editor the user doesn't have). Claude Desktop is NOT auto-written —
 ## it's a global file and its entry needs an `npx` bridge (Node.js); see ensure_all.
-static func ensure_auto(port: int) -> Array:
+static func ensure_auto(port: int, token: String = "") -> Array:
 	var out: Array = []
-	out.append(_tag("Claude Code", ensure_mcp_json(port)))
+	out.append(_tag("Claude Code", ensure_mcp_json(port, token)))
 	if DirAccess.dir_exists_absolute(_home().path_join(".cursor")):
-		out.append(_tag("Cursor", ensure_cursor(port)))
+		out.append(_tag("Cursor", ensure_cursor(port, token)))
 	if DirAccess.dir_exists_absolute(_appdata_dir("Code")):
-		out.append(_tag("VS Code", ensure_vscode(port)))
+		out.append(_tag("VS Code", ensure_vscode(port, token)))
 	return out
 
 
 ## The panel's one-button connect: everything ensure_auto covers PLUS the global configs
 ## (Cline's globalStorage, Claude Desktop) when those apps are installed — merge-not-clobber,
 ## same as the rest. These are outside the project, so they're button-only (never auto).
-static func ensure_all(port: int) -> Array:
-	var out := ensure_auto(port)
+static func ensure_all(port: int, token: String = "") -> Array:
+	var out := ensure_auto(port, token)
 	if DirAccess.dir_exists_absolute(_cline_storage_dir()):
-		out.append(_tag("VS Code (Cline)", ensure_cline(port)))
+		out.append(_tag("VS Code (Cline)", ensure_cline(port, token)))
 	if DirAccess.dir_exists_absolute(_appdata_dir("Claude")):
-		out.append(_tag("Claude Desktop", _merge(desktop_config_path(), "mcpServers", desktop_entry(port))))
+		out.append(_tag("Claude Desktop", _merge(desktop_config_path(), "mcpServers", desktop_entry(port, token))))
 	# Home-dir clients (Codex / Windsurf / Gemini CLI / Antigravity): global configs like Cline
 	# & Desktop, so button-only (never auto). Each gated on its own dir so we don't seed a config
 	# for a client the user doesn't have.
 	if DirAccess.dir_exists_absolute(_home().path_join(".codex")):
-		out.append(_tag("Codex", ensure_codex(port)))
+		out.append(_tag("Codex", ensure_codex(port, token)))
 	if DirAccess.dir_exists_absolute(_home().path_join(".codeium/windsurf")):
-		out.append(_tag("Windsurf", ensure_windsurf(port)))
+		out.append(_tag("Windsurf", ensure_windsurf(port, token)))
 	if DirAccess.dir_exists_absolute(_home().path_join(".gemini")):
-		out.append(_tag("Gemini CLI", ensure_gemini(port)))
+		out.append(_tag("Gemini CLI", ensure_gemini(port, token)))
 	if DirAccess.dir_exists_absolute(_home().path_join(".gemini/config")) \
 			or DirAccess.dir_exists_absolute(_home().path_join(".gemini/antigravity")):
-		out.append(_tag("Antigravity", ensure_antigravity(port)))
+		out.append(_tag("Antigravity", ensure_antigravity(port, token)))
 	return out
 
 
@@ -161,26 +209,26 @@ static func _tag(client_name: String, r: Dictionary) -> Dictionary:
 
 
 # Claude Code: res://.mcp.json   (key "mcpServers")
-static func ensure_mcp_json(port: int) -> Dictionary:
-	return _merge("res://.mcp.json", "mcpServers", entry(port))
+static func ensure_mcp_json(port: int, token: String = "") -> Dictionary:
+	return _merge("res://.mcp.json", "mcpServers", entry(port, token))
 
 
 # Cursor / Windsurf: res://.cursor/mcp.json   (key "mcpServers")
-static func ensure_cursor(port: int) -> Dictionary:
+static func ensure_cursor(port: int, token: String = "") -> Dictionary:
 	_mkdir(".cursor")
-	return _merge("res://.cursor/mcp.json", "mcpServers", entry(port))
+	return _merge("res://.cursor/mcp.json", "mcpServers", entry(port, token))
 
 
 # VS Code (Copilot / VS Code-native): res://.vscode/mcp.json   (key "servers", not "mcpServers")
-static func ensure_vscode(port: int) -> Dictionary:
+static func ensure_vscode(port: int, token: String = "") -> Dictionary:
 	_mkdir(".vscode")
-	return _merge("res://.vscode/mcp.json", "servers", entry(port))
+	return _merge("res://.vscode/mcp.json", "servers", entry(port, token))
 
 
 # Cline: its global cline_mcp_settings.json (key "mcpServers"). Field-merge so the user's
 # autoApprove/disabled/timeout on our entry survive a re-Connect — see _merge_into_entry.
-static func ensure_cline(port: int) -> Dictionary:
-	return _merge_into_entry(cline_settings_path(), "mcpServers", cline_entry(port))
+static func ensure_cline(port: int, token: String = "") -> Dictionary:
+	return _merge_into_entry(cline_settings_path(), "mcpServers", cline_entry(port, token))
 
 
 # ---------------------------------------------------------------- home-dir clients
@@ -208,31 +256,31 @@ static func codex_config_path() -> String:
 
 
 # Windsurf speaks Streamable HTTP through a `serverUrl` field (not `url`).
-static func ensure_windsurf(port: int) -> Dictionary:
-	return _merge_into_entry(windsurf_config_path(), "mcpServers", {"serverUrl": "http://127.0.0.1:%d/mcp" % port})
+static func ensure_windsurf(port: int, token: String = "") -> Dictionary:
+	return _merge_into_entry(windsurf_config_path(), "mcpServers", {"serverUrl": mcp_url(port, token)})
 
 
 # Gemini CLI keys a streamable-HTTP server under `httpUrl`.
-static func ensure_gemini(port: int) -> Dictionary:
-	return _merge_into_entry(gemini_config_path(), "mcpServers", {"httpUrl": "http://127.0.0.1:%d/mcp" % port})
+static func ensure_gemini(port: int, token: String = "") -> Dictionary:
+	return _merge_into_entry(gemini_config_path(), "mcpServers", {"httpUrl": mcp_url(port, token)})
 
 
 # Antigravity (Google's agentic IDE) shares Gemini's tree but under config/, and uses `serverUrl`
 # like Windsurf. We leave `disabled` unset — absent == enabled — so re-Connect never stomps a
 # user who toggled the server off in the UI.
-static func ensure_antigravity(port: int) -> Dictionary:
-	return _merge_into_entry(antigravity_config_path(), "mcpServers", {"serverUrl": "http://127.0.0.1:%d/mcp" % port})
+static func ensure_antigravity(port: int, token: String = "") -> Dictionary:
+	return _merge_into_entry(antigravity_config_path(), "mcpServers", {"serverUrl": mcp_url(port, token)})
 
 
 ## Codex is TOML, not JSON, so it needs its own minimal upsert: rewrite (or append) exactly our
 ## [mcp_servers.beckett] table and touch nothing else — Codex users routinely keep model/approval
 ## settings and other MCP servers in this file. We only ever replace our own section, never
 ## blind-overwrite, and skip the write when it is already correct (no churn), mirroring _merge.
-static func ensure_codex(port: int) -> Dictionary:
+static func ensure_codex(port: int, token: String = "") -> Dictionary:
 	var path := codex_config_path()
 	var existed := FileAccess.file_exists(path)
 	var existing := FileAccess.get_file_as_string(path) if existed else ""
-	var res := _codex_upsert(existing, port)
+	var res := _codex_upsert(existing, port, token)
 	if not bool(res["changed"]):
 		return {"ok": true, "action": "unchanged", "path": path}
 	var dir := path.get_base_dir()
@@ -250,9 +298,9 @@ static func ensure_codex(port: int) -> Dictionary:
 ## and provably never disturbs other tables. Rewrites exactly our [mcp_servers.<name>] table (from
 ## its header to the next TOML header or EOF); everything else is copied verbatim. Returns
 ## {text, changed}; changed=false when our table is already present exactly (skip the write).
-static func _codex_upsert(existing: String, port: int) -> Dictionary:
+static func _codex_upsert(existing: String, port: int, token: String = "") -> Dictionary:
 	var header := "[mcp_servers.%s]" % SERVER_KEY
-	var desired: Array[String] = [header, "url = \"http://127.0.0.1:%d/mcp\"" % port, "enabled = true"]
+	var desired: Array[String] = [header, "url = \"%s\"" % mcp_url(port, token), "enabled = true"]
 
 	var lines: Array[String] = []
 	if existing != "":

@@ -37,15 +37,18 @@ func _enter_tree() -> void:
 	if _autostart():
 		var err := _server.start_server(port)
 		if err == OK:
-			print("[beckett] server listening on http://127.0.0.1:%d/mcp" % port)
+			print("[beckett] server listening on " + MCPClientConfig.mcp_url(_server.http.port, _server.auth_token())
+				+ (" (token auth on)" if _server.auth_enabled() else ""))
 		else:
 			push_error("[beckett] failed to start server: %s" % error_string(err))
 
 	# Zero-click connect: write/merge configs for the clients that actually exist here
 	# (.mcp.json always; .cursor / .vscode when that app is installed). Merge, never
 	# clobber. Claude Desktop stays button-only (global file + npx bridge) — see panel.
+	# The auth token (when on) rides in the URL, and the LIVE port is used (B5: it may
+	# have walked past a busy one), so configs stay in lockstep with both.
 	if _auto_write_config():
-		MCPClientConfig.ensure_auto(port)
+		MCPClientConfig.ensure_auto(_server.http.port if _server.is_running() else port, _server.auth_token())
 
 	# Dock panel — status, Start/Stop, set up client, copy config.
 	_panel = PanelScript.new()

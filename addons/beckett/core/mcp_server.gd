@@ -57,6 +57,11 @@ const ResourcesScript := preload("res://addons/beckett/resources/resources.gd")
 const PromptsScript := preload("res://addons/beckett/prompts/prompts.gd")
 const MCPJobsScript := preload("res://addons/beckett/core/jobs.gd")
 const MCPEffortScript := preload("res://addons/beckett/core/effort.gd")
+const MCPClientConfigScript := preload("res://addons/beckett/core/client_config.gd")
+
+# Auth-token file (v1.9): lives in a self-gitignored project dir so the secret never lands
+# in VCS. File present == auth on; the dock's enable/rotate/disable buttons manage it.
+const AUTH_TOKEN_FILE := "res://.beckett/token"
 
 var plugin: EditorPlugin  # set by plugin.gd; exposes get_undo_redo()
 
@@ -115,8 +120,9 @@ func setup() -> void:
 	if rp != "" and rp.is_valid_int():
 		_runtime_port = rp.to_int()
 
-	# Security config from env (all optional; safe defaults).
-	_token = OS.get_environment("BECKETT_TOKEN")
+	# Security config (env still wins for CI; see _resolve_auth_token for the file-token
+	# and fresh-setup default-on logic behind the v1.9 loopback auth).
+	_token = _resolve_auth_token()
 	_readonly = _env_flag("BECKETT_READONLY")
 	_confirm_destructive = _env_flag("BECKETT_CONFIRM_DESTRUCTIVE")
 	var al := OS.get_environment("BECKETT_ALLOWLIST")
@@ -158,11 +164,59 @@ func _register_tools() -> void:
 		_tool_modules.append(m)
 
 
+## Start the HTTP endpoint + the runtime bridge. v1.9 (B5): on a bind failure both walk up
+## to 10 ports from their base — two editors side-by-side just work. The actual bound ports
+## land in http.port / _runtime_port; BECKETT_RUNTIME_PORT is (re)exported into THIS editor
+## process's environment so games it launches dial the RIGHT bridge (children inherit env —
+## without this, editor B's games would connect to editor A's default-port bridge). The live
+## HTTP port is also dropped in res://.beckett/port for out-of-band discovery.
 func start_server(port: int) -> int:
-	var err := http.start(port, "127.0.0.1")
-	if err == OK and bridge != null:
-		bridge.start(_runtime_port, "127.0.0.1")
-	return err
+	var err := ERR_CANT_CREATE
+	for offset in 10:
+		err = http.start(port + offset, "127.0.0.1")
+		if err == OK:
+			break
+	if err != OK:
+		return err
+	if http.port != port:
+		print("[beckett] port %d busy — serving on %d (client configs follow the live port)" % [port, http.port])
+	if bridge != null:
+		var rp_err := ERR_CANT_CREATE
+		for offset in 10:
+			rp_err = bridge.start(_runtime_port + offset, "127.0.0.1")
+			if rp_err == OK:
+				_runtime_port = bridge.port
+				break
+		if rp_err != OK:
+			push_error("[beckett] runtime bridge could not bind %d..%d — play-session tools will not connect" % [_runtime_port, _runtime_port + 9])
+		OS.set_environment("BECKETT_RUNTIME_PORT", str(_runtime_port))
+	_write_port_discovery(http.port)
+	return OK
+
+
+## Persist the live HTTP port next to the auth token (same self-gitignored dir) so external
+## tooling can find a negotiated port without parsing editor logs.
+func _write_port_discovery(bound: int) -> void:
+	var dir := _ensure_beckett_dir()
+	var f := FileAccess.open(dir + "/port", FileAccess.WRITE)
+	if f != null:
+		f.store_string(str(bound) + "\n")
+		f.close()
+
+
+## res://.beckett/ — project-local runtime state (token, live port), seeded with a
+## self-gitignore so none of it ever lands in VCS. Returns the dir path.
+func _ensure_beckett_dir() -> String:
+	var dir := AUTH_TOKEN_FILE.get_base_dir()
+	if not DirAccess.dir_exists_absolute(dir):
+		DirAccess.make_dir_recursive_absolute(dir)
+	var gi_path := dir + "/.gitignore"
+	if not FileAccess.file_exists(gi_path):
+		var gi := FileAccess.open(gi_path, FileAccess.WRITE)
+		if gi != null:
+			gi.store_string("*\n")
+			gi.close()
+	return dir
 
 
 func stop_server() -> void:
@@ -203,6 +257,10 @@ func max_effort() -> int:
 
 func is_lite() -> bool:
 	return _max_effort < MCPEffortScript.MAX_LEVEL
+
+
+func is_readonly() -> bool:
+	return _readonly
 
 
 ## Per-tool off switches the dock owns, kept SEPARATE from the env _allowlist (which stays a
@@ -279,7 +337,7 @@ func handle_http(req: Dictionary) -> Dictionary:
 
 	if not _check_origin(headers):
 		return _http(403, {}, "forbidden origin")
-	if not _check_token(headers):
+	if not _check_token(headers, str(req.get("path", ""))):
 		return _http(401, {}, "unauthorized")
 	if not _check_session(headers):
 		return _http(404, {}, "unknown session")
@@ -333,7 +391,7 @@ func _instructions() -> String:
 			+ " If the user asks for one of those, say it needs the Full edition (upgrade link on the Beckett dock panel).")
 	return ("Beckett — MCP for Godot, Full edition. " + core
 		+ " Loop: author -> play_scene -> wait_until game_connected -> playtest (screenshot, simulate_input, click_button_by_text, assert_*, test_run) -> logs_read -> fix -> export_project (background; poll job_status)."
-		+ " Call list_skills early: 41 knowledge packs name the exact classes/properties/methods per domain (physics, shaders, animation, multiplayer, ...)."
+		+ " Call list_skills early: 44 knowledge packs name the exact classes/properties/methods per domain (physics, shaders, animation, multiplayer, ...)."
 		+ " For a 'make me a game' request, however vague: load_skill name=game-oneshot FIRST and follow it — it expands the idea, routes to a genre blueprint pack, and gates each build phase.")
 
 func _dispatch(id: Variant, rpc_method: String, params: Dictionary) -> Dictionary:
@@ -709,10 +767,87 @@ func _check_origin(headers: Dictionary) -> bool:
 		or origin.begins_with("http://[::1]")
 
 
-func _check_token(headers: Dictionary) -> bool:
+func _check_token(headers: Dictionary, path: String = "") -> bool:
 	if _token.is_empty():
 		return true
-	return str(headers.get("authorization", "")) == "Bearer " + _token
+	var auth := str(headers.get("authorization", ""))
+	if auth.begins_with("Bearer ") and _secure_equals(auth.substr(7), _token):
+		return true
+	# URL-path form (/mcp/<token>): the universal carrier — every client config can hold a
+	# URL, only some can hold custom headers. client_config writes this form on setup.
+	var p := path.split("?")[0]
+	while p.ends_with("/"):
+		p = p.substr(0, p.length() - 1)
+	return _secure_equals(p.get_file(), _token)
+
+
+## Constant-time string compare for auth: never early-outs on the first differing byte, so
+## response timing leaks nothing about how much of a guessed token matched (length excepted).
+static func _secure_equals(a: String, b: String) -> bool:
+	var ab := a.to_utf8_buffer()
+	var bb := b.to_utf8_buffer()
+	var diff := ab.size() ^ bb.size()
+	for i in mini(ab.size(), bb.size()):
+		diff |= ab[i] ^ bb[i]
+	return diff == 0
+
+
+# ---------------------------------------------------------------- auth token (v1.9)
+
+## Resolve the auth token at startup: env kill-switch > env token (CI/headless) > project
+## token file > first-run generation. Only a FRESH setup (no project client config carries
+## our entry yet) gets a generated token by default — an upgraded project keeps auth off
+## until the dock enables it, so existing client configs never start 401ing after an update.
+func _resolve_auth_token() -> String:
+	var kill := OS.get_environment("BECKETT_AUTH").to_lower()
+	if kill == "0" or kill == "false":
+		return ""
+	var envt := OS.get_environment("BECKETT_TOKEN")
+	if not envt.is_empty():
+		return envt
+	if FileAccess.file_exists(AUTH_TOKEN_FILE):
+		return FileAccess.get_file_as_string(AUTH_TOKEN_FILE).strip_edges()
+	if MCPClientConfigScript.any_entry_in_project():
+		return ""  # upgrade path: tokenless configs already point at us
+	return _write_new_token()
+
+
+## Generate + persist a fresh token (32 hex chars) under res://.beckett/, seeding the dir
+## with a self-gitignore so the secret stays out of VCS. Returns the token ("" on IO failure,
+## which degrades to auth-off rather than a wedged server).
+func _write_new_token() -> String:
+	_ensure_beckett_dir()
+	var tok := Crypto.new().generate_random_bytes(16).hex_encode()
+	var f := FileAccess.open(AUTH_TOKEN_FILE, FileAccess.WRITE)
+	if f == null:
+		push_error("[beckett] could not write auth token file %s (%s) — auth stays off" % [AUTH_TOKEN_FILE, error_string(FileAccess.get_open_error())])
+		return ""
+	f.store_string(tok + "\n")
+	f.close()
+	return tok
+
+
+func auth_token() -> String:
+	return _token
+
+
+func auth_enabled() -> bool:
+	return not _token.is_empty()
+
+
+## Dock: enable (or rotate) token auth — mint a fresh token, persist it, apply it live.
+## The caller then re-writes client configs (ensure_all with the new token) or connected
+## clients start 401ing. Returns the new token ("" on IO failure = still off).
+func rotate_auth_token() -> String:
+	_token = _write_new_token()
+	return _token
+
+
+## Dock: turn token auth off and keep it off across restarts (removes the token file).
+func set_auth_disabled() -> void:
+	_token = ""
+	if FileAccess.file_exists(AUTH_TOKEN_FILE):
+		DirAccess.remove_absolute(AUTH_TOKEN_FILE)
 
 
 ## Validate the session header ONLY when the client actually sends one. The spec lets

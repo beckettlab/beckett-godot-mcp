@@ -13,6 +13,7 @@ class_name BeckettRunTools
 
 # Max main-thread block per wait_until call — see _wait_until for why.
 const BLOCK_SLICE_MS := 1500
+const MCPJobsScript := preload("res://addons/beckett/core/jobs.gd")  # poll_until (B2)
 
 var server  # mcp_server node (exposes .bridge)
 
@@ -107,15 +108,14 @@ func _wait_until(args: Dictionary) -> Dictionary:
 		if ms > budget:
 			return {"text": "waited %d ms of %s — call again for the remainder (per-call cap keeps the editor responsive)" % [budget, cond]}
 		return {"text": "condition met: %s" % cond}
-	var t0 := Time.get_ticks_msec()
-	while Time.get_ticks_msec() - t0 < budget:
-		# Pump the bridge — we hold the main thread, so its _process can't run and
-		# would otherwise never accept the game's incoming connection.
-		if server.bridge != null:
-			server.bridge.poll_once()
-		if _check(cond):
-			return {"text": "condition met: %s" % cond}
-		OS.delay_msec(50)
+	# Pump the bridge each pass — we hold the main thread, so its _process can't run and
+	# would otherwise never accept the game's incoming connection.
+	var tick := func() -> Dictionary:
+		return {"met": true} if _check(cond) else {}
+	var pump := Callable(server.bridge, "poll_once") if server.bridge != null else Callable()
+	var res: Dictionary = MCPJobsScript.poll_until(budget, 50, tick, pump)
+	if res.has("met"):
+		return {"text": "condition met: %s" % cond}
 	return {"error": "not yet: %s (waited %d ms — per-call cap; the editor needs free frames between calls to launch the game and run jobs). Call wait_until again." % [cond, budget]}
 
 
