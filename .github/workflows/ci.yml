@@ -232,7 +232,7 @@ jobs:
         shell: pwsh
         run: |
           & "$env:GODOT_BIN" --headless --version | Out-Null
-          ./tests/ci-smoke.ps1 -GodotExe "$env:GODOT_BIN" -Port ([int]$env:BECKETT_CI_PORT) -ProjectPath . -ExpectedTools 51
+          ./tests/ci-smoke.ps1 -GodotExe "$env:GODOT_BIN" -Port ([int]$env:BECKETT_CI_PORT) -ProjectPath . -ExpectedTools 52
 
       # Belt-and-suspenders: guarantee no Godot process outlives the job even if a
       # step above died before ci-smoke.ps1's finally ran.
