@@ -14,7 +14,8 @@ const RUNTIME_AUTOLOAD := "BeckettRuntime"
 const RUNTIME_SCRIPT := "res://addons/beckett/runtime/mcp_runtime.gd"
 
 var _server: MCPServerScript = null
-var _panel: Control = null
+var _panel: Control = null   # the dock content (VBox of cards)
+var _dock: Control = null    # ScrollContainer wrapping _panel; the control actually docked
 
 
 func _enter_tree() -> void:
@@ -52,10 +53,22 @@ func _enter_tree() -> void:
 
 	# Dock panel — status, Start/Stop, set up client, copy config.
 	_panel = PanelScript.new()
-	_panel.name = "Beckett"  # set BEFORE add so the dock tab title is correct on 4.2-4.4 too
 	_panel.server = _server
 	_panel.plugin = self
-	add_control_to_dock(EditorPlugin.DOCK_SLOT_RIGHT_UL, _panel)
+	_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Wrap the panel in a ScrollContainer before docking. The panel is a tall stack of
+	# cards; on a short screen or a high editor scale their combined min height can exceed
+	# the dock's available height and force the whole editor window taller than the monitor,
+	# pushing the bottom panels (Output/Debugger/Shader…) below the screen edge. A
+	# ScrollContainer keeps the DOCKED control's min height near-zero (content scrolls
+	# instead), so Beckett can never drive the editor past the screen. The wrapper is the
+	# control added to the dock, so it carries the "Beckett" name for the tab title (set
+	# BEFORE add so it's correct on 4.2-4.4 too).
+	_dock = ScrollContainer.new()
+	_dock.name = "Beckett"
+	_dock.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_dock.add_child(_panel)
+	add_control_to_dock(EditorPlugin.DOCK_SLOT_RIGHT_UL, _dock)
 	_reveal_dock_once()
 
 
@@ -75,21 +88,22 @@ func _reveal_dock_once() -> void:
 
 
 func _bring_dock_to_front() -> void:
-	if not is_instance_valid(_panel):
+	if not is_instance_valid(_dock):
 		return
-	var p: Node = _panel.get_parent()
+	var p: Node = _dock.get_parent()
 	while p != null and not (p is TabContainer):
 		p = p.get_parent()
 	if p is TabContainer:
-		var idx := _panel.get_index()
+		var idx := _dock.get_index()
 		if idx >= 0:
 			(p as TabContainer).current_tab = idx
 
 
 func _exit_tree() -> void:
-	if is_instance_valid(_panel):
-		remove_control_from_docks(_panel)
-		_panel.free()
+	if is_instance_valid(_dock):
+		remove_control_from_docks(_dock)
+		_dock.free()  # frees _panel too (its child)
+	_dock = null
 	_panel = null
 	if is_instance_valid(_server):
 		_server.stop_server()
