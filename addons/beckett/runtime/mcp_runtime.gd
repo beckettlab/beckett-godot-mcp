@@ -61,6 +61,13 @@ const ReplayPerf := preload("res://addons/beckett/runtime/replay_perf.gd")
 var _replay_perf := ReplayPerf.new()
 # Wire-format <-> InputEvent codec (recorder, `input` cmd, replay injection) — B7 split.
 const InputCodec := preload("res://addons/beckett/runtime/input_codec.gd")
+# UI snapshot + the occlusion hit test behind click_control's accuracy precheck
+# (v1.10 UI-playtest pillar) — feature logic lives in ui_inspect.gd, dispatch here.
+const UiInspect := preload("res://addons/beckett/runtime/ui_inspect.gd")
+# ui_do macro window (v1.10 P1): one call = a whole click/type/wait/assert flow run
+# game-side across frames. The machine lives in ui_do.gd; _process ticks it.
+const UiDo := preload("res://addons/beckett/runtime/ui_do.gd")
+var _ui_do := UiDo.new()
 
 # Captured game output — runtime script errors WITH stack traces, push_error/warning,
 # and print() — via a custom OS Logger installed in the played game. This is the
@@ -155,6 +162,9 @@ func _process(delta: float) -> void:
 			var line := _buf.slice(0, nl).get_string_from_utf8()
 			_buf = _buf.slice(nl + 1)
 			_handle(line)
+		# Advance an open ui_do macro window one attempt per frame (after command
+		# handling, so an open/abort from this very frame is already applied).
+		_ui_do.tick()
 	elif st == StreamPeerTCP.STATUS_ERROR or st == StreamPeerTCP.STATUS_NONE:
 		# Reconnect on DROP too, not just before the first connect. A mid-session drop
 		# (bridge restart, editor focus loss) used to be permanent — the old retry was
@@ -337,6 +347,20 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 			return _click_control(msg)
 		"control_rect":
 			return _control_rect(msg)
+		"ui_snapshot":
+			return _ui_snapshot(msg)
+		"type_text":
+			return _type_text(msg)
+		"ui_audit":
+			return _ui_audit(msg)
+		"ui_do_open":
+			if _stepping or _replaying:
+				return {"ok": false, "error": "a time_control/replay window is open — close it before ui_do"}
+			return _ui_do.open(self, msg)
+		"ui_do_status":
+			return _ui_do.status()
+		"ui_do_abort":
+			return _ui_do.abort()
 		"click_node3d":
 			return _click_node3d(msg)
 		"click_world":
@@ -369,6 +393,8 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 				return {"ok": false, "error": "expr exec error: %s" % eex.get_error_text()}
 			return {"ok": true, "value": _safe(eval_v)}
 		"replay_open":
+			if _ui_do.active:
+				return {"ok": false, "error": "a ui_do window is open — let it finish (ui_do_status) or ui_do_abort first"}
 			return _replay_open(msg)
 		"replay_status":
 			return {"ok": true, "replaying": _replaying, "injected": _replay_injected, "frames": _replay_tick, "total_events": _replay_events.size(), "remaining": _replay_events.size() - _replay_i, "paused": (get_tree() != null and get_tree().paused), "perf": _replay_perf.summary()}
@@ -377,8 +403,12 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 		"tc_unfreeze":
 			return _tc_unfreeze()
 		"tc_step":
+			if _ui_do.active:
+				return {"ok": false, "error": "a ui_do window is open — let it finish (ui_do_status) or ui_do_abort first"}
 			return _tc_step(msg)
 		"tc_step_until":
+			if _ui_do.active:
+				return {"ok": false, "error": "a ui_do window is open — let it finish (ui_do_status) or ui_do_abort first"}
 			return _tc_step_until(msg)
 		"tc_step_status":
 			return _tc_step_status()
@@ -781,10 +811,77 @@ func _screenshot(msg: Dictionary = {}) -> Dictionary:
 		return {"ok": false, "error": "could not read viewport image (headless / no RHI?)"}
 	var full_w := img.get_width()
 	var full_h := img.get_height()
+	# Set-of-Mark legend is collected BEFORE crop/scale — marks live in full-image
+	# pixel space; the drawer maps them through (xy - crop_offset) * scale.
+	var annotate := str(msg.get("annotate", "")) == "ui"
+	var marks_list: Array = []
+	if annotate:
+		marks_list = UiInspect.marks(vp, get_tree().root, _root(), int(msg.get("max_marks", 40)))
+	var off := Vector2.ZERO
+	var rg: Variant = msg.get("region", null)
+	if rg is Array and (rg as Array).size() >= 4:
+		off = Vector2(float(clampi(int(rg[0]), 0, full_w - 1)), float(clampi(int(rg[1]), 0, full_h - 1)))
 	img = _maybe_crop(img, msg)
-	var png := img.save_png_to_buffer()
-	return {"ok": true, "png": Marshalls.raw_to_base64(png),
+	var scale := clampf(float(msg.get("scale", 1.0)), 0.05, 1.0)
+	if scale < 1.0:
+		img.resize(maxi(1, roundi(img.get_width() * scale)), maxi(1, roundi(img.get_height() * scale)), Image.INTERPOLATE_BILINEAR)
+	if not marks_list.is_empty():
+		UiInspect.annotate_image(img, marks_list, off, scale)
+	var fmt := str(msg.get("format", "png")).to_lower()
+	var quality := clampf(float(msg.get("quality", 0.8)), 0.1, 1.0)
+	var data: PackedByteArray
+	var mime := "image/png"
+	var note := ""
+	if fmt == "jpeg" or fmt == "jpg":
+		# save_jpg_to_buffer is duck-checked: older 4.x without it falls back honestly.
+		if img.has_method("save_jpg_to_buffer"):
+			data = img.save_jpg_to_buffer(quality)
+			mime = "image/jpeg"
+		else:
+			data = img.save_png_to_buffer()
+			note = "jpeg unsupported on this engine — png returned"
+	elif fmt == "webp":
+		data = img.save_webp_to_buffer(true, quality)
+		mime = "image/webp"
+	else:
+		data = img.save_png_to_buffer()
+	var out := {"ok": true, "data": Marshalls.raw_to_base64(data), "mime": mime,
 		"w": img.get_width(), "h": img.get_height(), "full_w": full_w, "full_h": full_h}
+	if mime == "image/png":
+		out["png"] = out["data"]  # legacy key — playtest/compare baseline readers use it
+	if note != "":
+		out["note"] = note
+	if annotate:
+		# Legend rects are remapped into FINAL image pixels so a follow-up region= crop
+		# or a click plan can reuse them directly against the returned picture.
+		var legend: Array = []
+		for m in marks_list:
+			var md := m as Dictionary
+			var r4: Array = md["rect"]
+			var e := {"i": md["i"], "path": md["path"],
+				"rect": [roundi((float(r4[0]) - off.x) * scale), roundi((float(r4[1]) - off.y) * scale),
+					roundi(float(r4[2]) * scale), roundi(float(r4[3]) * scale)]}
+			if md.has("text"):
+				e["text"] = md["text"]
+			legend.append(e)
+		out["marks"] = legend
+	return out
+
+
+## ui_audit: deterministic layout QA over the live UI (checks in ui_inspect.gd).
+func _ui_audit(msg: Dictionary) -> Dictionary:
+	var vp := get_viewport()
+	if vp == null:
+		return {"ok": false, "error": "no viewport"}
+	if _root() == null:
+		return {"ok": false, "error": "no current scene"}
+	var scope: Node = get_tree().root
+	var p := str(msg.get("path", ""))
+	if not p.is_empty():
+		scope = _resolve(p)
+		if scope == null:
+			return {"ok": false, "error": "node not found: %s" % p}
+	return UiInspect.audit(vp, get_tree().root, _root(), scope, msg)
 
 
 ## Crop to region=[x,y,w,h] (pixels, clamped to bounds) to save tokens; returns the
@@ -910,6 +1007,11 @@ func _click_text(msg: Dictionary) -> Dictionary:
 	if idx < 0 or idx >= matches.size():
 		return {"ok": false, "error": "nth %d out of range (%d match(es) for '%s')" % [idx, matches.size(), text]}
 	var btn: Node = matches[idx]
+	# v1.10 accuracy: a disabled button never fires in the real UI — emitting its
+	# 'pressed' anyway would hand the agent a fabricated success.
+	if UiInspect.is_disabled(btn):
+		return {"ok": true, "clicked": false, "path": str(root.get_path_to(btn)),
+			"warning": "button is disabled — 'pressed' not emitted (the real UI would ignore this click)"}
 	btn.emit_signal("pressed")
 	return {"ok": true, "clicked": true, "path": str(root.get_path_to(btn)), "match_count": matches.size()}
 
@@ -944,6 +1046,11 @@ func _click_control(msg: Dictionary) -> Dictionary:
 		return {"ok": true, "clicked": false, "path": path,
 			"warning": "control is hidden (not visible in tree) — nothing to click"}
 	var center: Vector2 = ctrl.get_global_rect().get_center()
+	# v1.10 accuracy: a disabled control swallows clicks — pushing anyway would report
+	# a success the real UI can never produce.
+	if UiInspect.is_disabled(ctrl):
+		return {"ok": true, "clicked": false, "path": path, "at": [center.x, center.y],
+			"warning": "control is disabled — the click would be ignored (enable it first, or pick another control)"}
 	if _is_point_clipped(ctrl, center, vp):
 		if not _scroll_into_view(ctrl):
 			return {"ok": true, "clicked": false, "scrolled": false, "path": path, "at": [center.x, center.y],
@@ -954,6 +1061,26 @@ func _click_control(msg: Dictionary) -> Dictionary:
 		if _is_point_clipped(ctrl, center, vp):
 			return {"ok": true, "clicked": false, "scrolled": true, "path": path, "at": [center.x, center.y],
 				"warning": "scrolled toward view but still clipped (nested scroll?) — call click_control again to land the click"}
+	# v1.10 accuracy: whoever is TOP-MOST at the point receives the event. If that is
+	# not the target (a popup on top, a modal overlay, a covering ColorRect with
+	# mouse_filter STOP), pushing would activate the WRONG control — refuse and name
+	# the blocker instead. Skipped for controls inside embedded Windows (their rects
+	# are window-local; the main-canvas hit test does not apply — pre-1.10 push kept).
+	# receiver == null with a visible non-IGNORE target means our approximation missed
+	# (custom _has_point override?) — fall through to the push, never block on a guess.
+	var receiver: Node = null
+	var ignore_note := ""
+	if not UiInspect.inside_embedded_window(ctrl, get_tree().root):
+		receiver = UiInspect.pick_at(vp, get_tree().root, center)
+		if receiver != null and receiver != ctrl and not UiInspect.click_reaches(receiver, ctrl):
+			if ctrl.mouse_filter == Control.MOUSE_FILTER_IGNORE:
+				ignore_note = "target has mouse_filter=IGNORE — the click was delivered at its position; %s received it" \
+					% UiInspect.path_of(receiver, _root())
+			else:
+				return {"ok": true, "clicked": false, "path": path, "at": [center.x, center.y],
+					"occluded_by": UiInspect.path_of(receiver, _root()),
+					"warning": "occluded by %s (%s) — that control would receive the click instead; close/dismiss it, or click it" \
+						% [UiInspect.path_of(receiver, _root()), receiver.get_class()]}
 	var button := int(msg.get("button", 1))
 	var down := InputEventMouseButton.new()
 	down.button_index = button
@@ -967,7 +1094,12 @@ func _click_control(msg: Dictionary) -> Dictionary:
 	up.position = center
 	up.global_position = center
 	vp.push_input(up, true)
-	return {"ok": true, "clicked": true, "path": path, "at": [center.x, center.y]}
+	var out := {"ok": true, "clicked": true, "path": path, "at": [center.x, center.y]}
+	if receiver != null and receiver != ctrl:
+		out["received_by"] = UiInspect.path_of(receiver, _root())
+	if ignore_note != "":
+		out["note"] = ignore_note
+	return out
 
 
 ## True if point p (GUI space) is outside the viewport OR clipped by a clip_contents
@@ -1035,6 +1167,100 @@ func _control_rect(msg: Dictionary) -> Dictionary:
 		"screen_rect": [sr.position.x, sr.position.y, sr.size.x, sr.size.y],
 		"screen_center": [sr.get_center().x, sr.get_center().y],
 	}}
+
+
+## One-call accessibility snapshot of the visible UI (v1.10) — the walker lives in
+## ui_inspect.gd; this just resolves the scope. Walks the whole SceneTree root by
+## default so autoload HUD layers and popup Windows outside the current scene show up.
+func _ui_snapshot(msg: Dictionary) -> Dictionary:
+	var vp := get_viewport()
+	if vp == null:
+		return {"ok": false, "error": "no viewport"}
+	if _root() == null:
+		return {"ok": false, "error": "no current scene"}
+	var scope: Node = get_tree().root
+	var p := str(msg.get("path", ""))
+	if not p.is_empty():
+		scope = _resolve(p)
+		if scope == null:
+			return {"ok": false, "error": "node not found: %s" % p}
+	return UiInspect.snapshot(vp, get_tree().root, _root(), scope, msg)
+
+
+## Type a string into a focusable Control as REAL key events (each char an
+## InputEventKey carrying `unicode`), so text_changed / validation / max-length all
+## fire — unlike a programmatic `text =` set, which fires none of them. All chars land
+## within ONE frame, so LineEdit's deferred text_changed coalesces to a single emission
+## (paste semantics — same as a player hitting Ctrl+V). clear=true (default) replaces
+## the content (select_all first, so the first char overwrites); '\n' chars and
+## submit=true press Enter (LineEdit fires text_submitted).
+func _type_text(msg: Dictionary) -> Dictionary:
+	# 'text' is the PAYLOAD to type here, not the text selector — strip it from the
+	# resolve spec or it would filter targets by their current text content.
+	var spec := msg.duplicate()
+	spec.erase("text")
+	var n := _resolve_target(spec)
+	if n == null:
+		return {"ok": false, "error": _not_found(spec)}
+	if not (n is Control):
+		return {"ok": false, "error": "not a Control (%s) — type_text drives focusable text inputs" % n.get_class()}
+	var ctrl := n as Control
+	var vp := get_viewport()
+	if vp == null:
+		return {"ok": false, "error": "no viewport"}
+	var path := str(_root().get_path_to(ctrl))
+	if not ctrl.is_visible_in_tree():
+		return {"ok": true, "typed": 0, "path": path, "warning": "control is hidden — nothing typed"}
+	if UiInspect.is_disabled(ctrl):
+		return {"ok": true, "typed": 0, "path": path, "warning": "control is disabled — nothing typed"}
+	if "editable" in ctrl and not bool(ctrl.get("editable")):
+		return {"ok": true, "typed": 0, "path": path, "warning": "control is not editable — nothing typed"}
+	if ctrl.focus_mode == Control.FOCUS_NONE:
+		return {"ok": false, "error": "%s has focus_mode NONE — it cannot take keyboard input; set focus_mode, or write the property with runtime_set_property (no signals)" % path}
+	ctrl.grab_focus()
+	if vp.gui_get_focus_owner() != ctrl:
+		return {"ok": false, "error": "could not focus %s — another control refuses to release focus" % path}
+	var text := str(msg.get("text", ""))
+	if bool(msg.get("clear", true)):
+		if ctrl.has_method("select_all"):
+			ctrl.call("select_all")
+			if text.is_empty():
+				_push_key(vp, KEY_BACKSPACE, 0)
+		elif "text" in ctrl:
+			ctrl.set("text", "")
+	var typed := 0
+	for i in text.length():
+		var code := text.unicode_at(i)
+		if code == 10:
+			_push_key(vp, KEY_ENTER, 0)  # newline: TextEdit inserts a break, LineEdit submits
+		else:
+			_push_key(vp, 0, code)
+		typed += 1
+	if bool(msg.get("submit", false)):
+		_push_key(vp, KEY_ENTER, 0)
+	var out := {"ok": true, "typed": typed, "path": path, "submitted": bool(msg.get("submit", false))}
+	# Read the text back so the agent sees what the field ACCEPTED (max_length,
+	# filters, and text_changed handlers included) without a second call.
+	if "text" in ctrl:
+		out["text_after"] = str(ctrl.get("text"))
+	return out
+
+
+## Press+release one key straight into the viewport. keycode may be 0 when the event
+## only carries text (`unicode`) — exactly how IME/soft-keyboard input arrives, and
+## what LineEdit/TextEdit insert from.
+func _push_key(vp: Viewport, keycode: int, unicode: int) -> void:
+	var down := InputEventKey.new()
+	down.keycode = keycode
+	down.physical_keycode = keycode
+	down.unicode = unicode
+	down.pressed = true
+	vp.push_input(down)
+	var up := InputEventKey.new()
+	up.keycode = keycode
+	up.physical_keycode = keycode
+	up.pressed = false
+	vp.push_input(up)
 
 
 ## Click a 3D node by projecting its world origin to the screen via the active

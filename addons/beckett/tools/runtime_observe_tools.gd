@@ -22,11 +22,16 @@ const MCPJobsScript := preload("res://addons/beckett/core/jobs.gd")  # poll_unti
 func _register(registry) -> void:
 	registry.register({
 		"name": "screenshot",
-		"description": "Capture an image the agent can see (inline PNG). target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport. region=[x,y,w,h] in pixels crops to that rect (clamped) to save tokens — screenshot full once to learn the size, then crop.",
+		"description": "Capture an image the agent can see. target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport (PNG only). Token-cost dials (game target, 1.10+): scale=0.5 quarters the pixels; format=jpeg|webp with quality (default 0.8) compresses far below PNG for game frames; region=[x,y,w,h] crops (clamped). annotate=ui draws numbered Set-of-Mark boxes over every visible interactive control and ALSO returns the legend as structured {marks:[{i, path, rect, text?}]} — one glance answers both 'does it look right' and 'what can I click where'; follow up with click_control path=<legend path>. For pure functional state, ui_snapshot is cheaper than any image.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string", "description": "game | editor"},
 			"region": {"type": "array", "description": "[x,y,w,h] pixel crop"},
+			"scale": {"type": "number", "description": "0.05..1.0 downscale before encode (game target; default 1.0)"},
+			"format": {"type": "string", "description": "png (default) | jpeg | webp (game target)"},
+			"quality": {"type": "number", "description": "jpeg/webp quality 0.1..1.0 (default 0.8)"},
+			"annotate": {"type": "string", "description": "'ui' = draw numbered marks on interactive controls + return the legend (game target)"},
+			"max_marks": {"type": "integer", "description": "cap on annotate marks (default 40)"},
 		}},
 		"handler": Callable(self, "_screenshot"),
 	})
@@ -42,6 +47,19 @@ func _register(registry) -> void:
 			"collapse": {"type": "boolean"},
 		}},
 		"handler": Callable(self, "_get_remote_tree"),
+	})
+	registry.register({
+		"name": "ui_snapshot",
+		"description": "One-call UI snapshot of the RUNNING game: every visible Control as structured data — path, class (+custom class_name), text, rect [x,y,w,h] (gui space, ints), and the semantic state pixels can't tell you: disabled, focused, checked (toggles), value + range (sliders/spin/progress), selected (+selected_text / tabs / item_count), editable / placeholder / secret (text fields), tooltip, mouse_ignore. Interactive controls also get honesty flags: clipped (scrolled out of view) and occluded_by (another control would swallow the click — popup/modal/overlay). Top level: focus owner, open popup/dialog windows (exclusive = modal), viewport size, and a stable content 'hash' — pass it back as since_hash and an unchanged UI returns {unchanged:true} for ~free. For functional UI checks this replaces the screenshot + find_ui_elements + get_control_rect + runtime_get_property round-trips (keep screenshot for VISUAL/render bugs). Walks the whole SceneTree root (autoload HUD layers and popups included); scope with path=, slim with interactive_only=true, cap with max_nodes (default 400).",
+		"readonly": true,
+		"input_schema": {"type": "object", "properties": {
+			"path": {"type": "string", "description": "subtree root to scope the walk (name, relative, or /root/...)"},
+			"interactive_only": {"type": "boolean", "description": "only buttons/sliders/text fields/lists/tabs + focusables (default false: all visible controls, labels included)"},
+			"occlusion": {"type": "boolean", "description": "compute occluded_by for interactive controls (default true; one hit-test walk per interactive control)"},
+			"max_nodes": {"type": "integer", "description": "cap on emitted controls (default 150)"},
+			"since_hash": {"type": "string", "description": "hash from a previous call — unchanged UI returns {unchanged:true} instead of the payload"},
+		}},
+		"handler": Callable(self, "_ui_snapshot"),
 	})
 	registry.register({
 		"name": "find_nodes",
@@ -116,15 +134,27 @@ func _screenshot(args: Dictionary) -> Dictionary:
 	if target == "editor":
 		return _editor_screenshot(args)
 	var cmd := {"cmd": "screenshot"}
-	if args.has("region"):
-		cmd["region"] = args["region"]
-	var r: Dictionary = server.bridge.send_command(cmd)
+	for k in ["region", "scale", "format", "quality", "annotate", "max_marks"]:
+		if args.has(k):
+			cmd[k] = args[k]
+	# Big frames + jpeg/webp encode + the annotate walk can push a cold heavy scene
+	# past the 4 s default — same reasoning as ui_snapshot's longer deadline.
+	var r: Dictionary = server.bridge.send_command(cmd, 10000)
 	if not bool(r.get("ok", false)):
 		return {"error": str(r.get("error", "screenshot failed"))}
-	var note := ""
+	var desc := "game screenshot %dx%d (%s)" % [int(r.get("w", 0)), int(r.get("h", 0)), str(r.get("mime", "image/png"))]
 	if int(r.get("w", 0)) != int(r.get("full_w", r.get("w", 0))) or int(r.get("h", 0)) != int(r.get("full_h", r.get("h", 0))):
-		note = " (cropped from %dx%d)" % [int(r.get("full_w", 0)), int(r.get("full_h", 0))]
-	return {"image_png_base64": str(r.get("png", "")), "text": "game screenshot %dx%d%s" % [int(r.get("w", 0)), int(r.get("h", 0)), note]}
+		desc += " (from %dx%d)" % [int(r.get("full_w", 0)), int(r.get("full_h", 0))]
+	if r.has("note"):
+		desc += " — " + str(r.get("note", ""))
+	var out := {"image_base64": str(r.get("data", r.get("png", ""))), "image_mime": str(r.get("mime", "image/png"))}
+	if r.has("marks"):
+		# Legend rides as structuredContent; the serializer renders it as text too, so
+		# the human-readable line moves inside the json for annotated captures.
+		out["json"] = {"screenshot": desc, "marks": r.get("marks", [])}
+	else:
+		out["text"] = desc
+	return out
 
 
 func _editor_screenshot(args: Dictionary) -> Dictionary:
@@ -143,6 +173,22 @@ func _editor_screenshot(args: Dictionary) -> Dictionary:
 		img = img.get_region(Rect2i(x, y, w, h))
 	var b64 := Marshalls.raw_to_base64(img.save_png_to_buffer())
 	return {"image_png_base64": b64, "text": "editor viewport %dx%d" % [img.get_width(), img.get_height()]}
+
+
+func _ui_snapshot(args: Dictionary) -> Dictionary:
+	var cmd := {"cmd": "ui_snapshot"}
+	for k in ["path", "interactive_only", "occlusion", "max_nodes", "since_hash"]:
+		if args.has(k):
+			cmd[k] = args[k]
+	# A cold heavy scene can stall frames past the default 4 s deadline (measured on a
+	# real RPG right after load) — a snapshot is worth the longer wait, never a desync.
+	var r: Dictionary = server.bridge.send_command(cmd, 10000)
+	if not bool(r.get("ok", false)):
+		return {"error": str(r.get("error", "ui_snapshot failed"))}
+	var out := r.duplicate()
+	out.erase("ok")
+	out.erase("_id")
+	return {"json": out}
 
 
 func _get_remote_tree(args: Dictionary) -> Dictionary:

@@ -185,6 +185,13 @@ func send_command(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
 					var s := buf.slice(0, nl).get_string_from_utf8()
 					buf = buf.slice(nl + 1)
 					var parsed: Variant = JSON.parse_string(s)
+					# A late handshake hello is NOT a reply: a heavy game's first _process can
+					# run only after the bridge's silent-peer grace already promoted it (scene
+					# load stalls >1.5 s), so its {"hello": ...} lands here — and, carrying no
+					# _id, it would DEFAULT-MATCH below and corrupt the first command of the
+					# session (found on rpg-village by the v1.10 UI e2e). Skip it explicitly.
+					if parsed is Dictionary and (parsed as Dictionary).has("hello"):
+						continue
 					# Match on id; a reply without _id (older game build) defaults to a
 					# match so the bridge keeps working across an un-synced runtime.
 					if parsed is Dictionary and int((parsed as Dictionary).get("_id", id)) == id:

@@ -740,7 +740,10 @@ func _type_mismatch(want: String, value: Variant) -> String:
 # ---------------------------------------------------------------- result formatting
 
 ## Convert a handler's return dict into an MCP tool result {content:[...], isError}.
-## Handler dict conventions: {text} | {json} | {image_png_base64[,text]} | {error[,suggestion]}
+## Handler dict conventions: {text} | {json} | {image_png_base64[,text]} |
+## {image_base64, image_mime[,text|json]} (v1.10: jpeg/webp screenshots ride with an
+## explicit mime; json alongside an image carries e.g. the Set-of-Mark legend) |
+## {error[,suggestion]}
 func _tool_result(r: Dictionary) -> Dictionary:
 	var content: Array = []
 	var is_error := false
@@ -761,6 +764,8 @@ func _tool_result(r: Dictionary) -> Dictionary:
 			structured = r["json"]
 	if r.has("image_png_base64"):
 		content.append({"type": "image", "data": str(r["image_png_base64"]), "mimeType": "image/png"})
+	elif r.has("image_base64"):
+		content.append({"type": "image", "data": str(r["image_base64"]), "mimeType": str(r.get("image_mime", "image/png"))})
 	if content.is_empty():
 		content.append({"type": "text", "text": "(no output)"})
 	var out := {"content": content, "isError": is_error}

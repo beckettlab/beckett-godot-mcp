@@ -85,6 +85,8 @@ const _DELTA := {
 		"get_remote_tree", "find_nodes", "wait_for_node", "screenshot",
 		"monitor_properties", "get_performance_monitors", "game_logs",
 		"runtime_get_property",
+		# one-call structured UI read (v1.10) — pure observation, so it Sees in Lite
+		"ui_snapshot",
 	],
 	# L5 — DRIVE & verify: the agent drives the game (input, clicks, drag/scroll,
 	# runtime writes/calls, record/replay) and checks results (asserts, test_run),
@@ -96,6 +98,10 @@ const _DELTA := {
 		"simulate_input", "click_button_by_text", "click_control",
 		"click_node3d", "click_world", "scroll", "drag",
 		"get_control_rect", "find_ui_elements",
+		# real per-char typing into text fields (v1.10)
+		"type_text",
+		# one-call semantic UI flow + deterministic layout QA (v1.10 P1)
+		"ui_do", "ui_audit",
 		"record_input", "replay_input",
 		# deterministic playtest control (freeze / frame-step / step-until / time-scale)
 		"time_control",

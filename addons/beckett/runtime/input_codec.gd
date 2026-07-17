@@ -7,7 +7,10 @@ extends RefCounted
 ## is added, extend BOTH, plus serialize_event here so the recorder can capture it.
 ##
 ## Wire shapes (all optional fields defaulted):
-##   {type:"key", keycode:"Right", pressed}                    — keycode is the STRING name
+##   {type:"key", keycode:"Right", pressed, unicode?}          — keycode is the STRING name;
+##       unicode = optional codepoint (int, or a 1-char string) so a key event can CARRY
+##       TEXT: LineEdit/TextEdit insert from unicode, not keycode (drives type_text + lets
+##       the recorder round-trip real typing)
 ##   {type:"action", action, pressed, strength}
 ##   {type:"mouse_button", button, position:[x,y], pressed}
 ##   {type:"mouse_motion", position:[x,y], relative:[x,y]}
@@ -25,6 +28,11 @@ static func build_event(e: Dictionary) -> InputEvent:
 			k.keycode = kc
 			k.physical_keycode = kc
 			k.pressed = bool(e.get("pressed", true))
+			var uni: Variant = e.get("unicode", 0)
+			if uni is String and (uni as String).length() > 0:
+				k.unicode = (uni as String).unicode_at(0)
+			else:
+				k.unicode = int(uni) if (uni is int or uni is float) else 0
 			return k
 		"action":
 			var a := InputEventAction.new()
@@ -80,7 +88,10 @@ static func serialize_event(e: InputEvent) -> Dictionary:
 		if k.echo:
 			return {}
 		var kc: int = k.keycode if k.keycode != 0 else k.physical_keycode
-		return {"type": "key", "keycode": OS.get_keycode_string(kc), "pressed": k.pressed}
+		var d := {"type": "key", "keycode": OS.get_keycode_string(kc), "pressed": k.pressed}
+		if k.unicode != 0:
+			d["unicode"] = k.unicode
+		return d
 	if e is InputEventMouseButton:
 		var mb := e as InputEventMouseButton
 		return {"type": "mouse_button", "button": mb.button_index, "position": [mb.position.x, mb.position.y], "pressed": mb.pressed}

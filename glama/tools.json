@@ -933,13 +933,33 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Capture an image the agent can see (inline PNG). target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport. region=[x,y,w,h] in pixels crops to that rect (clamped) to save tokens â screenshot full once to learn the size, then crop.",
+        "description":  "Capture an image the agent can see. target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport (PNG only). Token-cost dials (game target, 1.10+): scale=0.5 quarters the pixels; format=jpeg|webp with quality (default 0.8) compresses far below PNG for game frames; region=[x,y,w,h] crops (clamped). annotate=ui draws numbered Set-of-Mark boxes over every visible interactive control and ALSO returns the legend as structured {marks:[{i, path, rect, text?}]} â one glance answers both \u0027does it look right\u0027 and \u0027what can I click where\u0027; follow up with click_control path=\u003clegend path\u003e. For pure functional state, ui_snapshot is cheaper than any image.",
         "inputSchema":  {
                             "properties":  {
+                                               "annotate":  {
+                                                                "description":  "\u0027ui\u0027 = draw numbered marks on interactive controls + return the legend (game target)",
+                                                                "type":  "string"
+                                                            },
+                                               "format":  {
+                                                              "description":  "png (default) | jpeg | webp (game target)",
+                                                              "type":  "string"
+                                                          },
+                                               "max_marks":  {
+                                                                 "description":  "cap on annotate marks (default 40)",
+                                                                 "type":  "integer"
+                                                             },
+                                               "quality":  {
+                                                               "description":  "jpeg/webp quality 0.1..1.0 (default 0.8)",
+                                                               "type":  "number"
+                                                           },
                                                "region":  {
                                                               "description":  "[x,y,w,h] pixel crop",
                                                               "type":  "array"
                                                           },
+                                               "scale":  {
+                                                             "description":  "0.05..1.0 downscale before encode (game target; default 1.0)",
+                                                             "type":  "number"
+                                                         },
                                                "target":  {
                                                               "description":  "game | editor",
                                                               "type":  "string"
@@ -1112,6 +1132,40 @@
                             "type":  "object"
                         },
         "name":  "stop_scene"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "One-call UI snapshot of the RUNNING game: every visible Control as structured data â path, class (+custom class_name), text, rect [x,y,w,h] (gui space, ints), and the semantic state pixels can\u0027t tell you: disabled, focused, checked (toggles), value + range (sliders/spin/progress), selected (+selected_text / tabs / item_count), editable / placeholder / secret (text fields), tooltip, mouse_ignore. Interactive controls also get honesty flags: clipped (scrolled out of view) and occluded_by (another control would swallow the click â popup/modal/overlay). Top level: focus owner, open popup/dialog windows (exclusive = modal), viewport size, and a stable content \u0027hash\u0027 â pass it back as since_hash and an unchanged UI returns {unchanged:true} for ~free. For functional UI checks this replaces the screenshot + find_ui_elements + get_control_rect + runtime_get_property round-trips (keep screenshot for VISUAL/render bugs). Walks the whole SceneTree root (autoload HUD layers and popups included); scope with path=, slim with interactive_only=true, cap with max_nodes (default 400).",
+        "inputSchema":  {
+                            "properties":  {
+                                               "interactive_only":  {
+                                                                        "description":  "only buttons/sliders/text fields/lists/tabs + focusables (default false: all visible controls, labels included)",
+                                                                        "type":  "boolean"
+                                                                    },
+                                               "max_nodes":  {
+                                                                 "description":  "cap on emitted controls (default 150)",
+                                                                 "type":  "integer"
+                                                             },
+                                               "occlusion":  {
+                                                                 "description":  "compute occluded_by for interactive controls (default true; one hit-test walk per interactive control)",
+                                                                 "type":  "boolean"
+                                                             },
+                                               "path":  {
+                                                            "description":  "subtree root to scope the walk (name, relative, or /root/...)",
+                                                            "type":  "string"
+                                                        },
+                                               "since_hash":  {
+                                                                  "description":  "hash from a previous call â unchanged UI returns {unchanged:true} instead of the payload",
+                                                                  "type":  "string"
+                                                              }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "ui_snapshot"
     },
     {
         "annotations":  {

@@ -22,6 +22,7 @@ const ScriptTools := preload("res://addons/beckett/tools/script_tools.gd")
 const MCPRuntime := preload("res://addons/beckett/runtime/mcp_runtime.gd")
 const ReplayPerf := preload("res://addons/beckett/runtime/replay_perf.gd")
 const InputCodec := preload("res://addons/beckett/runtime/input_codec.gd")
+const UiInspect := preload("res://addons/beckett/runtime/ui_inspect.gd")
 const RuntimeBridge := preload("res://addons/beckett/core/runtime_bridge.gd")
 # Full-only modules: loaded dynamically so this suite ALSO runs on the Lite repo's CI,
 # where pack.ps1 physically trims them — their test groups then skip with a note.
@@ -54,6 +55,7 @@ func _init() -> void:
 		print("[unit] runner perf group skipped (Lite build: runner trimmed)")
 	_t_perf_summary_runtime()
 	_t_input_codec()
+	await _t_ui_inspect()
 	_t_bridge_compare()
 	print("")
 	if _fail > 0:
@@ -177,6 +179,14 @@ func _t_server_serializer() -> void:
 	var ti: Dictionary = s._tool_result({"image_png_base64": "QUJD", "text": "shot"})
 	var kinds: Array = (ti["content"] as Array).map(func(c): return c["type"])
 	_ok(kinds.has("text") and kinds.has("image"), "image + text both present")
+	# v1.10 P1: explicit-mime images (jpeg/webp screenshots) + a json legend alongside
+	var tm: Dictionary = s._tool_result({"image_base64": "QUJD", "image_mime": "image/jpeg", "json": {"marks": []}})
+	var img_c: Dictionary = {}
+	for c in (tm["content"] as Array):
+		if str(c.get("type", "")) == "image":
+			img_c = c
+	_ok(str(img_c.get("mimeType", "")) == "image/jpeg", "image_base64 carries its explicit mime")
+	_ok(tm.has("structuredContent") and (tm["structuredContent"] as Dictionary).has("marks"), "json legend rides beside the image")
 	var tn: Dictionary = s._tool_result({})
 	_ok(str((tn["content"] as Array)[0]["text"]) == "(no output)", "empty result says so instead of vanishing")
 	s.free()
@@ -316,6 +326,182 @@ func _t_input_codec() -> void:
 	echo.keycode = KEY_A
 	echo.echo = true
 	_ok((InputCodec.serialize_event(echo) as Dictionary).is_empty(), "echo keys serialize to {} (dropped)")
+	# v1.10: unicode rides on key events (type_text + recorded typing round-trip)
+	var uk: InputEvent = InputCodec.build_event({"type": "key", "unicode": 104, "pressed": true})
+	_ok(uk is InputEventKey and (uk as InputEventKey).unicode == 104, "key builds with unicode (int)")
+	var uk2: InputEvent = InputCodec.build_event({"type": "key", "unicode": "h", "pressed": true})
+	_ok(uk2 is InputEventKey and (uk2 as InputEventKey).unicode == 104, "key builds with unicode (1-char string)")
+	var uk_wire: Dictionary = InputCodec.serialize_event(uk)
+	_ok(int(uk_wire.get("unicode", 0)) == 104, "unicode round-trips through serialize")
+	var plain: InputEvent = InputCodec.build_event({"type": "key", "keycode": "Right", "pressed": true})
+	_ok(not (InputCodec.serialize_event(plain) as Dictionary).has("unicode"), "unicode key omitted when zero")
+
+
+# ---------------------------------------------------------------- ui_inspect (v1.10)
+
+## Real Controls on the live SceneTree root — layout math, the hit test, and the
+## snapshot walker all run headless (no RHI needed: rects and state are simulation-side).
+func _t_ui_inspect() -> void:
+	print("[unit] runtime/ui_inspect.gd (ui_snapshot walker + occlusion hit test)")
+	if root == null:
+		_ok(false, "SceneTree root unavailable — ui_inspect group cannot run")
+		return
+	# The headless --script root window is pinned at 64x64 (window_set_size no-ops on the
+	# headless DisplayServer), so the whole stage lives INSIDE 64x64 — a point outside the
+	# viewport would rightly read as clipped.
+	var host := Control.new()
+	host.name = "Host"
+	host.position = Vector2.ZERO
+	host.size = Vector2(60, 60)
+	root.add_child(host)
+	var btn := Button.new()
+	btn.name = "Play"
+	btn.text = "Play"
+	btn.position = Vector2(2, 2)
+	btn.size = Vector2(20, 10)
+	host.add_child(btn)
+	var slider := HSlider.new()
+	slider.name = "Volume"
+	slider.min_value = 0
+	slider.max_value = 10
+	slider.value = 7
+	slider.position = Vector2(2, 40)
+	slider.size = Vector2(40, 8)
+	host.add_child(slider)
+	# is_visible_in_tree stays false until the tree runs a frame (headless --script quirk;
+	# a real play session — windowed OR headless CI — is always frames-deep). One tick:
+	await process_frame
+	var center: Vector2 = btn.get_global_rect().get_center()
+
+	# --- hit test
+	_ok(UiInspect.pick_at(root, root, center) == btn, "pick_at finds the button at its center")
+	var overlay := ColorRect.new()
+	overlay.name = "Overlay"
+	overlay.position = Vector2.ZERO
+	overlay.size = Vector2(60, 60)
+	host.add_child(overlay)  # later sibling = painted on top
+	_ok(UiInspect.pick_at(root, root, center) == overlay, "covering sibling (STOP) receives the point")
+	_ok(not UiInspect.click_reaches(overlay, btn), "click_reaches refuses the covered button")
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ok(UiInspect.pick_at(root, root, center) == btn, "overlay with IGNORE is click-through")
+	var icon := ColorRect.new()
+	icon.name = "Icon"
+	icon.mouse_filter = Control.MOUSE_FILTER_PASS
+	icon.position = Vector2.ZERO
+	icon.size = btn.size  # the button's REAL size (min-size clamp beat the 20x10 request)
+	btn.add_child(icon)
+	var deep: Node = UiInspect.pick_at(root, root, center)
+	_ok(deep == icon, "PASS child is the raw receiver")
+	_ok(UiInspect.click_reaches(icon, btn), "PASS child bubbles the click up to the button")
+	var layer := CanvasLayer.new()
+	layer.layer = 5
+	root.add_child(layer)
+	var modal := ColorRect.new()
+	modal.name = "Modal"
+	modal.position = Vector2.ZERO
+	modal.size = Vector2(60, 60)
+	layer.add_child(modal)
+	_ok(UiInspect.pick_at(root, root, center) == modal, "higher CanvasLayer overlay wins the pick")
+	root.remove_child(layer)
+	layer.free()
+
+	# --- disabled probe
+	btn.disabled = true
+	_ok(UiInspect.is_disabled(btn), "is_disabled sees BaseButton.disabled")
+	btn.disabled = false
+	_ok(not UiInspect.is_disabled(slider), "is_disabled false on a control without the property")
+
+	# --- snapshot: entries, state, hash stability, since_hash short-circuit
+	var snap: Dictionary = UiInspect.snapshot(root, root, host, host, {})
+	_ok(bool(snap.get("ok", false)), "snapshot ok")
+	var by_path := {}
+	for e in snap.get("controls", []):
+		by_path[str((e as Dictionary).get("path", ""))] = e
+	_ok(by_path.has("Play") and str((by_path["Play"] as Dictionary).get("text", "")) == "Play", "snapshot carries the button + text")
+	var gr := btn.get_global_rect()
+	var play_rect: Array = (by_path.get("Play", {}) as Dictionary).get("rect", [])
+	_ok(play_rect == [roundi(gr.position.x), roundi(gr.position.y), roundi(gr.size.x), roundi(gr.size.y)],
+		"snapshot rect mirrors the live global rect (ints)")
+	var vol: Dictionary = by_path.get("Volume", {})
+	_ok(is_equal_approx(float(vol.get("value", -1)), 7.0) and vol.get("range", []) == [0.0, 10.0], "snapshot carries slider value + range")
+	var snap2: Dictionary = UiInspect.snapshot(root, root, host, host, {})
+	_ok(str(snap.get("hash")) == str(snap2.get("hash")), "hash is stable for an unchanged UI")
+	var snap3: Dictionary = UiInspect.snapshot(root, root, host, host, {"since_hash": str(snap.get("hash"))})
+	_ok(bool(snap3.get("unchanged", false)), "since_hash short-circuits to unchanged")
+	btn.text = "Start"
+	var snap4: Dictionary = UiInspect.snapshot(root, root, host, host, {"since_hash": str(snap.get("hash"))})
+	_ok(not bool(snap4.get("unchanged", false)) and str(snap4.get("hash")) != str(snap.get("hash")), "a text change changes the hash")
+
+	# --- snapshot occlusion flag
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	var snap5: Dictionary = UiInspect.snapshot(root, root, host, host, {})
+	var covered := {}
+	for e in snap5.get("controls", []):
+		covered[str((e as Dictionary).get("path", ""))] = e
+	_ok(str((covered.get("Play", {}) as Dictionary).get("occluded_by", "")) == "Overlay", "snapshot flags the covered button with occluded_by")
+
+	# --- ui_audit checks on a planted-bug stage (all inside the 64x64 window)
+	var stage := Control.new()
+	stage.name = "AuditStage"
+	stage.size = Vector2(60, 60)
+	root.add_child(stage)
+	var oa := TextureButton.new()
+	oa.name = "OA"
+	oa.position = Vector2(2, 2)
+	oa.size = Vector2(20, 12)
+	stage.add_child(oa)
+	var ob := TextureButton.new()
+	ob.name = "OB"
+	ob.position = Vector2(12, 6)  # overlaps OA by half
+	ob.size = Vector2(20, 12)
+	stage.add_child(ob)
+	var far := TextureButton.new()
+	far.name = "Far"
+	far.position = Vector2(200, 200)  # entirely outside the 64x64 viewport
+	far.size = Vector2(10, 10)
+	stage.add_child(far)
+	var lbl := Label.new()
+	lbl.name = "Trunc"
+	lbl.text = "far too long for twenty pixels"
+	lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	lbl.position = Vector2(2, 30)
+	lbl.size = Vector2(20, 12)
+	stage.add_child(lbl)
+	var mo := Button.new()
+	mo.name = "MouseOnly"
+	mo.text = "m"
+	mo.focus_mode = Control.FOCUS_NONE
+	mo.position = Vector2(2, 44)
+	stage.add_child(mo)
+	await process_frame
+	var au: Dictionary = UiInspect.audit(root, root, stage, stage, {"touch_min": 15})
+	_ok(bool(au.get("ok", false)), "audit ok")
+	var found := {}
+	for is_ in au.get("issues", []):
+		found[str((is_ as Dictionary).get("type", ""))] = true
+	_ok(found.has("overlap"), "audit finds the overlapping pair")
+	_ok(found.has("offscreen"), "audit finds the offscreen control")
+	_ok(found.has("text_overflow"), "audit finds the trimmed label (font-measured, not min-size)")
+	_ok(found.has("small_target"), "audit flags sub-touch_min targets")
+	_ok(found.has("mouse_only"), "audit flags focus_mode NONE buttons")
+	root.remove_child(stage)
+	stage.free()
+
+	# --- Set-of-Mark drawing onto a captured Image (no scene, pure pixels)
+	var canvas := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	canvas.fill(Color(0, 0, 0))
+	UiInspect.annotate_image(canvas, [{"i": 1, "path": "x", "rect": [4, 4, 24, 16]}], Vector2.ZERO, 1.0)
+	_ok(canvas.get_pixel(4, 4).is_equal_approx(UiInspect.MARK_COLOR), "annotate draws the box outline")
+	_ok(canvas.get_pixel(40, 40).is_equal_approx(Color(0, 0, 0)), "annotate leaves pixels outside the mark alone")
+	var tagged := false
+	for py in range(4, 22):
+		for px in range(4, 30):
+			if canvas.get_pixel(px, py).is_equal_approx(UiInspect.TAG_FG):
+				tagged = true
+	_ok(tagged, "annotate stamps the digit tag")
+
+	root.remove_child(host)
+	host.free()
 
 
 func _t_bridge_compare() -> void:
