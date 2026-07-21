@@ -7,6 +7,8 @@ class_name BeckettScriptTools
 ## writes by default — closing the #1 AI-on-Godot failure mode (GDScript hallucination)
 ## at the source instead of letting broken code land on disk.
 
+const Reflect := preload("res://addons/beckett/core/reflection.gd")
+
 var server  # mcp_server node
 
 
@@ -127,9 +129,11 @@ func _attach_script(args: Dictionary) -> Dictionary:
 	if root == null:
 		return {"error": "No scene is open in the editor."}
 	var target := str(args.get("target", ""))
-	var node := root.get_node_or_null(NodePath(target))
-	if node == null:
-		node = root.find_child(target, true, false)
+	# Shared resolver (v1.10.2): accepts ".", "/root", the scene root's OWN name, and
+	# descendant names/paths. The hand-rolled lookup that lived here was the one
+	# resolver copy missing the root-name alias, so attach_script target=<root name>
+	# failed while create_node parent=<root name> worked.
+	var node := Reflect.resolve(target) as Node
 	if node == null:
 		return {"error": "Could not resolve target: %s" % target}
 	var path := str(args.get("path", ""))

@@ -68,6 +68,10 @@ const UiInspect := preload("res://addons/beckett/runtime/ui_inspect.gd")
 # game-side across frames. The machine lives in ui_do.gd; _process ticks it.
 const UiDo := preload("res://addons/beckett/runtime/ui_do.gd")
 var _ui_do := UiDo.new()
+# Call-arg coercion shared VERBATIM with the editor's call_method (v1.10.2), so the
+# two sides can't drift. core/callargs.gd is dependency-free on purpose: it parses in
+# the game process and in export-template builds (no editor classes).
+const CallArgs := preload("res://addons/beckett/core/callargs.gd")
 
 # Captured game output — runtime script errors WITH stack traces, push_error/warning,
 # and print() — via a custom OS Logger installed in the played game. This is the
@@ -335,8 +339,7 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 			var n := _resolve_target(msg)
 			if n == null:
 				return {"ok": false, "error": _not_found(msg)}
-			var args: Array = msg.get("args", []) if msg.get("args", []) is Array else []
-			return {"ok": true, "result": _safe(n.callv(str(msg.get("method", "")), args)), "resolved": str(_root().get_path_to(n))}
+			return _call_cmd(n, msg)
 		"exists":
 			return {"ok": true, "exists": _resolve_target(msg) != null}
 		"find":
@@ -546,6 +549,46 @@ func _coerce_value(obj: Object, prop: String, value: Variant) -> Variant:
 			if value is String:
 				return Color(value)
 	return value
+
+
+## runtime "call" = the editor call_method's twin gate (v1.10.2). A raw callv on
+## mis-typed args does NOT run the method - the engine pushes an error (visible in
+## game_logs) and returns null, which this dispatch used to report as ok:true.
+func _call_cmd(n: Node, msg: Dictionary) -> Dictionary:
+	var method := str(msg.get("method", ""))
+	if not n.has_method(method):
+		return {"ok": false, "error": "%s has no method '%s'" % [n.get_class(), method]}
+	var raw: Variant = msg.get("args", [])
+	var args: Array = raw if raw is Array else []
+	var prep: Dictionary = CallArgs.prepare(n, method, args, self)
+	if not bool(prep.get("ok", false)):
+		return {"ok": false, "error": "%s.%s: %s" % [n.get_class(), method, str(prep.get("error", "argument mismatch"))]}
+	var resp := {"ok": true, "result": _safe(n.callv(method, prep["args"])), "resolved": str(_root().get_path_to(n))}
+	var warn := _stale_gd_warning(n)
+	if not warn.is_empty():
+		resp["warning"] = warn
+	return resp
+
+
+func _resolve_object_arg(spec: String) -> Node:
+	return _resolve(spec)
+
+
+## The running game keeps whatever script version it loaded; a .gd edited on disk
+## mid-play means live results no longer match the file. Surface that instead of
+## letting the mismatch masquerade as a game bug.
+func _stale_gd_warning(n: Node) -> String:
+	var scr = n.get_script()
+	if scr == null or not (scr is GDScript):
+		return ""
+	var path: String = scr.resource_path
+	if not path.begins_with("res://") or not FileAccess.file_exists(path):
+		return ""
+	var disk := FileAccess.get_file_as_string(path).replace("\r\n", "\n")
+	var loaded := str(scr.source_code).replace("\r\n", "\n")
+	if disk.is_empty() or loaded.is_empty() or disk == loaded:
+		return ""
+	return "script %s changed on disk after the game loaded it - the running game may still be on the old version (restart the scene to be sure)" % path
 
 
 func _select_walk(node: Node, cls: String, name_q: String, text_q: String, out: Array) -> void:

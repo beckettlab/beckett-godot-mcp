@@ -24,6 +24,7 @@ const ReplayPerf := preload("res://addons/beckett/runtime/replay_perf.gd")
 const InputCodec := preload("res://addons/beckett/runtime/input_codec.gd")
 const UiInspect := preload("res://addons/beckett/runtime/ui_inspect.gd")
 const RuntimeBridge := preload("res://addons/beckett/core/runtime_bridge.gd")
+const CallArgs := preload("res://addons/beckett/core/callargs.gd")
 # Full-only modules: loaded dynamically so this suite ALSO runs on the Lite repo's CI,
 # where pack.ps1 physically trims them — their test groups then skip with a note.
 const _PLAYTEST_TOOLS_PATH := "res://addons/beckett/tools/playtest_tools.gd"
@@ -43,6 +44,7 @@ func _init() -> void:
 	_t_server_serializer()
 	_t_secure_equals()
 	_t_validate_args()
+	_t_call_args()
 	_t_class_name_mask()
 	if ResourceLoader.exists(_PLAYTEST_TOOLS_PATH):
 		_t_playtest_helpers()
@@ -509,3 +511,79 @@ func _t_bridge_compare() -> void:
 	_ok(RuntimeBridge._secure_equals("tok-abc", "tok-abc"), "matching hello accepted")
 	_ok(not RuntimeBridge._secure_equals("tok-abc", "tok-abd"), "wrong hello rejected")
 	_ok(not RuntimeBridge._secure_equals("", "tok-abc"), "empty hello vs required token rejected")
+
+
+# ---------------------------------------------------------------- callargs (v1.10.2)
+
+## Typed probe: script param types flow through get_method_list exactly like ClassDB
+## types do for native methods, so this exercises the REAL prepare() path end-to-end
+## (including callv actually executing with the coerced args).
+class CallArgsProbe:
+	func take_vec3i(pos: Vector3i, item: int, orientation: int = 0) -> Vector3i:
+		return pos if item >= 0 and orientation >= 0 else Vector3i.ZERO
+
+	func take_vec3(v: Vector3) -> Vector3:
+		return v
+
+	func take_color(c: Color) -> Color:
+		return c
+
+	func take_sname(n: StringName) -> bool:
+		return n == &"jump"
+
+	func take_untyped(a, b := 5) -> Array:
+		return [a, b]
+
+	func take_pv2(points: PackedVector2Array) -> int:
+		return points.size()
+
+	func take_obj(o: Object) -> bool:
+		return o != null
+
+
+func _t_call_args() -> void:
+	print("[unit] callargs arg coercion (v1.10.2 silent-argument fix)")
+	var p := CallArgsProbe.new()
+	# The field-review trap verbatim: [1,0,0] for a Vector3i param used to no-op as ok.
+	var r: Dictionary = CallArgs.prepare(p, "take_vec3i", [[1, 0, 0], 60.0, 16])
+	_ok(bool(r.get("ok", false)) and r["args"][0] == Vector3i(1, 0, 0), "[x,y,z] coerces to Vector3i")
+	_ok(typeof(r["args"][1]) == TYPE_INT and r["args"][1] == 60, "JSON 60.0 coerces to int for an int param")
+	_ok(p.callv("take_vec3i", r["args"]) == Vector3i(1, 0, 0), "prepared args execute through callv")
+	r = CallArgs.prepare(p, "take_vec3", [{"x": 1, "y": 2, "z": 3}])
+	_ok(bool(r.get("ok", false)) and r["args"][0] == Vector3(1, 2, 3), "{x,y,z} coerces to Vector3")
+	r = CallArgs.prepare(p, "take_vec3", ["1 2 3"])
+	_ok(bool(r.get("ok", false)) and r["args"][0] == Vector3(1, 2, 3), "\"x y z\" string coerces to Vector3")
+	r = CallArgs.prepare(p, "take_vec3", ["Vector3(4, 5, 6)"])
+	_ok(bool(r.get("ok", false)) and r["args"][0] == Vector3(4, 5, 6), "Godot literal string coerces to Vector3")
+	r = CallArgs.prepare(p, "take_vec3i", [[1, 0], 1])
+	_ok(not bool(r.get("ok", false)) and str(r.get("error", "")).contains("arg 0"), "wrong-size vector array errors (no silent zero)")
+	r = CallArgs.prepare(p, "take_vec3i", [true, 1])
+	_ok(not bool(r.get("ok", false)), "garbage for a vector param errors (no silent zero)")
+	r = CallArgs.prepare(p, "take_vec3i", [[1, 0, 0]])
+	_ok(not bool(r.get("ok", false)) and str(r.get("error", "")).contains("at least"), "too few args errors instead of a silent no-op")
+	r = CallArgs.prepare(p, "take_vec3i", [[1, 0, 0], 1, 0, 9])
+	_ok(not bool(r.get("ok", false)) and str(r.get("error", "")).contains("at most"), "too many args errors")
+	r = CallArgs.prepare(p, "take_color", ["#ff0000"])
+	_ok(bool(r.get("ok", false)) and r["args"][0] == Color("#ff0000"), "hex string coerces to Color")
+	r = CallArgs.prepare(p, "take_color", [[1, 0, 0]])
+	_ok(bool(r.get("ok", false)) and r["args"][0] == Color(1, 0, 0, 1), "[r,g,b] coerces to Color")
+	r = CallArgs.prepare(p, "take_sname", ["jump"])
+	_ok(bool(r.get("ok", false)) and typeof(r["args"][0]) == TYPE_STRING_NAME and p.callv("take_sname", r["args"]), "String coerces to StringName")
+	r = CallArgs.prepare(p, "take_untyped", [{"hp": 1}])
+	_ok(bool(r.get("ok", false)) and r["args"][0] is Dictionary and p.callv("take_untyped", r["args"])[1] == 5, "untyped params pass through; defaults still fill")
+	r = CallArgs.prepare(p, "take_pv2", [[[0, 0], [1, 0], [1, 1]]])
+	_ok(bool(r.get("ok", false)) and p.callv("take_pv2", r["args"]) == 3, "[[x,y],..] coerces to PackedVector2Array")
+	r = CallArgs.prepare(p, "take_obj", [null])
+	_ok(bool(r.get("ok", false)) and p.callv("take_obj", r["args"]) == false, "null passes for an object param")
+	r = CallArgs.prepare(p, "take_obj", ["Player"])
+	_ok(not bool(r.get("ok", false)), "object param from a string errors without a resolver (no silent null)")
+	r = CallArgs.prepare(p, "no_such_method_here", [1, 2])
+	_ok(bool(r.get("ok", false)), "metadata-less call falls back to raw passthrough")
+	var c: Dictionary = CallArgs.coerce("UI/Health", TYPE_NODE_PATH)
+	_ok(bool(c.get("ok", false)) and c["value"] is NodePath, "String coerces to NodePath")
+	c = CallArgs.coerce(1.5, TYPE_INT)
+	_ok(not bool(c.get("ok", false)), "fractional float for an int param errors")
+	c = CallArgs.coerce("Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 7, 8, 9)", TYPE_TRANSFORM3D)
+	_ok(bool(c.get("ok", false)) and (c["value"] as Transform3D).origin == Vector3(7, 8, 9), "Transform3D literal string parses")
+	c = CallArgs.coerce([255, 128, 0], TYPE_PACKED_INT32_ARRAY)
+	_ok(bool(c.get("ok", false)) and c["value"] is PackedInt32Array, "int array coerces to PackedInt32Array")

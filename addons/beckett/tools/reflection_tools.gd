@@ -7,6 +7,7 @@ class_name BeckettReflectionTools
 ## These few tools reach any Node / Resource / Object without per-domain wrappers.
 
 const Reflect := preload("res://addons/beckett/core/reflection.gd")
+const CallArgs := preload("res://addons/beckett/core/callargs.gd")
 
 var server  # mcp_server node (for get_undo_redo); set by the caller
 
@@ -73,7 +74,7 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "call_method",
-		"description": "Invoke a method on a resolved object. args = a positional array. Returns the result as JSON.",
+		"description": "Invoke a method on a resolved object. args = a positional array, coerced to the declared param types: vectors accept [x,y,z] / {\"x\":..} / \"x y z\", colors hex or [r,g,b,a], object params a node name/path or res:// path. Wrong types or counts return an ERROR (never a silent no-op). Returns the result as JSON.",
 		"destructive": true,
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string"},
@@ -237,8 +238,41 @@ func _call_method(args: Dictionary) -> Dictionary:
 	var incoming: Variant = args.get("args", [])
 	if incoming is Array:
 		call_args = incoming
-	var ret: Variant = obj.callv(method, call_args)
-	return {"json": {"result": Reflect.to_json_safe(ret)}}
+	# Coerce BEFORE callv: a mis-typed callv does NOT execute the method (the engine
+	# prints to the editor console and returns null), which this handler used to wrap
+	# as success - the silent-argument trap. Coercion failures now fail the call.
+	var prep: Dictionary = CallArgs.prepare(obj, method, call_args, self)
+	if not bool(prep.get("ok", false)):
+		return {"error": "call_method %s.%s: %s" % [obj.get_class(), method, str(prep.get("error", "argument mismatch"))],
+			"suggestion": "describe_class class=%s shows the declared signature; vectors accept [x,y,z]." % obj.get_class()}
+	var ret: Variant = obj.callv(method, prep["args"])
+	var payload := {"result": Reflect.to_json_safe(ret)}
+	var warn := _stale_script_warning(obj)
+	if not warn.is_empty():
+		payload["warning"] = warn
+	return {"json": payload}
+
+
+func _resolve_object_arg(spec: String) -> Object:
+	return Reflect.resolve(spec)
+
+
+## call_method executes the LOADED script. A .gd changed outside write_script/
+## script_patch (the agent's own file tools, an external editor) stays stale in a
+## driven editor - reload-on-focus never fires headless - so results quietly stop
+## matching the file. Detect the drift and say so in the response.
+func _stale_script_warning(obj: Object) -> String:
+	var scr: Variant = obj.get_script()
+	if scr == null or not (scr is GDScript):
+		return ""
+	var path: String = (scr as GDScript).resource_path
+	if not path.begins_with("res://") or not FileAccess.file_exists(path):
+		return ""
+	var disk := FileAccess.get_file_as_string(path).replace("\r\n", "\n")
+	var loaded := str((scr as GDScript).source_code).replace("\r\n", "\n")
+	if disk.is_empty() or loaded.is_empty() or disk == loaded:
+		return ""
+	return "script %s differs on disk from the loaded version - this call ran the LOADED code. Rewrite it via write_script/script_patch (they reload), then call again." % path
 
 
 func _get_scene_tree(_args: Dictionary) -> Dictionary:
