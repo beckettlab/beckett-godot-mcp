@@ -559,12 +559,58 @@ static func audit(vp: Viewport, tree_root: Node, scene_root: Node, scope: Node, 
 			issues.append({"type": "text_overflow", "path": path_of(t, scene_root),
 				"need": roundi(text_w), "have": roundi(t.size.x),
 				"detail": "text is %d px wide, the control gives it %d (trimmed or clipped)" % [roundi(text_w), roundi(t.size.x)]})
+	# Focus graph (v1.11): can a keyboard/gamepad user actually WALK this UI? Build the
+	# moves Godot itself offers (Tab / Shift+Tab / the four neighbors) over the visible
+	# interactive controls, then BFS from the entry - the current focus owner, else the
+	# first focusable in tree order (where the user's first Tab would likely land).
+	var focusables: Array = []
+	for fn in interactive:
+		if (fn as Control).focus_mode != Control.FOCUS_NONE:
+			focusables.append(fn)
+	var focus_summary := {"focusable": focusables.size(), "entry": "", "reachable": 0}
+	if not focusables.is_empty():
+		var fowner: Control = vp.gui_get_focus_owner()
+		var entry: Control = fowner if fowner != null and focusables.has(fowner) else (focusables[0] as Control)
+		focus_summary["entry"] = path_of(entry, scene_root)
+		if fowner == null and issues.size() < cap:
+			issues.append({"type": "no_initial_focus", "path": str(focus_summary["entry"]),
+				"detail": "focusable controls exist but nothing HAS focus - a gamepad/keyboard user cannot start navigating; grab_focus() one control when the menu opens"})
+		var reach := {}
+		var fqueue: Array = [entry]
+		reach[entry.get_instance_id()] = true
+		while not fqueue.is_empty():
+			var cur: Control = fqueue.pop_front()
+			for nb in _focus_edges(cur):
+				if nb != null and not reach.has((nb as Control).get_instance_id()):
+					reach[(nb as Control).get_instance_id()] = true
+					fqueue.append(nb)
+		focus_summary["reachable"] = reach.size()
+		for fx in focusables:
+			if issues.size() >= cap:
+				break
+			var fxc := fx as Control
+			if not reach.has(fxc.get_instance_id()):
+				issues.append({"type": "focus_unreachable", "path": path_of(fxc, scene_root),
+					"detail": "focusable, but no chain of Tab/arrow moves from '%s' reaches it - unreachable on gamepad/keyboard" % str(focus_summary["entry"])})
+		for fy in focusables:
+			if issues.size() >= cap:
+				break
+			var fyc := fy as Control
+			var can_leave := false
+			for nb2 in _focus_edges(fyc):
+				if nb2 != null and nb2 != fyc:
+					can_leave = true
+					break
+			if not can_leave and focusables.size() > 1:
+				issues.append({"type": "focus_dead_end", "path": path_of(fyc, scene_root),
+					"detail": "focus can enter but never leave (every move stays here) - a gamepad user gets stuck"})
 	var counts := {}
 	for is_ in issues:
 		var k := str((is_ as Dictionary).get("type", ""))
 		counts[k] = int(counts.get(k, 0)) + 1
 	return {"ok": true, "issues": issues, "counts": counts,
 		"checked": {"interactive": interactive.size(), "text_controls": texty.size()},
+		"focus": focus_summary,
 		"viewport": [int(vr.size.x), int(vr.size.y)],
 		"truncated": issues.size() >= cap}
 
@@ -596,3 +642,14 @@ static func _host_window(c: Control, tree_root: Node) -> Node:
 
 static func _r4(r: Rect2) -> Array:
 	return [roundi(r.position.x), roundi(r.position.y), roundi(r.size.x), roundi(r.size.y)]
+
+
+## The focus moves Godot itself offers from a control: Tab, Shift+Tab, and the four
+## directional neighbors. find_valid_focus_neighbor is newer than the 4.2 floor, so it
+## is duck-typed; without it the Tab chain alone still defines reachability.
+static func _focus_edges(c: Control) -> Array:
+	var out: Array = [c.find_next_valid_focus(), c.find_prev_valid_focus()]
+	if c.has_method("find_valid_focus_neighbor"):
+		for side in [SIDE_LEFT, SIDE_TOP, SIDE_RIGHT, SIDE_BOTTOM]:
+			out.append(c.call("find_valid_focus_neighbor", side))
+	return out

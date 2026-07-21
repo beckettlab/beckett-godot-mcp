@@ -73,6 +73,17 @@ var _ui_do := UiDo.new()
 # the game process and in export-template builds (no editor classes).
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")
 
+# Per-frame typing window (v1.11): type_text per_frame=true queues its chars here and
+# _process injects ONE per frame, so per-char handlers (text_changed each keystroke,
+# typing minigames, char rate limits) see real typing instead of paste semantics.
+# The editor tool polls cmd=type_status until the queue drains.
+var _typing_ctrl: Control = null
+var _typing_text := ""
+var _typing_i := 0
+var _typing_submit := false
+var _typing_done := true
+var _typing_error := ""
+
 # Captured game output — runtime script errors WITH stack traces, push_error/warning,
 # and print() — via a custom OS Logger installed in the played game. This is the
 # real-time play->see-error->fix signal the agent reads through the game_logs tool;
@@ -169,6 +180,8 @@ func _process(delta: float) -> void:
 		# Advance an open ui_do macro window one attempt per frame (after command
 		# handling, so an open/abort from this very frame is already applied).
 		_ui_do.tick()
+		# Per-frame typing window (v1.11): inject one queued char per frame.
+		_type_tick()
 	elif st == StreamPeerTCP.STATUS_ERROR or st == StreamPeerTCP.STATUS_NONE:
 		# Reconnect on DROP too, not just before the first connect. A mid-session drop
 		# (bridge restart, editor focus loss) used to be permanent — the old retry was
@@ -354,6 +367,8 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 			return _ui_snapshot(msg)
 		"type_text":
 			return _type_text(msg)
+		"type_status":
+			return _type_status()
 		"ui_audit":
 			return _ui_audit(msg)
 		"ui_do_open":
@@ -1238,6 +1253,9 @@ func _ui_snapshot(msg: Dictionary) -> Dictionary:
 ## the content (select_all first, so the first char overwrites); '\n' chars and
 ## submit=true press Enter (LineEdit fires text_submitted).
 func _type_text(msg: Dictionary) -> Dictionary:
+	# A new call supersedes any open per-frame stream (no interleaving).
+	_typing_done = true
+	_typing_ctrl = null
 	# 'text' is the PAYLOAD to type here, not the text selector — strip it from the
 	# resolve spec or it would filter targets by their current text content.
 	var spec := msg.duplicate()
@@ -1271,6 +1289,17 @@ func _type_text(msg: Dictionary) -> Dictionary:
 				_push_key(vp, KEY_BACKSPACE, 0)
 		elif "text" in ctrl:
 			ctrl.set("text", "")
+	# v1.11 per_frame: queue the chars and let _process inject ONE per frame, so
+	# per-char handlers see real typing. The editor tool polls cmd=type_status.
+	if bool(msg.get("per_frame", false)):
+		_typing_ctrl = ctrl
+		_typing_text = text
+		_typing_i = 0
+		_typing_submit = bool(msg.get("submit", false))
+		_typing_done = text.is_empty() and not _typing_submit
+		_typing_error = ""
+		return {"ok": true, "per_frame": true, "path": path,
+			"queued": text.length() + (1 if bool(msg.get("submit", false)) else 0)}
 	var typed := 0
 	for i in text.length():
 		var code := text.unicode_at(i)
@@ -1304,6 +1333,52 @@ func _push_key(vp: Viewport, keycode: int, unicode: int) -> void:
 	up.physical_keycode = keycode
 	up.pressed = false
 	vp.push_input(up)
+
+
+## v1.11 per-frame typing: inject exactly one queued char (or the trailing Enter) per
+## process frame. Distinct frames = distinct deferred text_changed emissions - the
+## whole point; one-frame injection coalesces them into paste semantics.
+func _type_tick() -> void:
+	if _typing_done:
+		return
+	if _typing_ctrl == null or not is_instance_valid(_typing_ctrl) or not _typing_ctrl.is_visible_in_tree():
+		_typing_error = "target vanished mid-typing (%d of %d chars in)" % [_typing_i, _typing_text.length()]
+		_typing_done = true
+		_typing_ctrl = null
+		return
+	var vp := get_viewport()
+	if vp == null:
+		_typing_error = "no viewport"
+		_typing_done = true
+		return
+	if vp.gui_get_focus_owner() != _typing_ctrl:
+		_typing_ctrl.grab_focus()  # something stole focus between frames; take it back
+	if _typing_i < _typing_text.length():
+		var code := _typing_text.unicode_at(_typing_i)
+		if code == 10:
+			_push_key(vp, KEY_ENTER, 0)
+		else:
+			_push_key(vp, 0, code)
+		_typing_i += 1
+		return
+	if _typing_submit:
+		_push_key(vp, KEY_ENTER, 0)  # the submit Enter gets its own frame too
+		_typing_submit = false
+		return
+	_typing_done = true
+
+
+func _type_status() -> Dictionary:
+	var out := {"ok": true, "done": _typing_done, "typed": _typing_i}
+	if not _typing_error.is_empty():
+		out["warning"] = _typing_error
+	if _typing_ctrl != null and is_instance_valid(_typing_ctrl):
+		var r := _root()
+		if r != null:
+			out["path"] = str(r.get_path_to(_typing_ctrl))
+		if "text" in _typing_ctrl:
+			out["text_after"] = str(_typing_ctrl.get("text"))
+	return out
 
 
 ## Click a 3D node by projecting its world origin to the screen via the active

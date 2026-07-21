@@ -281,6 +281,13 @@ func _doctor(_args: Dictionary) -> Dictionary:
 	if cfg.load("res://addons/beckett/plugin.cfg") == OK:
 		ver = str(cfg.get_value("plugin", "version", ""))
 
+	# v1.11 error echo state: on / unavailable (<4.5 Logger API) / off (env or stopped).
+	var echo_state := "off (server not started)"
+	if OS.get_environment("BECKETT_ERROR_ECHO") == "0":
+		echo_state = "off (BECKETT_ERROR_ECHO=0)"
+	elif server.error_echo != null:
+		echo_state = "on" if server.error_echo.capture_active() else "unavailable (needs Godot 4.5+)"
+
 	return {"json": {
 		"ok": warnings.is_empty(),
 		"edition": "Lite" if server.is_lite() else "Full",
@@ -288,7 +295,7 @@ func _doctor(_args: Dictionary) -> Dictionary:
 		"godot_version": String(Engine.get_version_info().get("string", "")),
 		"effort": {"level": effort, "ceiling": ceiling, "source": effort_source},
 		"tools": {"advertised_now": advertised, "at_ceiling": at_ceiling, "disabled": Array(disabled)},
-		"server": {"running": running, "port": port, "auth": ("token on" if auth_on else "off")},
+		"server": {"running": running, "port": port, "auth": ("token on" if auth_on else "off"), "error_echo": echo_state},
 		"game_bridge": {
 			"connected": server.bridge != null and server.bridge.is_game_connected(),
 			"auth": ("handshake on" if server.bridge != null and not str(server.bridge.expected_token).is_empty() else "off"),

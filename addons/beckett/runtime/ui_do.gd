@@ -155,7 +155,11 @@ func _try_click(msg: Dictionary) -> Dictionary:
 
 
 func _try_type(msg: Dictionary) -> Dictionary:
-	var r: Dictionary = _rt._type_text(msg)
+	# per_frame streaming is a type_text-tool feature: a ui_do step must complete within
+	# its own attempt, so strip it here (one-frame typing still fires every signal once).
+	var m := msg.duplicate()
+	m.erase("per_frame")
+	var r: Dictionary = _rt._type_text(m)
 	if bool(r.get("ok", false)):
 		if r.has("warning"):
 			_last_wait = str(r["warning"])  # hidden/disabled/not-editable may clear up

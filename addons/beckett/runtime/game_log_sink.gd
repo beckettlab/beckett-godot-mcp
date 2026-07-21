@@ -1,5 +1,7 @@
 extends RefCounted
-## Game-side log capture (v1.9.1, extracted from mcp_runtime as part of the B7 split).
+## Log capture over a runtime-compiled OS Logger (v1.9.1, extracted from mcp_runtime as
+## part of the B7 split; since v1.11 the EDITOR's mcp_server runs its own instance too,
+## for per-call error echo - see mark()/echo_since() at the bottom).
 ## Owns the ring buffer + the runtime-compiled OS Logger that feeds it, and answers the
 ## bridge's `logs` command. The Logger base class and OS.add_logger() are Godot 4.5+; on
 ## 4.2-4.4 install() is a graceful no-op and snapshot() reports capture_active=false so an
@@ -14,6 +16,7 @@ const CAP := 800
 
 var _ring: Array = []
 var _dropped := 0
+var _seq := 0  # monotonic id stamped on every entry - the error-echo window cursor (v1.11)
 var _mutex := Mutex.new()
 var _logger: Object = null
 
@@ -90,6 +93,8 @@ func _err_type_name(t: int) -> String:
 
 func _push(e: Dictionary) -> void:
 	_mutex.lock()
+	_seq += 1
+	e["seq"] = _seq
 	_ring.append(e)
 	if _ring.size() > CAP:
 		_ring.pop_front()
@@ -136,3 +141,51 @@ func _entry_text(e: Dictionary) -> String:
 	if e.has("text"):
 		return str(e["text"])
 	return "%s %s %s" % [str(e.get("file", "")), str(e.get("rationale", "")), str(e.get("backtrace", ""))]
+
+
+# ---------------------------------------------------------------- error echo (v1.11)
+
+## Sequence high-water mark. Take one BEFORE running a tool handler, then hand it to
+## echo_since() after: everything pushed in between happened during that handler.
+func mark() -> int:
+	_mutex.lock()
+	var s := _seq
+	_mutex.unlock()
+	return s
+
+
+## True when the compiled Logger is actually installed (Godot 4.5+).
+func capture_active() -> bool:
+	return _logger != null
+
+
+## Errors/warnings (never prints) pushed after mark `m`, compacted for a tool response.
+## Handlers run synchronously on the main thread, so entries in this window were almost
+## certainly caused by that handler; the known blind spots are worker-thread logs that
+## interleave and errors deferred past the handler's return.
+func echo_since(m: int, cap: int = 8) -> Array:
+	_mutex.lock()
+	var snap: Array = _ring.duplicate()
+	_mutex.unlock()
+	var out: Array = []
+	var total := 0
+	for e in snap:
+		if int(e.get("seq", 0)) <= m:
+			continue
+		var ty := str(e.get("type", ""))
+		if ty == "print" or ty == "stderr":
+			continue
+		total += 1
+		if out.size() < cap:
+			var entry := {
+				"severity": ty,
+				"message": str(e.get("rationale", "")),
+				"where": "%s:%d in %s" % [str(e.get("file", "")), int(e.get("line", 0)), str(e.get("function", ""))],
+			}
+			var bt := str(e.get("backtrace", ""))
+			if not bt.is_empty():
+				entry["backtrace"] = bt.substr(0, 400)
+			out.append(entry)
+	if total > out.size():
+		out.append({"severity": "note", "message": "+%d more engine error(s) in this window - see logs_read (editor) / game_logs (game)" % (total - out.size())})
+	return out

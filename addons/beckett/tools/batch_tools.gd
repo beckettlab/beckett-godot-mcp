@@ -69,15 +69,26 @@ func _batch_execute(args: Dictionary) -> Dictionary:
 				break
 			continue
 		var handler: Callable = tool["handler"]
+		# v1.11 error echo, per STEP: the server attaches a batch-wide window at the top
+		# level; marking around each sub-call pins every engine error to the step that
+		# caused it.
+		var echo_mark: int = server.error_echo.mark() if server.error_echo != null else 0
 		var raw: Variant = handler.call(sargs)
 		var rd: Dictionary = raw if raw is Dictionary else {"text": str(raw)}
+		var step_echoes: Array = server.error_echo.echo_since(echo_mark) if server.error_echo != null else []
 		if rd.has("error"):
-			results.append({"step": i, "tool": tname, "ok": false, "error": str(rd["error"])})
+			var fail_entry := {"step": i, "tool": tname, "ok": false, "error": str(rd["error"])}
+			if not step_echoes.is_empty():
+				fail_entry["engine_errors"] = step_echoes
+			results.append(fail_entry)
 			failed_at = i
 			if stop:
 				break
 			continue
-		results.append({"step": i, "tool": tname, "ok": true, "result": _summarize(rd)})
+		var ok_entry := {"step": i, "tool": tname, "ok": true, "result": _summarize(rd)}
+		if not step_echoes.is_empty():
+			ok_entry["engine_errors"] = step_echoes
+		results.append(ok_entry)
 
 	var out: Dictionary = {
 		"ok": failed_at == -1,

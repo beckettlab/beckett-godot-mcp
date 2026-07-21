@@ -25,6 +25,7 @@ const InputCodec := preload("res://addons/beckett/runtime/input_codec.gd")
 const UiInspect := preload("res://addons/beckett/runtime/ui_inspect.gd")
 const RuntimeBridge := preload("res://addons/beckett/core/runtime_bridge.gd")
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")
+const GameLogSink := preload("res://addons/beckett/runtime/game_log_sink.gd")
 # Full-only modules: loaded dynamically so this suite ALSO runs on the Lite repo's CI,
 # where pack.ps1 physically trims them — their test groups then skip with a note.
 const _PLAYTEST_TOOLS_PATH := "res://addons/beckett/tools/playtest_tools.gd"
@@ -45,6 +46,7 @@ func _init() -> void:
 	_t_secure_equals()
 	_t_validate_args()
 	_t_call_args()
+	_t_error_echo()
 	_t_class_name_mask()
 	if ResourceLoader.exists(_PLAYTEST_TOOLS_PATH):
 		_t_playtest_helpers()
@@ -58,6 +60,8 @@ func _init() -> void:
 	_t_perf_summary_runtime()
 	_t_input_codec()
 	await _t_ui_inspect()
+	await _t_focus_graph()
+	_t_type_stream()
 	_t_bridge_compare()
 	print("")
 	if _fail > 0:
@@ -587,3 +591,148 @@ func _t_call_args() -> void:
 	_ok(bool(c.get("ok", false)) and (c["value"] as Transform3D).origin == Vector3(7, 8, 9), "Transform3D literal string parses")
 	c = CallArgs.coerce([255, 128, 0], TYPE_PACKED_INT32_ARRAY)
 	_ok(bool(c.get("ok", false)) and c["value"] is PackedInt32Array, "int array coerces to PackedInt32Array")
+
+
+# ---------------------------------------------------------------- error echo (v1.11)
+
+func _t_error_echo() -> void:
+	print("[unit] error echo (v1.11 - engine errors attached to the causing call)")
+	var sink = GameLogSink.new()
+	# Window semantics, fed directly (no OS Logger needed).
+	var m0: int = sink.mark()
+	sink._on_error("do_thing", "res://game.gd", 12, "ERR", "boom happened", 0, [])
+	var ech: Array = sink.echo_since(m0)
+	_ok(ech.size() == 1 and str(ech[0]["severity"]) == "error" and str(ech[0]["message"]) == "boom happened", "an error in the window is echoed")
+	_ok(str(ech[0]["where"]).contains("res://game.gd:12"), "echo carries file:line")
+	_ok(sink.echo_since(sink.mark()).is_empty(), "a fresh mark sees nothing")
+	sink._on_message("just a print", false)
+	_ok(sink.echo_since(m0).size() == 1, "prints are not echoed")
+	sink._on_error("f", "w.gd", 1, "W", "warn", 1, [])
+	var ech2: Array = sink.echo_since(m0)
+	_ok(str(ech2[1]["severity"]) == "warning", "severity maps warning")
+	var m1: int = sink.mark()
+	for k in range(12):
+		sink._on_error("f", "x.gd", k, "E", "spam %d" % k, 2, [])
+	var capped: Array = sink.echo_since(m1)
+	_ok(capped.size() == 9 and str(capped[8]["severity"]) == "note" and str(capped[8]["message"]).contains("+4 more"), "echo caps at 8 + a count note")
+	_ok(str(capped[0]["severity"]) == "script", "severity maps script errors")
+	# The REAL capture path on this engine (4.5+ runner): install -> push_error -> echoed.
+	sink.install()
+	if sink.capture_active():
+		var m2: int = sink.mark()
+		push_error("[beckett unit probe - intentional error, ignore]")
+		var live: Array = sink.echo_since(m2)
+		_ok(not live.is_empty() and str(live[0]["message"]).contains("intentional error"), "a real push_error lands in the window")
+		sink.uninstall()
+		var m3: int = sink.mark()
+		push_error("[beckett unit probe 2 - after uninstall, ignore]")
+		_ok(sink.echo_since(m3).is_empty(), "uninstall stops the capture")
+	else:
+		print("  (skip live-capture checks: Logger API needs Godot 4.5+)")
+	# Serializer: engine_errors ride text + structuredContent; isError untouched.
+	var s = MCPServer.new()
+	var tr: Dictionary = s._tool_result({"text": "done", "engine_errors": [{"severity": "error", "message": "kaboom", "where": "a.gd:1 in f"}]})
+	_ok(not bool(tr["isError"]), "engine_errors stay advisory (isError false)")
+	var texts: Array = (tr["content"] as Array).filter(func(c): return str(c.get("type", "")) == "text")
+	_ok(texts.size() == 2 and str(texts[1]["text"]).contains("kaboom"), "engine errors render as a text block")
+	_ok(tr.has("structuredContent") and (tr["structuredContent"] as Dictionary).has("engine_errors"), "engine_errors ride structuredContent")
+	var tj: Dictionary = s._tool_result({"json": {"result": 1}, "engine_errors": [{"severity": "error", "message": "x"}]})
+	_ok((tj["structuredContent"] as Dictionary).has("result") and (tj["structuredContent"] as Dictionary).has("engine_errors"), "engine_errors merge beside a json payload")
+	s.free()
+
+
+# ---------------------------------------------------------------- focus graph (v1.11)
+
+func _t_focus_graph() -> void:
+	print("[unit] ui_audit focus graph (v1.11)")
+	var stage := Control.new()
+	stage.name = "FocusStage"
+	stage.size = Vector2(60, 60)
+	root.add_child(stage)
+	var a := Button.new()
+	a.name = "FA"
+	a.position = Vector2(0, 0)
+	a.size = Vector2(10, 8)
+	stage.add_child(a)
+	var b := Button.new()
+	b.name = "FB"
+	b.position = Vector2(0, 12)
+	b.size = Vector2(10, 8)
+	stage.add_child(b)
+	var island := Button.new()
+	island.name = "Island"
+	island.position = Vector2(40, 40)
+	island.size = Vector2(10, 8)
+	stage.add_child(island)
+	await process_frame
+	# Pin the graph explicitly: A <-> B closed loop, Island points only at itself -
+	# unreachable from the entry AND a dead end.
+	for ctl: Control in [a, b, island]:
+		var to: Control = b if ctl == a else (a if ctl == b else island)
+		ctl.focus_next = to.get_path()
+		ctl.focus_previous = to.get_path()
+		ctl.focus_neighbor_left = to.get_path()
+		ctl.focus_neighbor_top = to.get_path()
+		ctl.focus_neighbor_right = to.get_path()
+		ctl.focus_neighbor_bottom = to.get_path()
+	var au: Dictionary = UiInspect.audit(root, root, stage, stage, {})
+	var found := {}
+	for is_ in au.get("issues", []):
+		found[str((is_ as Dictionary).get("type", ""))] = str((is_ as Dictionary).get("path", ""))
+	_ok(found.has("no_initial_focus"), "nothing focused -> no_initial_focus flagged")
+	_ok(found.has("focus_unreachable") and str(found.get("focus_unreachable", "")).contains("Island"), "the island is unreachable from the entry")
+	_ok(found.has("focus_dead_end") and str(found.get("focus_dead_end", "")).contains("Island"), "the island is a dead end (all moves stay on it)")
+	var fs: Dictionary = au.get("focus", {})
+	_ok(int(fs.get("focusable", 0)) == 3 and int(fs.get("reachable", 0)) == 2, "focus summary counts focusable=3 reachable=2")
+	_ok(str(fs.get("entry", "")).contains("FA"), "entry defaults to the first focusable in tree order")
+	a.grab_focus()
+	await process_frame
+	var au2: Dictionary = UiInspect.audit(root, root, stage, stage, {})
+	var found2 := {}
+	for is2 in au2.get("issues", []):
+		found2[str((is2 as Dictionary).get("type", ""))] = true
+	_ok(not found2.has("no_initial_focus"), "with focus granted, no_initial_focus clears")
+	_ok(not found2.has("focus_unreachable") or str(found.get("focus_unreachable", "")).contains("Island"), "A/B stay reachable (only the island flags)")
+	root.remove_child(stage)
+	stage.free()
+
+
+# ---------------------------------------------------------------- per-frame typing (v1.11)
+
+func _t_type_stream() -> void:
+	print("[unit] per-frame typing window (v1.11)")
+	var rt = MCPRuntime.new()
+	root.add_child(rt)
+	var field := LineEdit.new()
+	field.name = "TypeField"
+	root.add_child(field)
+	rt._typing_ctrl = field
+	rt._typing_text = "abc"
+	rt._typing_i = 0
+	rt._typing_submit = true
+	rt._typing_done = false
+	rt._typing_error = ""
+	rt._type_tick()
+	_ok(rt._typing_i == 1 and not rt._typing_done, "tick 1 injects exactly one char")
+	rt._type_tick()
+	rt._type_tick()
+	_ok(rt._typing_i == 3 and not rt._typing_done, "chars pace one per tick")
+	rt._type_tick()
+	_ok(rt._typing_submit == false and not rt._typing_done, "the submit Enter takes its own frame")
+	rt._type_tick()
+	_ok(rt._typing_done, "the stream closes after the queue drains")
+	var st: Dictionary = rt._type_status()
+	_ok(bool(st.get("done", false)) and int(st.get("typed", -1)) == 3, "type_status reports done + typed count")
+	# Vanish mid-stream: stop honestly instead of typing into the void.
+	rt._typing_ctrl = field
+	rt._typing_text = "xy"
+	rt._typing_i = 0
+	rt._typing_done = false
+	rt._typing_submit = false
+	field.hide()
+	rt._type_tick()
+	_ok(rt._typing_done and str(rt._typing_error).contains("vanished"), "a vanished target ends the stream with a warning")
+	root.remove_child(field)
+	field.free()
+	root.remove_child(rt)
+	rt.free()

@@ -58,6 +58,11 @@ const PromptsScript := preload("res://addons/beckett/prompts/prompts.gd")
 const MCPJobsScript := preload("res://addons/beckett/core/jobs.gd")
 const MCPEffortScript := preload("res://addons/beckett/core/effort.gd")
 const MCPClientConfigScript := preload("res://addons/beckett/core/client_config.gd")
+# Shared with the game runtime: the same log-sink module gives the EDITOR process a
+# per-call engine-error window (v1.11 error echo). Logger API is 4.5+; graceful no-op below.
+const LogSinkScript := preload("res://addons/beckett/runtime/game_log_sink.gd")
+
+var error_echo = null  # LogSinkScript instance while serving; null = echo off (env/stopped)
 
 # Auth-token file (v1.9): lives in a self-gitignored project dir so the secret never lands
 # in VCS. File present == auth on; the dock's enable/rotate/disable buttons manage it.
@@ -206,6 +211,12 @@ func start_server(port: int) -> int:
 		if not _runtime_token.is_empty():
 			OS.set_environment("BECKETT_RUNTIME_TOKEN", _runtime_token)
 	_write_port_discovery(http.port)
+	# v1.11 error echo: run an OS log sink in the EDITOR process so engine errors that
+	# fire while a tool handler runs get attached to that call's response (the "ok:true
+	# but the engine errored" class). 4.5+ only; BECKETT_ERROR_ECHO=0 opts out.
+	if error_echo == null and OS.get_environment("BECKETT_ERROR_ECHO") != "0":
+		error_echo = LogSinkScript.new()
+		error_echo.install()
 	return OK
 
 
@@ -239,6 +250,9 @@ func stop_server() -> void:
 		http.stop()
 	if bridge != null:
 		bridge.stop()
+	if error_echo != null:
+		error_echo.uninstall()
+		error_echo = null
 
 
 func is_running() -> bool:
@@ -517,6 +531,9 @@ func _call_tool(id: Variant, params: Dictionary) -> Dictionary:
 		return _body(MCPJsonRpcScript.result(id, _idempotency[idem]))
 
 	var t0 := Time.get_ticks_msec()
+	# v1.11 error echo: engine errors pushed while THIS handler runs belong in its
+	# response. Handlers are synchronous on the main thread, so the window is tight.
+	var echo_mark: int = error_echo.mark() if error_echo != null else 0
 	var raw: Variant
 	var handler: Callable = tool["handler"]
 	raw = handler.call(args)
@@ -530,6 +547,10 @@ func _call_tool(id: Variant, params: Dictionary) -> Dictionary:
 		r = {"json": raw}
 	else:
 		r = {"text": str(raw)}
+	if error_echo != null and not r.has("engine_errors"):
+		var echoes: Array = error_echo.echo_since(echo_mark)
+		if not echoes.is_empty():
+			r["engine_errors"] = echoes
 	var result := _tool_result(r)
 	# A short preview of the outcome (not just the args) so the dock feed shows what the
 	# call actually did — capped like args to keep the ring light.
@@ -766,6 +787,24 @@ func _tool_result(r: Dictionary) -> Dictionary:
 		content.append({"type": "image", "data": str(r["image_png_base64"]), "mimeType": "image/png"})
 	elif r.has("image_base64"):
 		content.append({"type": "image", "data": str(r["image_base64"]), "mimeType": str(r.get("image_mime", "image/png"))})
+	# v1.11 error echo: engine errors captured during the handler ride BOTH channels -
+	# a text block every client can read, structuredContent.engine_errors for parsers.
+	# Advisory by design: isError is untouched (the handler DID complete); the agent
+	# decides whether the errors invalidate the effect.
+	if r.has("engine_errors") and r["engine_errors"] is Array and not (r["engine_errors"] as Array).is_empty():
+		var elines: Array = []
+		for e in r["engine_errors"]:
+			var ed: Dictionary = e if e is Dictionary else {"message": str(e)}
+			var eline := "- [%s] %s" % [str(ed.get("severity", "error")), str(ed.get("message", ""))]
+			var ewhere := str(ed.get("where", ""))
+			if not ewhere.is_empty():
+				eline += " (%s)" % ewhere
+			elines.append(eline)
+		content.append({"type": "text", "text": "Engine errors during this call (it still ran - verify its effect):\n" + "\n".join(elines)})
+		if structured is Dictionary:
+			structured["engine_errors"] = r["engine_errors"]
+		elif structured == null:
+			structured = {"engine_errors": r["engine_errors"]}
 	if content.is_empty():
 		content.append({"type": "text", "text": "(no output)"})
 	var out := {"content": content, "isError": is_error}
