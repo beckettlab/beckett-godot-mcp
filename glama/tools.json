@@ -51,7 +51,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Run several tool calls in one request, in order. steps = [{tool, args}]. Stops at the first failure (stop_on_error, default true). When a step fails, scene edits made by the batch are rolled back via the editor undo history (rollback, default true) â file/resource writes are not. Use to collapse multi-step authoring (create node â set props â attach script) into one atomic call.",
+        "description":  "Run several tool calls in one request, in order. steps = [{tool, args}]. Stops at the first failure (stop_on_error, default true). When a step fails, scene edits made by the batch are rolled back via the editor undo history (rollback, default true) â file/resource writes are not. Use to collapse multi-step authoring (create node â set props â attach script) into one atomic call. ok per step means the handler completed - verify EFFECTS with a trailing read-back step (assert_scene / assert_node_state / a get_*) before trusting a mutation batch.",
         "inputSchema":  {
                             "properties":  {
                                                "rollback":  {
@@ -105,7 +105,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Invoke a method on a resolved object. args = a positional array. Returns the result as JSON.",
+        "description":  "Invoke a method on a resolved object. args = a positional array, coerced to the declared param types: vectors accept [x,y,z] / {\"x\":..} / \"x y z\", colors hex or [r,g,b,a], object params a node name/path or res:// path. Wrong types or counts return an ERROR (never a silent no-op). Returns the result as JSON.",
         "inputSchema":  {
                             "properties":  {
                                                "args":  {
@@ -264,7 +264,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Dump a live object\u0027s properties as JSON. target = a res:// path, a node name/path in the open scene, or a class name (falls back to describe_class).",
+        "description":  "Dump a live object\u0027s properties as JSON. target = a res:// path, a node name/path in the OPEN scene, or a class name (falls back to describe_class). While a game is running it also resolves live nodes (/root/Main/Player), the same paths runtime_get_property takes; the answer says which scope it came from, since the edited scene and the running game share one path syntax but are different worlds.",
         "inputSchema":  {
                             "properties":  {
                                                "target":  {
@@ -769,12 +769,16 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Play a scene in the editor. \u0027scene\u0027 (res://) plays a specific scene; current=true plays the open scene; otherwise the project\u0027s main scene. Then wait_until condition=play_started, and logs_read for errors.",
+        "description":  "Play a scene in the editor. \u0027scene\u0027 (res://) plays a specific scene; current=true plays the open scene; otherwise the project\u0027s main scene. Then wait_until condition=play_started, and logs_read for errors. on_ready=[{path|class|name, property, value}, ...] queues runtime writes that are applied automatically the moment the new game connects â the restart boundary batch_execute cannot cross. Use it to restore camera pose, debug flags or spawn state in ONE call instead of re-issuing them after every restart; wait_until condition=game_connected then reports whether each one landed. Writes whose target is still spawning are retried for a few seconds, then reported as failures rather than dropped.",
         "inputSchema":  {
                             "properties":  {
                                                "current":  {
                                                                "type":  "boolean"
                                                            },
+                                               "on_ready":  {
+                                                                "description":  "property writes applied once the game connects: [{path, property, value}, ...] (path may be a name/class selector, same as runtime_set_property)",
+                                                                "type":  "array"
+                                                            },
                                                "scene":  {
                                                              "description":  "res:// path; omit for main/current",
                                                              "type":  "string"
@@ -847,6 +851,36 @@
                             "type":  "object"
                         },
         "name":  "rename_node"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Ask WHY a 3D node is or is not on screen, as data instead of pixels. Answers the \u0027the node exists, visible is true, the log is clean, and I still see nothing\u0027 case: visibility chain, world AABB, frustum test, distance vs far plane and visibility range, layers vs the camera cull_mask, per-surface material + cull mode, and the triangle winding the camera actually sees (facing_camera=0 with back-face culling means a reversed index buffer â Godot treats CLOCKWISE winding as the FRONT face). Returns a \u0027warnings\u0027 list naming the stage that broke, or a verdict saying the geometry does reach the camera. USE THIS BEFORE tuning lighting, fog, exposure or palette on anything you cannot clearly see â those are invisible-mesh symptoms far more often than they are art problems.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "class":  {
+                                                             "type":  "string"
+                                                         },
+                                               "name":  {
+                                                            "type":  "string"
+                                                        },
+                                               "nth":  {
+                                                           "type":  "integer"
+                                                       },
+                                               "path":  {
+                                                            "description":  "node path or name in the running game",
+                                                            "type":  "string"
+                                                        },
+                                               "under":  {
+                                                             "type":  "string"
+                                                         }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "render_probe"
     },
     {
         "annotations":  {
@@ -956,6 +990,10 @@
                                                               "description":  "[x,y,w,h] pixel crop",
                                                               "type":  "array"
                                                           },
+                                               "save_to":  {
+                                                               "description":  "also write the frame to this path (res://, user:// or absolute) so later captures can be diffed against it â the agent still gets the image inline",
+                                                               "type":  "string"
+                                                           },
                                                "scale":  {
                                                              "description":  "0.05..1.0 downscale before encode (game target; default 1.0)",
                                                              "type":  "number"
@@ -1031,6 +1069,27 @@
                             "type":  "object"
                         },
         "name":  "search_files"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Switch the RUNNING game\u0027s viewport debug draw mode, then screenshot to see one render stage in isolation. unshaded = albedo only (clears lighting/fog/exposure as suspects in one shot). wireframe = is the geometry even there (culled or degenerate meshes show as nothing). overdraw = transparency cost. normal_buffer = flipped or NaN normals. lighting = light contribution only. normal = back to the real image. Reach for this FIRST when the picture is wrong; render_probe then answers the same question in numbers.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "mode":  {
+                                                            "description":  "normal | unshaded | lighting | overdraw | wireframe | normal_buffer",
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "required":  [
+                                             "mode"
+                                         ],
+                            "type":  "object"
+                        },
+        "name":  "set_debug_draw"
     },
     {
         "annotations":  {

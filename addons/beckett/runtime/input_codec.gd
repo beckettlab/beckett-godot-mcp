@@ -20,7 +20,42 @@ extends RefCounted
 ##   {type:"touch_drag", index, position:[x,y], relative:[x,y]}
 
 
+## Godot 4.7 gave synthesized keyboard/mouse events a real device id; before that, an
+## injected event carried device 0 and code that filters on the device could not tell it
+## from a joypad. Resolved through ClassDB rather than referenced directly: naming
+## InputEvent.DEVICE_ID_KEYBOARD in source would be a PARSE error on 4.2-4.6, which a
+## runtime `if` cannot guard (same trap as the 4.5+ Logger APIs). -1 means "not available",
+## and then nothing is stamped and 4.2-4.6 behave exactly as before.
+static var _device_keyboard: int = -1
+static var _device_mouse: int = -1
+static var _device_ids_probed := false
+
+
+static func _probe_device_ids() -> void:
+	if _device_ids_probed:
+		return
+	_device_ids_probed = true
+	# ASSIGN the -1 sentinel, never lean on the declared default. This script is not @tool,
+	# and when the editor preloads it from one that is, the static initialisers do not run:
+	# `_device_keyboard` then sits at the int default 0, which reads as a REAL device id.
+	# That made doctor report "stamped (keyboard=0)" on an engine with no such constant -
+	# a tool confidently reporting a capability it does not have.
+	_device_keyboard = -1
+	_device_mouse = -1
+	if ClassDB.class_has_integer_constant("InputEvent", "DEVICE_ID_KEYBOARD"):
+		_device_keyboard = ClassDB.class_get_integer_constant("InputEvent", "DEVICE_ID_KEYBOARD")
+	if ClassDB.class_has_integer_constant("InputEvent", "DEVICE_ID_MOUSE"):
+		_device_mouse = ClassDB.class_get_integer_constant("InputEvent", "DEVICE_ID_MOUSE")
+
+
+## The device ids this engine exposes, for doctor/tests. {keyboard, mouse}; -1 = absent.
+static func device_ids() -> Dictionary:
+	_probe_device_ids()
+	return {"keyboard": _device_keyboard, "mouse": _device_mouse}
+
+
 static func build_event(e: Dictionary) -> InputEvent:
+	_probe_device_ids()
 	match str(e.get("type", "")):
 		"key":
 			var k := InputEventKey.new()
@@ -33,6 +68,8 @@ static func build_event(e: Dictionary) -> InputEvent:
 				k.unicode = (uni as String).unicode_at(0)
 			else:
 				k.unicode = int(uni) if (uni is int or uni is float) else 0
+			if _device_keyboard >= 0:
+				k.device = _device_keyboard
 			return k
 		"action":
 			var a := InputEventAction.new()
@@ -45,11 +82,15 @@ static func build_event(e: Dictionary) -> InputEvent:
 			mb.button_index = int(e.get("button", 1))
 			mb.pressed = bool(e.get("pressed", true))
 			mb.position = vec2(e.get("position", [0, 0]))
+			if _device_mouse >= 0:
+				mb.device = _device_mouse
 			return mb
 		"mouse_motion":
 			var mm := InputEventMouseMotion.new()
 			mm.position = vec2(e.get("position", [0, 0]))
 			mm.relative = vec2(e.get("relative", [0, 0]))
+			if _device_mouse >= 0:
+				mm.device = _device_mouse
 			return mm
 		"joy_button":
 			var jb := InputEventJoypadButton.new()

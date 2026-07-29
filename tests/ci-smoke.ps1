@@ -59,7 +59,7 @@ param(
     # The Lite (L1-L4) tool count — bump together with tests/smoke.ps1's "advertises
     # exactly N" check, dev/glama-dump-tools.ps1's note, and the -ExpectedTools arg
     # in .github/workflows/ci.yml whenever the Lite surface changes.
-    [int]$ExpectedTools = 52,
+    [int]$ExpectedTools = 54,
 
     [int]$BootTimeoutSec = 120
 )

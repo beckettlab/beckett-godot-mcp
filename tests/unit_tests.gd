@@ -26,6 +26,7 @@ const UiInspect := preload("res://addons/beckett/runtime/ui_inspect.gd")
 const RuntimeBridge := preload("res://addons/beckett/core/runtime_bridge.gd")
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")
 const GameLogSink := preload("res://addons/beckett/runtime/game_log_sink.gd")
+const ProjectTools := preload("res://addons/beckett/tools/project_tools.gd")
 # Full-only modules: loaded dynamically so this suite ALSO runs on the Lite repo's CI,
 # where pack.ps1 physically trims them — their test groups then skip with a note.
 const _PLAYTEST_TOOLS_PATH := "res://addons/beckett/tools/playtest_tools.gd"
@@ -63,6 +64,10 @@ func _init() -> void:
 	await _t_focus_graph()
 	_t_type_stream()
 	_t_bridge_compare()
+	_t_setting_type_mirror()
+	_t_property_owner()
+	_t_winding()
+	_t_screenshot_metric()
 	print("")
 	if _fail > 0:
 		print("[unit] FAIL: %d failed, %d passed" % [_fail, _pass])
@@ -104,6 +109,12 @@ func _t_effort() -> void:
 	_ok(Effort.allows("playtest", 5) and not Effort.allows("playtest", 4), "allows() honors the boundary")
 	_ok(Effort.clamp_level(0) == 1 and Effort.clamp_level(99) == Effort.MAX_LEVEL, "clamp_level() bounds 1..MAX")
 	_ok((Effort.adds_at(4) as Array).has("get_performance_monitors"), "L4 See unlocks get_performance_monitors")
+	# v1.12: render diagnosis is SEEING the game, so it must stay inside the Lite ceiling;
+	# hot-swapping shaders MUTATES it, so it must stay outside. A slip either way is a
+	# silent edition leak that only pack.ps1's gate would catch, and only at build time.
+	_ok(Effort.tier_of("render_probe") == 4, "render_probe is L4 (ships in Lite)")
+	_ok(Effort.tier_of("set_debug_draw") == 4, "set_debug_draw is L4 (ships in Lite)")
+	_ok(Effort.tier_of("reload_shader") == 5, "reload_shader is L5 premium (mutates the live game)")
 
 
 # ---------------------------------------------------------------- tool registry
@@ -341,6 +352,18 @@ func _t_input_codec() -> void:
 	_ok(int(uk_wire.get("unicode", 0)) == 104, "unicode round-trips through serialize")
 	var plain: InputEvent = InputCodec.build_event({"type": "key", "keycode": "Right", "pressed": true})
 	_ok(not (InputCodec.serialize_event(plain) as Dictionary).has("unicode"), "unicode key omitted when zero")
+	# v1.12 W3.5: device ids are 4.7+. The gate must agree with the ENGINE, never invent a
+	# device 0 - the static-initialiser trap made doctor claim "stamped (keyboard=0)" on an
+	# engine with no such constant, which is a tool reporting a capability it does not have.
+	var ids: Dictionary = InputCodec.device_ids()
+	var has_kb := ClassDB.class_has_integer_constant("InputEvent", "DEVICE_ID_KEYBOARD")
+	_ok((int(ids.get("keyboard", -1)) >= 0) == has_kb, "device-id availability matches ClassDB (no phantom device 0)")
+	_ok((int(ids.get("mouse", -1)) >= 0) == ClassDB.class_has_integer_constant("InputEvent", "DEVICE_ID_MOUSE"), "mouse device id likewise")
+	if has_kb:
+		_ok(int(ids["keyboard"]) == ClassDB.class_get_integer_constant("InputEvent", "DEVICE_ID_KEYBOARD"), "keyboard id is the engine's own value")
+		_ok((InputCodec.build_event({"type": "key", "keycode": "A", "pressed": true}) as InputEventKey).device == int(ids["keyboard"]), "a synthesized key carries the keyboard device id")
+	else:
+		_ok((InputCodec.build_event({"type": "key", "keycode": "A", "pressed": true}) as InputEventKey).device == 0, "pre-4.7 keeps the old device 0 (behaviour unchanged)")
 
 
 # ---------------------------------------------------------------- ui_inspect (v1.10)
@@ -736,3 +759,179 @@ func _t_type_stream() -> void:
 	field.free()
 	root.remove_child(rt)
 	rt.free()
+
+
+# ---------------------------------------------------------------- v1.12 honesty + render diagnosis
+
+## set_project_setting used to persist a client's "2" as the STRING "2" (and a JSON number
+## as 0.0), which Godot reads as neither the enum nor an int - the setting silently did
+## nothing. Mirroring is deliberately only done against a KNOWN existing type; guessing
+## would break application/config/name = "2048".
+func _t_setting_type_mirror() -> void:
+	print("[unit] set_project_setting type mirror (v1.12)")
+	_ok(ProjectTools._setting_value("2", 0) == 2 and typeof(ProjectTools._setting_value("2", 0)) == TYPE_INT,
+		"string '2' onto an int setting stores int 2")
+	_ok(is_equal_approx(float(ProjectTools._setting_value("0.35", 0.0)), 0.35) and typeof(ProjectTools._setting_value("0.35", 0.0)) == TYPE_FLOAT,
+		"string '0.35' onto a float setting stores a float")
+	_ok(ProjectTools._setting_value("true", false) == true, "string 'true' onto a bool setting stores a bool")
+	_ok(ProjectTools._setting_value("2048", "name") == "2048", "a numeric-looking string onto a STRING setting stays a String")
+	_ok(typeof(ProjectTools._setting_value("2", null)) == TYPE_STRING, "no existing type -> no guess (stays a String)")
+	# JSON has one number type, so an integral value arrives as a float.
+	_ok(typeof(ProjectTools._setting_value(0.0, 4)) == TYPE_INT and ProjectTools._setting_value(0.0, 4) == 0,
+		"JSON number 0.0 onto an int setting stores int 0 (not 0.0)")
+	_ok(typeof(ProjectTools._setting_value(2.0, 0.5)) == TYPE_FLOAT, "number onto a float setting stays a float")
+	_ok(ProjectTools._setting_value(1.5, 4) == 1.5, "a lossy float onto an int setting is NOT silently truncated")
+	var psa: Variant = ProjectTools._setting_value("[\"res://addons/x/plugin.cfg\"]", null)
+	_ok(psa is PackedStringArray and (psa as PackedStringArray).size() == 1, "stringified array still recovers as PackedStringArray")
+
+
+## The bridge `set` used to answer ok for writes that never landed: Object.set() is silent
+## on an unknown name and blind to ':' sub-resource paths.
+func _t_property_owner() -> void:
+	print("[unit] runtime property resolution + write verify (v1.12)")
+	var rt = MCPRuntime.new()
+	var we := WorldEnvironment.new()
+	we.environment = Environment.new()
+
+	var r: Dictionary = rt._property_owner(we, "environment:fog_density")
+	_ok(bool(r.get("ok", false)) and r.get("owner") == we.environment and str(r.get("leaf")) == "fog_density",
+		"a ':' path resolves to the sub-resource that OWNS the leaf")
+	_ok(not bool(r.get("indexed", true)), "an object hop uses a plain set, not set_indexed")
+
+	var bad: Dictionary = rt._property_owner(we, "environment:fog_densty")
+	_ok(not bool(bad.get("ok", true)), "a typo in the leaf is an error, not a silent null")
+	_ok(str(bad.get("suggestion", "")).contains("fog_density"), "the error suggests the right name")
+	_ok(str(bad.get("error", "")).contains("Environment"), "the error names the class that actually owns the leaf")
+
+	var bad_head: Dictionary = rt._property_owner(we, "envirnoment:fog_density")
+	_ok(not bool(bad_head.get("ok", true)) and str(bad_head.get("error", "")).contains("envirnoment"),
+		"a typo in an intermediate hop names THAT hop, not the whole path")
+
+	var n3 := Node3D.new()
+	var struct_hop: Dictionary = rt._property_owner(n3, "position:y")
+	_ok(bool(struct_hop.get("ok", false)) and bool(struct_hop.get("indexed", false)) and str(struct_hop.get("leaf")) == "position:y",
+		"a built-in struct hop falls back to the whole path via set_indexed")
+
+	var nulled := WorldEnvironment.new()
+	var missing: Dictionary = rt._property_owner(nulled, "environment:fog_density")
+	_ok(not bool(missing.get("ok", true)) and str(missing.get("error", "")).contains("null"),
+		"a null intermediate says so instead of writing nowhere")
+
+	# Read-back verify: equality is approximate for floats, so an engine storing 0.1 as
+	# 0.100000001 still counts as honouring the write.
+	_ok(rt._value_eq(0.1, 0.1 + 1e-9), "float compare is approximate")
+	_ok(not rt._value_eq(0.1, 0.2), "genuinely different floats differ")
+	_ok(rt._value_eq(Vector3(1, 2, 3), Vector3(1, 2, 3)) and not rt._value_eq(Vector3.ZERO, Vector3.ONE), "vector compare works")
+	_ok(not rt._value_eq(1, 1.0), "int and float are not conflated (type change means the write was reshaped)")
+
+	var set_ok: Dictionary = rt._set_cmd(we, {"prop": "environment:volumetric_fog_density", "value": "0.02"})
+	_ok(bool(set_ok.get("ok", false)), "a nested write reports ok")
+	_ok(is_equal_approx(we.environment.volumetric_fog_density, 0.02), "THE regression: the value actually reaches the Environment")
+	_ok(set_ok.has("before") and set_ok.has("after"), "the response always carries before/after")
+	_ok(bool(set_ok.get("changed", false)), "a real change is reported as changed")
+	var set_bad: Dictionary = rt._set_cmd(we, {"prop": "environment:nope", "value": 1})
+	_ok(not bool(set_bad.get("ok", true)), "writing an unknown property is an error, never a silent ok")
+
+	# Godot's set() accepts garbage for a typed property and stores the type's DEFAULT, so
+	# `global_transform = "nonsense"` used to ZERO the transform and report success. Found
+	# live while probing the fix itself; refusing beats destroying data.
+	_ok(rt._coercion_error(Transform3D.IDENTITY, "nonsense") != "", "an uncoercible value for a typed property is refused")
+	_ok(rt._coercion_error(0.0, 1.5) == "", "a matching type passes")
+	_ok(rt._coercion_error(null, "anything") == "", "a null current value cannot pin a type, so nothing is refused")
+	_ok(rt._coercion_error(Vector3.ZERO, Vector3.ONE) == "", "same-type struct passes")
+	var n3b := Node3D.new()
+	n3b.position = Vector3(3, 0, 0)
+	var wreck: Dictionary = rt._set_cmd(n3b, {"prop": "transform", "value": "nonsense"})
+	_ok(not bool(wreck.get("ok", true)), "THE data-loss regression: garbage for a Transform3D is refused")
+	_ok(n3b.position == Vector3(3, 0, 0), "...and the original transform is left intact")
+	n3b.free()
+
+	n3.free()
+	nulled.free()
+	we.free()
+	rt.free()
+
+
+## Godot's front face is CLOCKWISE, so the outward normal is (v2-v0) x (v1-v0) - the
+## REVERSE of the habitual cross product. Verified against BoxMesh/SphereMesh/CylinderMesh/
+## PlaneMesh; if this ever flips, render_probe would confidently accuse healthy geometry.
+func _t_winding() -> void:
+	print("[unit] render_probe winding math (v1.12)")
+	var rt = MCPRuntime.new()
+	var plane := PlaneMesh.new()
+
+	# surface_get_primitive_type lives on ArrayMesh only — calling it blind crashed the
+	# surface walk on every PrimitiveMesh, which is most of what a scene is built from.
+	_ok(rt._primitive_of(plane, 0) == Mesh.PRIMITIVE_TRIANGLES, "a PrimitiveMesh reports triangles without ArrayMesh's method")
+
+	var good: Dictionary = rt._winding_report(plane, Transform3D.IDENTITY, null)
+	_ok(int(good.get("triangles", 0)) == 2 and int(good.get("sampled", 0)) == 2, "both triangles sampled")
+	_ok(str(good.get("vs_normals", "")) == "agree", "a stock PlaneMesh agrees with its own normals")
+	_ok(int(good.get("degenerate", -1)) == 0, "no degenerate triangles in a stock mesh")
+
+	# Reverse the index order only — normals untouched. This is the meadow bug exactly.
+	var arr: Array = plane.surface_get_arrays(0)
+	var idx: PackedInt32Array = arr[Mesh.ARRAY_INDEX]
+	var flipped := PackedInt32Array()
+	for t in range(idx.size() / 3):
+		flipped.append(idx[t * 3 + 2])
+		flipped.append(idx[t * 3 + 1])
+		flipped.append(idx[t * 3])
+	arr[Mesh.ARRAY_INDEX] = flipped
+	var am := ArrayMesh.new()
+	am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	var bad: Dictionary = rt._winding_report(am, Transform3D.IDENTITY, null)
+	_ok(str(bad.get("vs_normals", "")) == "reversed", "a reversed index buffer is detected against unchanged normals")
+	_ok(int(bad.get("triangles", 0)) == 2, "the reversed mesh still reports its real triangle count")
+
+	# The warning text is what the agent actually reads, so pin it.
+	var warns: Array = []
+	rt._winding_warnings({"sampled": 2, "facing_camera": 0, "vs_normals": "reversed", "degenerate": 0},
+		[{"index": 0, "cull_mode": "back"}], warns)
+	_ok(str(warns).contains("reversed index buffer"), "0-facing + back-face culling names the reversed index buffer")
+	var none: Array = []
+	rt._winding_warnings({"sampled": 2, "facing_camera": 2, "vs_normals": "agree", "degenerate": 0},
+		[{"index": 0, "cull_mode": "back"}], none)
+	_ok(none.is_empty(), "healthy winding produces no warning (signal stays high)")
+	var off: Array = []
+	rt._winding_warnings({"sampled": 2, "facing_camera": 0, "vs_normals": "agree", "degenerate": 0},
+		[{"index": 0, "cull_mode": "disabled (render_mode cull_disabled)"}], off)
+	_ok(off.is_empty(), "0-facing with culling DISABLED is not a bug (both sides draw)")
+
+	_ok(rt.DEBUG_DRAW_MODES.has("wireframe") and rt.DEBUG_DRAW_MODES.has("unshaded"), "debug draw modes expose the two workhorse views")
+	_ok(rt._debug_draw_name(Viewport.DEBUG_DRAW_DISABLED) == "normal", "debug draw names round-trip for the previous-mode report")
+	rt.free()
+
+
+## W2: the screenshot assert's threshold has to mean something. These pin peak_snr against
+## the REAL engine so a future default change cannot quietly make the assert vacuous (the
+## old 64x64 downsample-and-sum could pass a completely misdrawn character).
+func _t_screenshot_metric() -> void:
+	print("[unit] screenshot assert metric (v1.12 W2)")
+	var base := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	base.fill(Color(0.2, 0.4, 0.6))
+	if not base.has_method("compute_image_metrics"):
+		print("  (skip: this Godot has no Image.compute_image_metrics)")
+		return
+	var same := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	same.fill(Color(0.2, 0.4, 0.6))
+	var want := 30.0  # playtest_tools.SNR_DEFAULT
+	var snr_same := float((base.call("compute_image_metrics", same, false) as Dictionary).get("peak_snr", 0.0))
+	_ok(snr_same >= want, "identical frames pass the default threshold (snr %.0f)" % snr_same)
+	var one_px := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	one_px.fill(Color(0.2, 0.4, 0.6))
+	one_px.set_pixel(0, 0, Color(1, 1, 1))
+	var snr_px := float((base.call("compute_image_metrics", one_px, false) as Dictionary).get("peak_snr", 0.0))
+	_ok(snr_px >= want, "a single changed pixel still passes (AA-tolerant, snr %.1f)" % snr_px)
+	var different := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	different.fill(Color(0.9, 0.1, 0.1))
+	var snr_diff := float((base.call("compute_image_metrics", different, false) as Dictionary).get("peak_snr", 0.0))
+	_ok(snr_diff < want, "a genuinely different frame FAILS (snr %.1f < %.0f)" % [snr_diff, want])
+	# Half the image changed is the regression shape that matters most: a real visual break.
+	var half := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	half.fill(Color(0.2, 0.4, 0.6))
+	for y in 32:
+		for x in 64:
+			half.set_pixel(x, y, Color(0.9, 0.1, 0.1))
+	var snr_half := float((base.call("compute_image_metrics", half, false) as Dictionary).get("peak_snr", 0.0))
+	_ok(snr_half < want, "half the frame changed FAILS (snr %.1f)" % snr_half)

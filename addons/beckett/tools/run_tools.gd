@@ -21,10 +21,11 @@ var server  # mcp_server node (exposes .bridge)
 func _register(registry) -> void:
 	registry.register({
 		"name": "play_scene",
-		"description": "Play a scene in the editor. 'scene' (res://) plays a specific scene; current=true plays the open scene; otherwise the project's main scene. Then wait_until condition=play_started, and logs_read for errors.",
+		"description": "Play a scene in the editor. 'scene' (res://) plays a specific scene; current=true plays the open scene; otherwise the project's main scene. Then wait_until condition=play_started, and logs_read for errors. on_ready=[{path|class|name, property, value}, ...] queues runtime writes that are applied automatically the moment the new game connects — the restart boundary batch_execute cannot cross. Use it to restore camera pose, debug flags or spawn state in ONE call instead of re-issuing them after every restart; wait_until condition=game_connected then reports whether each one landed. Writes whose target is still spawning are retried for a few seconds, then reported as failures rather than dropped.",
 		"input_schema": {"type": "object", "properties": {
 			"scene": {"type": "string", "description": "res:// path; omit for main/current"},
 			"current": {"type": "boolean"},
+			"on_ready": {"type": "array", "description": "property writes applied once the game connects: [{path, property, value}, ...] (path may be a name/class selector, same as runtime_set_property)"},
 		}},
 		"handler": Callable(self, "_play_scene"),
 	})
@@ -69,16 +70,47 @@ func _register(registry) -> void:
 
 func _play_scene(args: Dictionary) -> Dictionary:
 	var scene := str(args.get("scene", ""))
+	if not scene.is_empty() and not ResourceLoader.exists(scene):
+		return {"error": "No scene at: %s" % scene}
+	var queued := _queue_on_ready(args.get("on_ready"))
+	if queued is String:
+		return {"error": queued}
+	var what := ""
 	if not scene.is_empty():
-		if not ResourceLoader.exists(scene):
-			return {"error": "No scene at: %s" % scene}
 		EditorInterface.play_custom_scene(scene)
-		return {"text": "playing %s" % scene}
-	if bool(args.get("current", false)):
+		what = "playing %s" % scene
+	elif bool(args.get("current", false)):
 		EditorInterface.play_current_scene()
-		return {"text": "playing current scene"}
-	EditorInterface.play_main_scene()
-	return {"text": "playing main scene"}
+		what = "playing current scene"
+	else:
+		EditorInterface.play_main_scene()
+		what = "playing main scene"
+	if int(queued) > 0:
+		what += "; %d on_ready write(s) queued — they apply when the game connects, and wait_until condition=game_connected reports the result" % int(queued)
+	return {"text": what}
+
+
+## Validate and park the on_ready batch. Returns the queued count, or an error String.
+func _queue_on_ready(raw: Variant) -> Variant:
+	server.bridge.queue_on_ready([])
+	if raw == null:
+		return 0
+	if not (raw is Array):
+		return "on_ready must be an array of {path, property, value} objects"
+	var items: Array = []
+	for e in (raw as Array):
+		if not (e is Dictionary):
+			return "each on_ready entry must be an object with property + value and a path/name/class target"
+		var d: Dictionary = e
+		if str(d.get("property", "")).is_empty():
+			return "on_ready entry is missing 'property'"
+		if not d.has("value"):
+			return "on_ready entry for '%s' is missing 'value'" % str(d.get("property"))
+		if str(d.get("path", "")).is_empty() and str(d.get("name", "")).is_empty() and str(d.get("class", "")).is_empty():
+			return "on_ready entry for '%s' needs a target (path, name or class)" % str(d.get("property"))
+		items.append(d)
+	server.bridge.queue_on_ready(items)
+	return items.size()
 
 
 func _stop_scene(_args: Dictionary) -> Dictionary:
@@ -87,11 +119,15 @@ func _stop_scene(_args: Dictionary) -> Dictionary:
 
 
 func _get_play_state(_args: Dictionary) -> Dictionary:
-	return {"json": {
+	var out := {
 		"playing": EditorInterface.is_playing_scene(),
 		"scene": EditorInterface.get_playing_scene(),
 		"game_connected": server.bridge.is_game_connected(),
-	}}
+	}
+	var report: Dictionary = server.bridge.on_ready_status()
+	if not report.is_empty():
+		out["on_ready"] = report
+	return {"json": out}
 
 
 func _wait_until(args: Dictionary) -> Dictionary:
@@ -115,6 +151,12 @@ func _wait_until(args: Dictionary) -> Dictionary:
 	var pump := Callable(server.bridge, "poll_once") if server.bridge != null else Callable()
 	var res: Dictionary = MCPJobsScript.poll_until(budget, 50, tick, pump)
 	if res.has("met"):
+		# game_connected is where a queued on_ready batch becomes visible: the agent asked
+		# for those writes one call ago and has to learn whether they landed.
+		var report: Dictionary = server.bridge.on_ready_status() if server.bridge != null else {}
+		if not report.is_empty():
+			report["condition"] = cond
+			return {"json": report}
 		return {"text": "condition met: %s" % cond}
 	return {"error": "not yet: %s (waited %d ms — per-call cap; the editor needs free frames between calls to launch the game and run jobs). Call wait_until again." % [cond, budget]}
 
@@ -125,7 +167,10 @@ func _check(cond: String) -> bool:
 	if cond == "play_stopped":
 		return not EditorInterface.is_playing_scene()
 	if cond == "game_connected":
-		return server.bridge.is_game_connected()
+		# Not "met" until any queued on_ready writes have been applied too — reporting the
+		# connection while writes are still pending would hand back a half-built world.
+		# The queue always empties (its grace window force-fails leftovers), so this ends.
+		return server.bridge.is_game_connected() and server.bridge.on_ready_queue.is_empty()
 	if cond.begins_with("file_exists:"):
 		return FileAccess.file_exists(cond.substr(12))
 	if cond.begins_with("seconds:"):

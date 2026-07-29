@@ -69,6 +69,7 @@ func _apply_template(args: Dictionary) -> Dictionary:
 			ordered.append(f)
 
 	var wrote: Array = []
+	var editor_notes: Array = []  # scenes the editor is holding open over what we just wrote
 	for f in ordered:
 		var fname := str(f)
 		var to := "res://" + fname
@@ -79,8 +80,9 @@ func _apply_template(args: Dictionary) -> Dictionary:
 				"json": {"wrote": wrote}}
 		out.store_string(text)
 		out.close()
-		if Engine.is_editor_hint():
-			EditorInterface.get_resource_filesystem().update_file(to)
+		var note := BeckettProjectTools.sync_written_file(to)
+		if not note.is_empty():
+			editor_notes.append(to + ":" + note)
 		wrote.append(to)
 
 	# The template — not apply_template — decides whether it owns the main scene.
@@ -94,13 +96,16 @@ func _apply_template(args: Dictionary) -> Dictionary:
 	else:
 		main_scene = ""
 
-	return {"json": {
+	var out := {
 		"template": tpl,
 		"description": str(manifest.get("description", "")),
 		"wrote": wrote,
 		"main_scene": main_scene,
 		"next": "Customize the copied files to your needs. Confirm structure with assert_scene before relying on it.",
-	}}
+	}
+	if not editor_notes.is_empty():
+		out["editor_notes"] = editor_notes
+	return {"json": out}
 
 
 func _template_dir(name: String) -> String:

@@ -5,10 +5,17 @@ extends Node
 ## lifecycle (initialize / tools / resources / prompts) over JSON-RPC 2.0, and applies
 ## security gates before any tool runs. Everything executes on the editor main thread.
 
-const PROTOCOL_VERSION := "2025-06-18"
+const PROTOCOL_VERSION := "2025-11-25"
 # Revisions we can honestly serve (all Streamable-HTTP). initialize echoes the
 # client's requested revision when it's one of these; otherwise our latest.
-const SUPPORTED_PROTOCOL_VERSIONS: Array[String] = ["2025-06-18", "2025-03-26"]
+#
+# 2025-11-25 is advertised because the two things it MANDATES of a server shaped like this
+# are both true here: input-validation failures come back as tool RESULTS with isError so
+# the model can self-correct (SEP-1303 — see _call_tool's _validate_args gate), and an
+# invalid Origin answers 403 (see _check_origin). The revision's other additions are
+# optional (icons), client-side (sampling tools, elicitation), experimental (tasks), or
+# about OAuth flows this server does not use — it authenticates with a local bearer token.
+const SUPPORTED_PROTOCOL_VERSIONS: Array[String] = ["2025-11-25", "2025-06-18", "2025-03-26"]
 const SERVER_NAME := "beckett-godot-mcp"
 const SERVER_VERSION := "1.0.0"
 
@@ -366,6 +373,8 @@ func handle_http(req: Dictionary) -> Dictionary:
 
 	if not _check_origin(headers):
 		return _http(403, {}, "forbidden origin")
+	if not _check_host(headers):
+		return _http(403, {}, "forbidden host (this server only answers to a loopback Host)")
 	if not _check_token(headers, str(req.get("path", ""))):
 		return _http(401, {}, "unauthorized")
 	if not _check_session(headers):
@@ -817,13 +826,45 @@ func _tool_result(r: Dictionary) -> Dictionary:
 
 func _check_origin(headers: Dictionary) -> bool:
 	# Anti DNS-rebind: reject any cross-origin browser request. Non-browser clients
-	# (Claude Code, Cursor) send no Origin — allow those.
+	# (Claude Code, Cursor) send no Origin — allow those. 403 is what spec 2025-11-25
+	# requires for an invalid Origin (it was previously unstated).
 	if not headers.has("origin"):
 		return true
 	var origin: String = str(headers["origin"]).to_lower()
 	return origin.begins_with("http://127.0.0.1") \
 		or origin.begins_with("http://localhost") \
 		or origin.begins_with("http://[::1]")
+
+
+## The other half of the DNS-rebinding gate, and the half that actually closes it.
+## Origin CANNOT close it on its own: a legitimate non-browser client sends no Origin, so
+## Origin-less requests must pass — and that is exactly the shape a rebinding attack takes.
+## The HOST header is what the browser was TOLD to connect to, and in an attack it carries
+## the attacker's name, never a loopback literal. Mirrors official SDK >= 0.25 behaviour
+## (CVE-2026-11624). Runs before the token check, so it holds with BECKETT_AUTH=0 too.
+func _check_host(headers: Dictionary) -> bool:
+	if not headers.has("host"):
+		return true  # HTTP/1.0 or a hand-rolled client: nothing was asserted to check
+	var host := str(headers["host"]).to_lower().strip_edges()
+	var host_name := host
+	var host_port := ""
+	if host_name.begins_with("["):            # [::1]:8770
+		var close := host_name.find("]")
+		if close != -1:
+			host_port = host_name.substr(close + 1).lstrip(":")
+			host_name = host_name.substr(1, close - 1)
+	else:
+		var colon := host_name.rfind(":")
+		if colon != -1:
+			host_port = host_name.substr(colon + 1)
+			host_name = host_name.substr(0, colon)
+	if not (host_name in ["127.0.0.1", "localhost", "::1"]):
+		return false
+	# A port that disagrees with the socket the request actually arrived on means the
+	# client was aimed somewhere else; only compare when we know our own port.
+	if not host_port.is_empty() and http != null and http.port > 0:
+		return host_port == str(http.port)
+	return true
 
 
 func _check_token(headers: Dictionary, path: String = "") -> bool:

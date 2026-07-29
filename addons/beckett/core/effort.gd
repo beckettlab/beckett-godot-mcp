@@ -87,6 +87,10 @@ const _DELTA := {
 		"runtime_get_property",
 		# one-call structured UI read (v1.10) — pure observation, so it Sees in Lite
 		"ui_snapshot",
+		# render diagnosis (v1.12): why is this mesh not on screen, and which render stage
+		# broke the image. Seeing that something is wrong was never the gap — saying WHICH
+		# STAGE is, and that answer belongs to the tier whose whole promise is sight.
+		"render_probe", "set_debug_draw",
 	],
 	# L5 — DRIVE & verify: the agent drives the game (input, clicks, drag/scroll,
 	# runtime writes/calls, record/replay) and checks results (asserts, test_run),
@@ -105,6 +109,9 @@ const _DELTA := {
 		"record_input", "replay_input",
 		# deterministic playtest control (freeze / frame-step / step-until / time-scale)
 		"time_control",
+		# hot-swap an edited .gdshader into the live game (v1.12) — a live MUTATION of the
+		# running game's materials, so it belongs to Drive, not to See
+		"reload_shader",
 		# verify it
 		"assert_node_state", "assert_screen_text", "assert_scene", "compare_screenshots",
 		"test_run",

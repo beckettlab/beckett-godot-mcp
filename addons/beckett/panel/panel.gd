@@ -30,7 +30,7 @@ var _toggle_btn: Button
 var _url_btn: Button
 var _auth_label: Label
 var _auth_btn: Button
-var _auth_off_btn: Button
+var _auth_toggle: AuthToggle
 var _game_label: Label
 var _client_label: Label
 var _client_dot: Panel
@@ -177,22 +177,26 @@ func _build_server_card() -> void:
 
 	box.add_child(HSeparator.new())
 
-	# Status line: a colour-coded dot + state (· port when running).
+	# Status + its one action share a row (v1.12): state and the button that changes it are
+	# the same thought, and a full-width bar under a status line spent a whole row saying
+	# what the line above already said. The button keeps a comfortable hit box.
 	var status_row := HBoxContainer.new()
-	status_row.add_theme_constant_override("separation", int(5 * _es))
+	status_row.add_theme_constant_override("separation", int(6 * _es))
 	_status_dot = _make_dot()
+	_status_dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	status_row.add_child(_status_dot)
 	_status_text = Label.new()
 	_status_text.add_theme_font_size_override("font_size", int(13 * _es))
 	_status_text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_status_text.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	status_row.add_child(_status_text)
-	box.add_child(status_row)
-
-	# Primary control.
 	_toggle_btn = Button.new()
-	_toggle_btn.custom_minimum_size = Vector2(0, 30 * _es)
+	_toggle_btn.custom_minimum_size = Vector2(84 * _es, 26 * _es)
+	_toggle_btn.focus_mode = Control.FOCUS_NONE
+	_toggle_btn.add_theme_font_size_override("font_size", int(11 * _es))
 	_toggle_btn.pressed.connect(_on_toggle_server)
-	box.add_child(_toggle_btn)
+	status_row.add_child(_toggle_btn)
+	box.add_child(status_row)
 
 	# Endpoint as a code block (matches the activity args look); the whole strip copies,
 	# the trailing icon is the affordance.
@@ -211,32 +215,51 @@ func _build_server_card() -> void:
 	_url_btn.add_theme_stylebox_override("pressed", _code_style(true))
 	if mono != null:
 		_url_btn.add_theme_font_override("font", mono)
-	_url_btn.tooltip_text = "Click to copy the MCP endpoint URL"
+	_url_btn.tooltip_text = "Click to copy the full MCP endpoint URL (it carries the auth token)"
 	_url_btn.pressed.connect(_on_copy_url)
 	box.add_child(_url_btn)
+	# Endpoint + auth belong together (both are "how a client reaches this server") and both
+	# are setup-time concerns, so they sit as a pair under the status they depend on.
 
-	# Auth row (v1.9): token state + enable/rotate/off. The token rides in the endpoint URL,
-	# so every change here immediately re-writes the detected client configs to match.
+	# Auth block (v1.9; redrawn as a switch in v1.12). The token rides in the endpoint URL, so
+	# every change here immediately re-writes the detected client configs to match.
+	# It reads as a SWITCH because that is what it is: one binary security state. The old
+	# Enable/Rotate/Off trio made the primary state (on or off) something you had to infer
+	# from which buttons happened to be visible, and put the rarely-wanted destructive action
+	# (Off) at the same weight as the common one.
+	var auth_block := VBoxContainer.new()
+	auth_block.add_theme_constant_override("separation", int(1 * _es))
+	auth_block.tooltip_text = "Loopback auth: requests must carry the project's token (in the URL or an Authorization header).\nOn = only clients Beckett set up can call the server. Off = any local process can.\nThe Origin and Host gates hold either way, so a web page can never reach it."
 	var auth_row := HBoxContainer.new()
-	auth_row.add_theme_constant_override("separation", int(5 * _es))
-	auth_row.tooltip_text = "Loopback auth: requests must carry the project's token (in the URL or an Authorization header).\nOn = only clients set up by Beckett can call the server. Rotate re-keys and re-writes client configs."
-	_auth_label = Label.new()
-	_auth_label.add_theme_font_size_override("font_size", int(11 * _es))
-	_auth_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	auth_row.add_child(_auth_label)
+	auth_row.add_theme_constant_override("separation", int(6 * _es))
+	var auth_title := Label.new()
+	auth_title.text = "Auth token"
+	auth_title.add_theme_font_size_override("font_size", int(11 * _es))
+	auth_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	auth_title.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	auth_row.add_child(auth_title)
 	_auth_btn = Button.new()
+	_auth_btn.text = "Rotate"
 	_auth_btn.focus_mode = Control.FOCUS_NONE
 	_auth_btn.add_theme_font_size_override("font_size", int(10 * _es))
-	_auth_btn.pressed.connect(_on_auth_enable_or_rotate)
+	_auth_btn.tooltip_text = "Re-key the token and update every client config"
+	_auth_btn.pressed.connect(_on_auth_rotate)
 	auth_row.add_child(_auth_btn)
-	_auth_off_btn = Button.new()
-	_auth_off_btn.text = "Off"
-	_auth_off_btn.focus_mode = Control.FOCUS_NONE
-	_auth_off_btn.add_theme_font_size_override("font_size", int(10 * _es))
-	_auth_off_btn.tooltip_text = "Disable token auth (any local process can call the server again)"
-	_auth_off_btn.pressed.connect(_on_auth_disable)
-	auth_row.add_child(_auth_off_btn)
-	box.add_child(auth_row)
+	_auth_toggle = AuthToggle.new()
+	_auth_toggle.setup(_auth_enabled(), _es, _color("success_color", Color(0.3, 0.8, 0.4)))
+	_auth_toggle.toggled_to.connect(_on_auth_toggled)
+	_auth_toggle.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	auth_row.add_child(_auth_toggle)
+	auth_block.add_child(auth_row)
+	# Caption only for the state worth warning about. Spending a line to announce that
+	# everything is fine is what made this block feel busy: the switch already says "on",
+	# in colour, and a caption repeating it is noise the eye has to re-read every time.
+	_auth_label = Label.new()
+	_auth_label.add_theme_font_size_override("font_size", int(10 * _es))
+	_auth_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_auth_label.visible = false
+	auth_block.add_child(_auth_label)
+	box.add_child(auth_block)
 
 	# Live connection: a dot + who's talking (green) or a pending "waiting…" (amber). The
 	# authoritative state from the initialize handshake — distinct from "config written".
@@ -1148,7 +1171,7 @@ func _refresh() -> void:
 	_toggle_btn.text = "Stop Server" if running else "Start Server"
 	_toggle_btn.icon = _eicon("Stop") if running else _eicon("Play")
 
-	_url_btn.text = MCPClientConfig.mcp_url(_port(), _auth_token())
+	_url_btn.text = _display_url()
 	_url_btn.modulate.a = 1.0 if running else 0.5
 	_refresh_auth_row()
 
@@ -1259,6 +1282,18 @@ func _on_copy() -> void:
 
 # ---------------------------------------------------------------- auth (v1.9)
 
+## The endpoint as SHOWN. The token rides in the path, and the dock is on screen in every
+## screenshot, screen share and stream a user ever makes of their editor — printing the
+## secret there in full is a leak with no upside, since the way you actually use this row is
+## to click it and paste. Masked on screen, complete on the clipboard.
+func _display_url() -> String:
+	var tok := _auth_token()
+	var full := MCPClientConfig.mcp_url(_port(), tok)
+	if tok.is_empty():
+		return full
+	return full.substr(0, full.length() - tok.length()) + "•".repeat(mini(tok.length(), 10))
+
+
 func _auth_token() -> String:
 	return str(server.auth_token()) if server != null and server.has_method("auth_token") else ""
 
@@ -1271,39 +1306,70 @@ func _refresh_auth_row() -> void:
 	if _auth_label == null:
 		return
 	var on := _auth_enabled()
-	_auth_label.text = "auth: token on" if on else "auth: off (any local process can call)"
-	_auth_label.add_theme_color_override("font_color",
-		_color("success_color", Color(0.3, 0.8, 0.4)) if on else _dim())
-	_auth_btn.text = "Rotate" if on else "Enable"
-	_auth_btn.tooltip_text = "Re-key the token and update client configs" if on \
-		else "Generate a token; only clients set up by Beckett can call the server"
-	_auth_off_btn.visible = on
+	# Silent when protected; speaks up only when it is not. Warning colour, not grey: this
+	# is the one state a user might not have chosen on purpose.
+	_auth_label.visible = not on
+	if not on:
+		_auth_label.text = "any local process on this machine can call the server"
+		_auth_label.add_theme_color_override("font_color", _color("warning_color", Color(0.9, 0.7, 0.2)))
+	# Rotate is meaningless with no token, and destructive-looking next to an off switch.
+	_auth_btn.visible = on
+	# Sync WITHOUT emitting: the state can change from outside the dock (BECKETT_AUTH=0, a
+	# doctor run, another editor), and a synced switch must not re-fire the action it shows.
+	if _auth_toggle != null:
+		_auth_toggle.set_state(on)
 
 
-## Enable auth (mint the first token) or rotate the existing one, then immediately re-write
-## every detected client config so nothing starts 401ing with a stale URL.
-func _on_auth_enable_or_rotate() -> void:
+func _on_auth_toggled(want_on: bool) -> void:
+	if want_on:
+		_auth_enable()
+	else:
+		_auth_disable()
+
+
+## Mint the first token, then immediately re-write every detected client config so nothing
+## starts 401ing with a stale URL.
+func _auth_enable() -> void:
+	if server == null or not server.has_method("rotate_auth_token"):
+		_refresh_auth_row()
+		return
+	var tok: String = server.rotate_auth_token()
+	if tok == "":
+		# The switch already moved; put it back, or the dock would show a protected server
+		# that is not protected — the exact class of lie this release spent its time on.
+		_flash("Could not write the token file (see editor log)", false)
+		_refresh_auth_row()
+		return
+	MCPClientConfig.ensure_all(_port(), tok)
+	_clients_accum = 999.0  # re-detect on the next tick
+	_flash("Token auth enabled · client configs updated ✓")
+	_refresh()
+
+
+## Re-key an existing token (the switch stays on).
+func _on_auth_rotate() -> void:
 	if server == null or not server.has_method("rotate_auth_token"):
 		return
-	var was_on := _auth_enabled()
 	var tok: String = server.rotate_auth_token()
 	if tok == "":
 		_flash("Could not write the token file (see editor log)", false)
 		return
 	MCPClientConfig.ensure_all(_port(), tok)
-	_clients_accum = 999.0  # re-detect on the next tick
-	_flash(("Token rotated" if was_on else "Token auth enabled") + " · client configs updated ✓")
+	_clients_accum = 999.0
+	_flash("Token rotated · client configs updated ✓")
 	_refresh()
 
 
 ## Turn auth off and strip the token from client-config URLs so the state stays in lockstep.
-func _on_auth_disable() -> void:
+func _auth_disable() -> void:
 	if server == null or not server.has_method("set_auth_disabled"):
+		_refresh_auth_row()
 		return
 	server.set_auth_disabled()
 	MCPClientConfig.ensure_all(_port(), "")
 	_clients_accum = 999.0
 	_flash("Token auth disabled")
+	_refresh()
 	_refresh()
 
 
@@ -1788,6 +1854,92 @@ func _port() -> int:
 ## inside the editor's themed tooltip panel. Fields are populated by _refresh_effort_tools.
 ## A compact, monochrome on/off switch for a tool row. Custom-drawn so it stays black-and-white
 ## and theme-neutral (the editor CheckBox clashed) and can be sized down. Emits `switched(on)`.
+## Pill switch for token auth (v1.12). Custom-drawn rather than a CheckButton so it speaks
+## the dock's own visual language (cf. the effort bar and ToolSwitch) instead of the editor's
+## default widget, and so the ON state can carry the security colour: the whole point is that
+## someone glancing at the dock can tell whether the server is protected without reading.
+## Deliberately animated — the knob travelling is what makes it read as a state you changed
+## rather than a button you clicked.
+class AuthToggle extends Control:
+	signal toggled_to(on: bool)
+
+	var on := false
+	var es := 1.0
+	var on_color := Color(0.3, 0.8, 0.4)
+	var _t := 0.0          # animated 0 = off .. 1 = on
+	var _hover := false
+	var _held := false
+
+	func setup(p_on: bool, p_es: float, p_on_color: Color) -> void:
+		on = p_on
+		es = p_es
+		on_color = p_on_color
+		_t = 1.0 if p_on else 0.0
+		custom_minimum_size = Vector2(32.0 * es, 18.0 * es)
+		mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		queue_redraw()
+
+	## Reflect state changed from OUTSIDE the dock without re-emitting (env var, doctor,
+	## another editor). A switch that fires its own action while syncing would loop.
+	func set_state(p_on: bool) -> void:
+		if p_on == on:
+			return
+		on = p_on
+		set_process(true)
+		queue_redraw()
+
+	func _gui_input(ev: InputEvent) -> void:
+		if ev is InputEventMouseButton and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			if ev.pressed:
+				_held = true
+				queue_redraw()
+			elif _held:
+				_held = false
+				on = not on
+				set_process(true)
+				toggled_to.emit(on)
+				queue_redraw()
+			accept_event()
+
+	func _notification(what: int) -> void:
+		if what == NOTIFICATION_MOUSE_ENTER:
+			_hover = true
+			queue_redraw()
+		elif what == NOTIFICATION_MOUSE_EXIT:
+			_hover = false
+			_held = false
+			queue_redraw()
+
+	func _process(delta: float) -> void:
+		var target := 1.0 if on else 0.0
+		_t = move_toward(_t, target, delta * 7.0)
+		queue_redraw()
+		if is_equal_approx(_t, target):
+			_t = target
+			set_process(false)   # settle: an idle dock must not repaint forever
+
+	func _draw() -> void:
+		var h: float = minf(size.y, 18.0 * es)
+		var w: float = size.x
+		var y: float = (size.y - h) * 0.5
+		var ease_t: float = _t * _t * (3.0 - 2.0 * _t)   # smoothstep, so the knob eases out
+
+		var track := StyleBoxFlat.new()
+		track.set_corner_radius_all(int(h * 0.5))
+		var off_bg := Color(1, 1, 1, 0.16 if _hover else 0.10)
+		var on_bg := Color(on_color.r, on_color.g, on_color.b, 0.62 if _hover else 0.52)
+		track.bg_color = off_bg.lerp(on_bg, ease_t)
+		track.border_color = Color(1, 1, 1, 0.20).lerp(Color(on_color.r, on_color.g, on_color.b, 0.95), ease_t)
+		track.set_border_width_all(int(maxf(1.0 * es, 1.0)))
+		draw_style_box(track, Rect2(0, y, w, h))
+
+		var pad: float = 2.5 * es
+		var kr: float = (h - pad * 2.0) * 0.5
+		var kx: float = lerpf(pad + kr, w - pad - kr, ease_t)
+		var kc := Color(0.86, 0.87, 0.90).lerp(Color(1, 1, 1), ease_t)
+		draw_circle(Vector2(kx, y + h * 0.5), kr * (0.86 if _held else 1.0), kc)
+
+
 class ToolSwitch extends Control:
 	signal switched(on: bool)
 	var on := true

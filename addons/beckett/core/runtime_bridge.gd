@@ -25,6 +25,19 @@ var _pending_buf := PackedByteArray()
 var _pending_t0 := 0
 var _seq: int = 0
 
+# --- on_ready queue (play_scene on_ready=[...]) ------------------------------------------
+# A tool handler CANNOT wait for the game to connect: poll_until blocks the editor main
+# thread and the editor needs frames to finish launching the game, so an in-call wait
+# deadlocks the very event it waits for (the reason wait_until caps at ~1.5 s). So
+# play_scene parks its writes here and the bridge applies them the moment a verified peer
+# arrives. This is the restart boundary batch_execute cannot cross, crossed by the one
+# object that sees both sides of it — and it takes the "stop, play, wait, re-place the
+# camera, screenshot" loop from 9 calls to 3.
+var on_ready_queue: Array = []
+var on_ready_report: Array = []
+var _on_ready_deadline := 0
+const ON_READY_GRACE_MS := 4000  # how long a queued target may still be spawning
+
 
 func start(p_port: int, bind_address: String = "127.0.0.1") -> int:
 	stop()
@@ -78,6 +91,73 @@ func poll_once() -> void:
 		var st := _peer.get_status()
 		if st == StreamPeerTCP.STATUS_ERROR or st == StreamPeerTCP.STATUS_NONE:
 			_peer = null
+	if not on_ready_queue.is_empty() and _peer != null:
+		_drain_on_ready()
+
+
+## Apply the queued play_scene on_ready writes. Runs a frame or more AFTER promotion, and
+## re-queues targets that have not spawned yet until the grace window closes — a scene root
+## exists the instant the game dials in, but its children may still be instantiating, and a
+## write silently lost to "node not found" would be exactly the dishonesty we just removed.
+func _drain_on_ready() -> void:
+	var still: Array = []
+	for item in on_ready_queue:
+		var d: Dictionary = item
+		var cmd := {"cmd": "set", "prop": str(d.get("property", "")), "value": d.get("value")}
+		for k in ["path", "class", "name", "text", "nth", "under"]:
+			if d.has(k):
+				cmd[k] = d[k]
+		var r: Dictionary = send_command(cmd)
+		var err := str(r.get("error", ""))
+		var not_there := err.contains("not found") or err.contains("no node matches")
+		if not bool(r.get("ok", false)) and not_there and Time.get_ticks_msec() < _on_ready_deadline:
+			still.append(d)
+			continue
+		on_ready_report.append(_on_ready_entry(d, r))
+	on_ready_queue = still
+	if not on_ready_queue.is_empty() and Time.get_ticks_msec() >= _on_ready_deadline:
+		for d in on_ready_queue:
+			on_ready_report.append(_on_ready_entry(d, {
+				"ok": false,
+				"error": "target never appeared within %d ms of the game connecting" % ON_READY_GRACE_MS,
+			}))
+		on_ready_queue = []
+
+
+func _on_ready_entry(d: Dictionary, r: Dictionary) -> Dictionary:
+	var entry := {
+		"target": str(d.get("path", d.get("name", d.get("class", "?")))),
+		"property": str(d.get("property", "")),
+		"ok": bool(r.get("ok", false)),
+	}
+	if r.has("after"):
+		entry["after"] = r.get("after")
+	if r.has("error"):
+		entry["error"] = str(r.get("error"))
+	return entry
+
+
+## Queue writes to apply as soon as the next game connects, and clear any earlier report.
+func queue_on_ready(items: Array) -> void:
+	on_ready_queue = items.duplicate()
+	on_ready_report = []
+	_on_ready_deadline = Time.get_ticks_msec() + ON_READY_GRACE_MS
+
+
+## Report for the last on_ready batch, or {} if there was none. Non-destructive: several
+## tools (wait_until, get_play_state) may surface it.
+func on_ready_status() -> Dictionary:
+	if on_ready_report.is_empty() and on_ready_queue.is_empty():
+		return {}
+	var failed := 0
+	for e in on_ready_report:
+		if not bool((e as Dictionary).get("ok", false)):
+			failed += 1
+	return {
+		"applied": on_ready_report,
+		"pending": on_ready_queue.size(),
+		"failed": failed,
+	}
 
 
 ## Read the pending peer's first line ({"hello": <token>}) and promote or drop it. The
@@ -132,6 +212,10 @@ func _promote() -> void:
 	_peer = _pending
 	_pending = null
 	_pending_buf = PackedByteArray()
+	# Restart the on_ready grace HERE, not at queue time: the launch itself can eat seconds,
+	# and the window is meant to cover the scene finishing its spawn, not the game booting.
+	if not on_ready_queue.is_empty():
+		_on_ready_deadline = Time.get_ticks_msec() + ON_READY_GRACE_MS
 
 
 ## Constant-time compare (mirrors mcp_server._secure_equals; kept local so the bridge

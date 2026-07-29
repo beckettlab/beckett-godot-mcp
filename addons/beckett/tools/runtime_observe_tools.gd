@@ -32,6 +32,7 @@ func _register(registry) -> void:
 			"quality": {"type": "number", "description": "jpeg/webp quality 0.1..1.0 (default 0.8)"},
 			"annotate": {"type": "string", "description": "'ui' = draw numbered marks on interactive controls + return the legend (game target)"},
 			"max_marks": {"type": "integer", "description": "cap on annotate marks (default 40)"},
+			"save_to": {"type": "string", "description": "also write the frame to this path (res://, user:// or absolute) so later captures can be diffed against it — the agent still gets the image inline"},
 		}},
 		"handler": Callable(self, "_screenshot"),
 	})
@@ -125,6 +126,25 @@ func _register(registry) -> void:
 		}},
 		"handler": Callable(self, "_game_logs"),
 	})
+	registry.register({
+		"name": "render_probe",
+		"description": "Ask WHY a 3D node is or is not on screen, as data instead of pixels. Answers the 'the node exists, visible is true, the log is clean, and I still see nothing' case: visibility chain, world AABB, frustum test, distance vs far plane and visibility range, layers vs the camera cull_mask, per-surface material + cull mode, and the triangle winding the camera actually sees (facing_camera=0 with back-face culling means a reversed index buffer — Godot treats CLOCKWISE winding as the FRONT face). Returns a 'warnings' list naming the stage that broke, or a verdict saying the geometry does reach the camera. USE THIS BEFORE tuning lighting, fog, exposure or palette on anything you cannot clearly see — those are invisible-mesh symptoms far more often than they are art problems.",
+		"readonly": true,
+		"input_schema": {"type": "object", "properties": {
+			"path": {"type": "string", "description": "node path or name in the running game"},
+			"class": {"type": "string"}, "name": {"type": "string"},
+			"nth": {"type": "integer"}, "under": {"type": "string"},
+		}},
+		"handler": Callable(self, "_render_probe"),
+	})
+	registry.register({
+		"name": "set_debug_draw",
+		"description": "Switch the RUNNING game's viewport debug draw mode, then screenshot to see one render stage in isolation. unshaded = albedo only (clears lighting/fog/exposure as suspects in one shot). wireframe = is the geometry even there (culled or degenerate meshes show as nothing). overdraw = transparency cost. normal_buffer = flipped or NaN normals. lighting = light contribution only. normal = back to the real image. Reach for this FIRST when the picture is wrong; render_probe then answers the same question in numbers.",
+		"input_schema": {"type": "object", "properties": {
+			"mode": {"type": "string", "description": "normal | unshaded | lighting | overdraw | wireframe | normal_buffer"},
+		}, "required": ["mode"]},
+		"handler": Callable(self, "_set_debug_draw"),
+	})
 
 
 # ---------------------------------------------------------------- runtime-channel (read)
@@ -148,6 +168,15 @@ func _screenshot(args: Dictionary) -> Dictionary:
 	if r.has("note"):
 		desc += " — " + str(r.get("note", ""))
 	var out := {"image_base64": str(r.get("data", r.get("png", ""))), "image_mime": str(r.get("mime", "image/png"))}
+	if args.has("save_to"):
+		# The bytes are already here — saving them server-side costs nothing and removes the
+		# only reason an agent ever had to edit the GAME (adding a capture() helper to the
+		# deliverable) just to look at it. It also gives compare_screenshots a baseline.
+		var saved := _save_capture(str(out["image_base64"]), str(args["save_to"]))
+		if saved.is_empty():
+			desc += " → saved %s" % str(args["save_to"])
+		else:
+			desc += " (save failed: %s)" % saved
 	if r.has("marks"):
 		# Legend rides as structuredContent; the serializer renders it as text too, so
 		# the human-readable line moves inside the json for annotated captures.
@@ -172,7 +201,30 @@ func _editor_screenshot(args: Dictionary) -> Dictionary:
 		var h := clampi(int(rg[3]), 1, img.get_height() - y)
 		img = img.get_region(Rect2i(x, y, w, h))
 	var b64 := Marshalls.raw_to_base64(img.save_png_to_buffer())
-	return {"image_png_base64": b64, "text": "editor viewport %dx%d" % [img.get_width(), img.get_height()]}
+	var desc := "editor viewport %dx%d" % [img.get_width(), img.get_height()]
+	if args.has("save_to"):
+		var saved := _save_capture(b64, str(args["save_to"]))
+		desc += (" → saved %s" % str(args["save_to"])) if saved.is_empty() else (" (save failed: %s)" % saved)
+	return {"image_png_base64": b64, "text": desc}
+
+
+## Write a base64 capture to disk. Returns "" on success, else the reason — a failed save
+## must never look like a successful one, and must never lose the image either (the caller
+## still returns the frame inline).
+func _save_capture(b64: String, path: String) -> String:
+	if path.is_empty():
+		return "empty path"
+	var dir := path.get_base_dir()
+	if not dir.is_empty() and not DirAccess.dir_exists_absolute(dir):
+		var derr := DirAccess.make_dir_recursive_absolute(dir)
+		if derr != OK:
+			return "cannot create %s: %s" % [dir, error_string(derr)]
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return error_string(FileAccess.get_open_error())
+	f.store_buffer(Marshalls.base64_to_raw(b64))
+	f.close()
+	return ""
 
 
 func _ui_snapshot(args: Dictionary) -> Dictionary:
@@ -224,6 +276,40 @@ func _add_target(cmd: Dictionary, args: Dictionary) -> void:
 	for k in ["path", "class", "name", "text", "nth", "under"]:
 		if args.has(k):
 			cmd[k] = args[k]
+
+
+## --- render diagnosis (v1.12) ------------------------------------------------
+## Observation, so it lives in the CORE module and ships in Lite: the free edition's whole
+## promise is that the AI can SEE the running game, and "I can see it is wrong but not why"
+## was the largest remaining hole in that promise.
+
+func _render_probe(args: Dictionary) -> Dictionary:
+	if not server.bridge.is_game_connected():
+		return {"error": "game not running (no runtime connection). Call play_scene first, then wait_until condition=game_connected."}
+	var cmd := {"cmd": "render_probe"}
+	_add_target(cmd, args)
+	# Sampling the index buffer of a dense mesh reads its arrays once — worth a longer
+	# deadline than a plain property read, same reasoning as ui_snapshot.
+	var r: Dictionary = server.bridge.send_command(cmd, 10000)
+	if not bool(r.get("ok", false)):
+		return {"error": str(r.get("error", "render_probe failed")), "suggestion": str(r.get("suggestion", ""))}
+	var out := r.duplicate()
+	out.erase("ok")
+	out.erase("_id")
+	return {"json": out}
+
+
+func _set_debug_draw(args: Dictionary) -> Dictionary:
+	if not server.bridge.is_game_connected():
+		return {"error": "game not running (no runtime connection). Call play_scene first, then wait_until condition=game_connected."}
+	var r: Dictionary = server.bridge.send_command({"cmd": "debug_draw", "mode": str(args.get("mode", "normal"))})
+	if not bool(r.get("ok", false)):
+		return {"error": str(r.get("error", "set_debug_draw failed")), "suggestion": str(r.get("suggestion", ""))}
+	var text := "debug draw: %s (was %s)" % [str(r.get("mode", "")), str(r.get("previous", ""))]
+	if r.has("note"):
+		text += " — " + str(r["note"])
+	text += ". Take a screenshot to see it; set_debug_draw mode=normal restores the real image."
+	return {"text": text}
 
 
 func _runtime_get(args: Dictionary) -> Dictionary:

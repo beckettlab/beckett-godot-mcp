@@ -43,6 +43,12 @@ var _step_result := ""            # terminator that closed the last window: done
 var _step_cond_value = null       # last evaluated condition value (for step_until reporting)
 var _resume_paused := true        # re-pause when the window closes (step always leaves paused)
 var _step_open_frame := 0         # Engine.get_physics_frames() snapshotted when the window opened (delta base)
+# Per-frame inputs riding INSIDE a count window (v1.12 W1). Index = tick offset within the
+# window, each entry an Array of wire events. This is the only way to say "hold jump on
+# frame 3, release on frame 7" and have the game observe it exactly there: injecting between
+# tool calls lands on whatever frame the round-trip happens to hit.
+var _step_inputs: Array = []
+var _step_injected := 0
 
 # Deterministic input replay window (playtest op=run). Mirrors the stepping window above:
 # unpause, run UNPAUSED physics ticks, inject each event when the tick index reaches its
@@ -218,6 +224,11 @@ func _physics_process(_delta: float) -> void:
 	# the tree is paused, but those ticks are skipped here.
 	if tree.paused:
 		return
+	# This tick's input batch fires BEFORE the tick is counted and while UNPAUSED, so both
+	# _input callbacks and polled Input.* state observe it within this very frame (the same
+	# reasoning as the replay window: a paused inject would miss pausable nodes' _input).
+	if _step_count < _step_inputs.size():
+		_inject_step_inputs(_step_count)
 	_step_count += 1
 	match _step_kind:
 		"count":
@@ -243,9 +254,24 @@ func _close_step(reason: String) -> void:
 	_stepping = false
 	_step_result = reason
 	_step_expr = null
+	_step_inputs = []
 	var tree := get_tree()
 	if tree != null and _resume_paused:
 		tree.paused = true
+
+
+## Fire the batch queued for tick `i` of the open window.
+func _inject_step_inputs(i: int) -> void:
+	var batch: Variant = _step_inputs[i]
+	if not (batch is Array):
+		return
+	for e in (batch as Array):
+		if not (e is Dictionary):
+			continue
+		var ie: InputEvent = InputCodec.build_event(e)
+		if ie != null:
+			Input.parse_input_event(ie)
+			_step_injected += 1
 
 
 ## Evaluate the step_until condition against the running scene, game-side, once.
@@ -340,19 +366,28 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 			var n := _resolve_target(msg)
 			if n == null:
 				return {"ok": false, "error": _not_found(msg)}
-			return {"ok": true, "value": _safe(n.get(str(msg.get("prop", "")))), "resolved": str(_root().get_path_to(n))}
+			return _get_cmd(n, msg)
 		"set":
 			var n := _resolve_target(msg)
 			if n == null:
 				return {"ok": false, "error": _not_found(msg)}
-			var prop := str(msg.get("prop", ""))
-			n.set(prop, _coerce_value(n, prop, msg.get("value")))
-			return {"ok": true, "resolved": str(_root().get_path_to(n))}
+			return _set_cmd(n, msg)
 		"call":
 			var n := _resolve_target(msg)
 			if n == null:
 				return {"ok": false, "error": _not_found(msg)}
 			return _call_cmd(n, msg)
+		"describe":
+			var n := _resolve_target(msg)
+			if n == null:
+				return {"ok": false, "error": _not_found(msg)}
+			return _describe_cmd(n)
+		"debug_draw":
+			return _debug_draw(msg)
+		"render_probe":
+			return _render_probe(msg)
+		"reload_shader":
+			return _reload_shader(msg)
 		"exists":
 			return {"ok": true, "exists": _resolve_target(msg) != null}
 		"find":
@@ -452,6 +487,18 @@ func _scene_name() -> String:
 	return str(r.name) if r != null else ""
 
 
+## Scene-relative path for a response, tolerant of a missing tree. An exception raised
+## while building a REPLY is the worst kind here: the dispatch dies with no response and
+## the editor's runtime channel desyncs, so the whole session looks hung.
+func _path_of(n: Node) -> String:
+	if n == null:
+		return ""
+	var r := _root()
+	if r == null:
+		return str(n.get_name())
+	return str(r.get_path_to(n))
+
+
 ## Resolve a node by path/name. Base is the current scene, but ALSO accepts an
 ## absolute SceneTree path (/root/...) and falls back to a tree-wide name search,
 ## so both "Player" and "/root/Main/Player" work (the #1 'node not found' trap).
@@ -532,18 +579,195 @@ func _resolve_target(msg: Dictionary) -> Node:
 	return matches[nth]
 
 
+## runtime "get" — reads a property that may sit on a SUB-RESOURCE
+## ("environment:volumetric_fog_density", "material_override:shader_parameter/tint").
+func _get_cmd(n: Node, msg: Dictionary) -> Dictionary:
+	var prop := str(msg.get("prop", ""))
+	var res := _property_owner(n, prop)
+	if not bool(res.get("ok", false)):
+		return res
+	return {"ok": true, "value": _safe(_read_at(res)), "resolved": _path_of(n)}
+
+
+## runtime "set" = the twin of the v1.10.2 call gate, and the same lesson one layer down.
+## `Object.set()` is SILENT on a name it does not know and blind to sub-resource paths, so
+## this dispatch used to answer ok:true for writes that never landed. The agent then
+## screenshots an unchanged frame and concludes the CAUSE was wrong rather than the write —
+## it is not slow, it is confidently wrong, which is worse. So: resolve the real owner,
+## write, then READ BACK. A write that moved nothing is an error; a write the engine
+## adjusted (clamped, normalized) reports before/after so the clamp is visible instead of
+## invisible. Born from the 2026-07-27 "3D meadow" oneshot postmortem, where a silently
+## dropped volumetric_fog_density write cost 10 minutes and two wrong conclusions.
+func _set_cmd(n: Node, msg: Dictionary) -> Dictionary:
+	var prop := str(msg.get("prop", ""))
+	var res := _property_owner(n, prop)
+	if not bool(res.get("ok", false)):
+		return res
+	var before: Variant = _read_at(res)
+	var want: Variant = _coerce_to(before, msg.get("value"))
+	# Refuse a value we could not make fit. Godot's `set` accepts garbage for a typed
+	# property and quietly stores the type's DEFAULT — so `global_transform = "nonsense"`
+	# used to zero the node's transform and answer ok. Same rule the v1.10.2 call gate
+	# applies to arguments: a coercion failure fails the write instead of destroying data.
+	var mismatch := _coercion_error(before, want)
+	if not mismatch.is_empty():
+		return {"ok": false, "error": mismatch,
+			"suggestion": "pass a value of that type (vectors as [x,y,z] or \"x y z\", colors as \"#rrggbb\" or [r,g,b,a], enums as their int)"}
+	if bool(res.get("indexed", false)):
+		(res["owner"] as Object).set_indexed(NodePath(str(res["leaf"])), want)
+	else:
+		(res["owner"] as Object).set(str(res["leaf"]), want)
+	var after: Variant = _read_at(res)
+	var out := {
+		"ok": true,
+		"resolved": _path_of(n),
+		"before": _safe(before),
+		"after": _safe(after),
+	}
+	if _value_eq(after, want):
+		if not _value_eq(before, after):
+			out["changed"] = true
+		return out
+	if _value_eq(before, after):
+		out["ok"] = false
+		out["error"] = "write did not stick: %s.%s is still %s (wanted %s)" % [
+			(res["owner"] as Object).get_class(), str(res["leaf"]), str(_safe(after)), str(_safe(want))]
+		out["suggestion"] = "the property may be read-only, or game code (_process/_physics_process/an AnimationPlayer) rewrites it every frame"
+		return out
+	out["changed"] = true
+	out["note"] = "the engine adjusted the value (clamped or normalized): wanted %s, stored %s" % [
+		str(_safe(want)), str(_safe(after))]
+	return out
+
+
+## Read through a resolved {owner, leaf, indexed} triple from _property_owner.
+func _read_at(res: Dictionary) -> Variant:
+	var owner: Object = res.get("owner")
+	if bool(res.get("indexed", false)):
+		return owner.get_indexed(NodePath(str(res.get("leaf", ""))))
+	return owner.get(str(res.get("leaf", "")))
+
+
+## Resolve a possibly-nested property path down to the object that actually OWNS the leaf.
+## `Object.get/set` only know top-level names: a path with ':' in it ("environment:fog_density")
+## silently reads null and silently writes nowhere, which is the whole bug this guards.
+## Walking hop by hop also lets a typo name the exact failing hop instead of the whole path.
+## Returns {ok, owner, leaf, indexed} or {ok:false, error, suggestion}.
+func _property_owner(obj: Object, prop: String) -> Dictionary:
+	if prop.is_empty():
+		return {"ok": false, "error": "prop is required (the property name, e.g. position or environment:fog_density)"}
+	var parts := prop.split(":", false)
+	if parts.is_empty():
+		return {"ok": false, "error": "prop is required"}
+	var owner: Object = obj
+	for i in range(parts.size() - 1):
+		var seg := str(parts[i])
+		if not _has_property(owner, seg):
+			return _no_property(owner, seg, prop)
+		var nxt: Variant = owner.get(seg)
+		if nxt == null:
+			return {"ok": false,
+				"error": "%s.%s is null, so '%s' cannot be reached" % [owner.get_class(), seg, prop],
+				"suggestion": "assign a %s there first (e.g. give the WorldEnvironment an Environment), then set the nested property" % seg}
+		if not (nxt is Object):
+			# A built-in struct hop (position:x, transform:origin) — no property list to walk,
+			# so hand the WHOLE path to get_indexed/set_indexed and skip per-hop validation.
+			return {"ok": true, "owner": obj, "leaf": prop, "indexed": true}
+		owner = nxt as Object
+		if not is_instance_valid(owner):
+			return {"ok": false, "error": "%s in '%s' points at a freed object" % [seg, prop]}
+	var leaf := str(parts[parts.size() - 1])
+	if not _has_property(owner, leaf):
+		return _no_property(owner, leaf, prop)
+	return {"ok": true, "owner": owner, "leaf": leaf, "indexed": false}
+
+
+func _no_property(owner: Object, seg: String, prop: String) -> Dictionary:
+	var where := "" if seg == prop else " (in path '%s')" % prop
+	var out := {"ok": false, "error": "%s has no property '%s'%s" % [owner.get_class(), seg, where]}
+	var near := _near_properties(owner, seg)
+	if not near.is_empty():
+		out["suggestion"] = "did you mean: %s" % ", ".join(near)
+	return out
+
+
+func _has_property(obj: Object, prop: String) -> bool:
+	for p in obj.get_property_list():
+		if str(p.get("name", "")) == prop:
+			return true
+	return false
+
+
+## Best-effort "did you mean" list — a wrong property name should cost one call, not a
+## describe_object round-trip. Substring hits rank above fuzzy ones.
+func _near_properties(obj: Object, prop: String, limit := 5) -> Array:
+	const HEADERS := PROPERTY_USAGE_CATEGORY | PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP
+	var lower := prop.to_lower()
+	var scored: Array = []
+	for p in obj.get_property_list():
+		if int(p.get("usage", 0)) & HEADERS:
+			continue
+		var nm := str(p.get("name", ""))
+		if nm.is_empty():
+			continue
+		var low := nm.to_lower()
+		var s := low.similarity(lower)
+		if low.contains(lower) or lower.contains(low):
+			s += 1.0
+		if s > 0.45:
+			scored.append([s, nm])
+	scored.sort_custom(func(a, b): return a[0] > b[0])
+	var out: Array = []
+	for e in scored:
+		out.append(e[1])
+		if out.size() >= limit:
+			break
+	return out
+
+
+## "" when `want` can be stored in a property currently holding `current`, else the reason.
+## Only judges when the CURRENT value pins the type: a property sitting at null tells us
+## nothing, and refusing there would block legitimate first assignments.
+func _coercion_error(current: Variant, want: Variant) -> String:
+	var ct := typeof(current)
+	if ct == TYPE_NIL or typeof(want) == ct:
+		return ""
+	if want == null and (ct == TYPE_OBJECT or ct == TYPE_NODE_PATH):
+		return ""  # clearing a resource/node reference is a real intent
+	if ct == TYPE_OBJECT and want is Object:
+		return ""
+	return "cannot store %s in a %s property (value: %s)" % [
+		type_string(typeof(want)), type_string(ct), str(_safe(want))]
+
+
+## Compare a written value against what came back. Floats go through approx comparison —
+## an engine that stores 0.1 as 0.100000001 HAS honoured the write, and calling that a
+## failure would be the same dishonesty in the other direction.
+func _value_eq(a: Variant, b: Variant) -> bool:
+	if typeof(a) != typeof(b):
+		return false
+	match typeof(a):
+		TYPE_FLOAT:
+			return is_equal_approx(float(a), float(b))
+		TYPE_VECTOR2, TYPE_VECTOR3, TYPE_VECTOR4, TYPE_COLOR, TYPE_QUATERNION, TYPE_PLANE, TYPE_TRANSFORM2D, TYPE_TRANSFORM3D, TYPE_BASIS:
+			return a.is_equal_approx(b)
+	return a == b
+
+
 ## Coerce a JSON value to the live property's current type before set — a value that
 ## arrives as a JSON string ("19", "[1,0,0]") must not be stored raw, or game code like
 ## `coins += 1` errors ("String + int") and aborts the dispatch (no response → the editor's
-## runtime channel times out and desyncs). Parse stringified arrays/objects, then mirror scalars.
-func _coerce_value(obj: Object, prop: String, value: Variant) -> Variant:
+## runtime channel times out and desyncs). Parse stringified arrays/objects, then mirror
+## scalars against `current`, which is read from the property's REAL owner (a nested path
+## used to read null here, so nothing was ever coerced).
+func _coerce_to(current: Variant, value: Variant) -> Variant:
 	if value is String:
 		var raw := (value as String).strip_edges()
 		if raw.begins_with("[") or raw.begins_with("{"):
 			var parsed: Variant = JSON.parse_string(raw)
 			if parsed is Array or parsed is Dictionary:
 				value = parsed
-	match typeof(obj.get(prop)):
+	match typeof(current):
 		TYPE_INT:
 			return int(value) if (value is String or value is float) else value
 		TYPE_FLOAT:
@@ -683,6 +907,15 @@ func _tc_step(msg: Dictionary) -> Dictionary:
 	if tree == null:
 		return {"ok": false, "error": "no scene tree"}
 	var frames: int = maxi(1, int(msg.get("frames", 1)))
+	# Per-frame inputs: entry i fires on the i-th tick of THIS window. A batch longer than
+	# the window would silently never fire, so the window grows to cover it instead.
+	var per_frame: Variant = msg.get("inputs_per_frame", [])
+	_step_inputs = (per_frame as Array).duplicate() if per_frame is Array else []
+	_step_injected = 0
+	var grown := false
+	if _step_inputs.size() > frames:
+		frames = _step_inputs.size()
+		grown = true
 	# Baseline: ensure paused so no stray ticks land before the window opens.
 	tree.paused = true
 	_step_kind = "count"
@@ -695,8 +928,13 @@ func _tc_step(msg: Dictionary) -> Dictionary:
 	_stepping = true
 	# Unpause so the very next physics tick begins the run.
 	tree.paused = false
-	return {"ok": true, "started": true, "kind": "count", "frames_requested": frames,
+	var out := {"ok": true, "started": true, "kind": "count", "frames_requested": frames,
 		"physics_frames_before": _step_open_frame}
+	if not _step_inputs.is_empty():
+		out["input_frames"] = _step_inputs.size()
+	if grown:
+		out["note"] = "frames raised to %d to cover the inputs_per_frame batch" % frames
+	return out
 
 
 ## OPEN a condition step window. Compile the GDScript Expression, evaluate it ONCE
@@ -755,6 +993,8 @@ func _tc_step_status() -> Dictionary:
 	# counter drifting while paused between close and this poll.
 	out["physics_frames_before"] = _step_open_frame
 	out["physics_frames_after"] = _step_open_frame + _step_count
+	if _step_injected > 0:
+		out["inputs_injected"] = _step_injected
 	if not _stepping:
 		out["terminator"] = _step_result
 		if _step_kind == "until":
@@ -1529,6 +1769,419 @@ func _drag_cmd(msg: Dictionary) -> Dictionary:
 	up.global_position = to
 	vp.push_input(up, true)
 	return {"ok": true, "dragged": true, "from": [from.x, from.y], "to": [to.x, to.y], "steps": steps}
+
+
+# ---------------------------------------------------------------- render diagnosis (v1.12)
+# "The node exists, visible is true, the log is clean, and I still see nothing."
+# Beckett could always show the agent that the IMAGE was wrong; it could not say which
+# STAGE made it wrong, so the only move left was guess-and-check against pixels. The
+# 2026-07-27 "3D meadow" oneshot lost 37 of 99 minutes to exactly that: a reversed index
+# buffer meant the whole terrain was backface-culled, every signal read healthy, and the
+# sky below the horizon got mistaken for ground — so lighting, fog, exposure and the
+# palette were all "fixed" on geometry that had never been drawn once.
+#
+# debug_draw isolates the stage visually; render_probe answers the same question in
+# NUMBERS, so the conclusion never depends on reading a picture correctly.
+
+# Viewport.DEBUG_DRAW_* by agent-facing name. Enum constants (not literals) so a renamed
+# value fails at parse time; all of these date to 4.0, safely under the 4.2 floor.
+const DEBUG_DRAW_MODES := {
+	"normal": Viewport.DEBUG_DRAW_DISABLED,
+	"unshaded": Viewport.DEBUG_DRAW_UNSHADED,
+	"lighting": Viewport.DEBUG_DRAW_LIGHTING,
+	"overdraw": Viewport.DEBUG_DRAW_OVERDRAW,
+	"wireframe": Viewport.DEBUG_DRAW_WIREFRAME,
+	"normal_buffer": Viewport.DEBUG_DRAW_NORMAL_BUFFER,
+}
+
+
+## Editor-facing properties of a LIVE node, so describe_object can answer for the running
+## game instead of failing on a /root/... path that every other runtime tool accepts.
+## Mirrors BeckettReflect.properties_of's filter (editor-visible, no group/category headers).
+func _describe_cmd(n: Node) -> Dictionary:
+	var props: Dictionary = {}
+	for p in n.get_property_list():
+		var usage := int(p.get("usage", 0))
+		if (usage & PROPERTY_USAGE_EDITOR) == 0:
+			continue
+		if (usage & PROPERTY_USAGE_GROUP) != 0 or (usage & PROPERTY_USAGE_CATEGORY) != 0:
+			continue
+		var nm := str(p.get("name", ""))
+		if nm.is_empty():
+			continue
+		props[nm] = _safe(n.get(nm))
+	return {"ok": true, "class": n.get_class(), "resolved": _path_of(n), "properties": props}
+
+
+func _debug_draw(msg: Dictionary) -> Dictionary:
+	var mode := str(msg.get("mode", "normal"))
+	if not DEBUG_DRAW_MODES.has(mode):
+		return {"ok": false,
+			"error": "unknown debug draw mode '%s'" % mode,
+			"suggestion": "one of: %s" % ", ".join(DEBUG_DRAW_MODES.keys())}
+	var vp := get_viewport()
+	if vp == null:
+		return {"ok": false, "error": "no viewport (headless run has no render target)"}
+	var out := {"ok": true, "mode": mode, "previous": _debug_draw_name(vp.debug_draw)}
+	if mode == "wireframe":
+		# Without this the wireframe pass has no geometry to draw and the screen goes black —
+		# the trap that makes wireframe look "broken" the first time anyone reaches for it.
+		RenderingServer.set_debug_generate_wireframes(true)
+		var method := ""
+		if RenderingServer.has_method("get_current_rendering_method"):
+			method = str(RenderingServer.call("get_current_rendering_method"))
+		if method == "gl_compatibility":
+			out["note"] = "the Compatibility renderer ignores wireframe debug draw — switch the renderer or use render_probe instead"
+	vp.debug_draw = DEBUG_DRAW_MODES[mode]
+	return out
+
+
+func _debug_draw_name(value: int) -> String:
+	for k in DEBUG_DRAW_MODES:
+		if int(DEBUG_DRAW_MODES[k]) == value:
+			return str(k)
+	return "other(%d)" % value
+
+
+## Answer "is this thing being drawn, and if not, which stage dropped it" as data:
+## visibility chain, cull mask vs the camera, frustum, distance/visibility range, material
+## and cull mode per surface, and the triangle winding the camera actually sees.
+func _render_probe(msg: Dictionary) -> Dictionary:
+	var n := _resolve_target(msg)
+	if n == null:
+		return {"ok": false, "error": _not_found(msg)}
+	if not (n is VisualInstance3D):
+		return {"ok": false,
+			"error": "%s is not a VisualInstance3D — render_probe answers 3D 'why can't I see it' questions" % n.get_class(),
+			"suggestion": "pass a MeshInstance3D / MultiMeshInstance3D path; for 2D and Control layout use ui_snapshot"}
+	var vi := n as VisualInstance3D
+	var warnings: Array = []
+	var out := {
+		"ok": true,
+		"path": _path_of(vi),
+		"class": vi.get_class(),
+		"visible": vi.visible,
+		"visible_in_tree": vi.is_visible_in_tree(),
+	}
+	if not vi.visible:
+		warnings.append("visible = false on this node")
+	elif not vi.is_visible_in_tree():
+		warnings.append("visible = true here, but an ancestor is hidden (visible_in_tree = false)")
+
+	var local_aabb := vi.get_aabb()
+	var world_aabb := vi.global_transform * local_aabb
+	out["aabb_world"] = {
+		"position": _v3a(world_aabb.position),
+		"size": _v3a(world_aabb.size),
+		"center": _v3a(world_aabb.get_center()),
+	}
+	if local_aabb.size.is_zero_approx():
+		warnings.append("the AABB is zero-sized — there is no geometry to draw (empty mesh, or no surfaces)")
+	var sc := vi.global_transform.basis.get_scale()
+	if is_zero_approx(sc.x) or is_zero_approx(sc.y) or is_zero_approx(sc.z):
+		warnings.append("global scale has a zero axis %s — the mesh collapses to nothing" % str(sc))
+
+	var cam := vi.get_viewport().get_camera_3d() if vi.get_viewport() != null else null
+	if cam == null:
+		warnings.append("no current Camera3D in this viewport — nothing 3D can be drawn at all")
+	else:
+		out["camera"] = {
+			"path": _path_of(cam),
+			"position": _v3a(cam.global_position),
+			"near": cam.near,
+			"far": cam.far,
+		}
+		var dist := cam.global_position.distance_to(world_aabb.get_center())
+		out["distance_m"] = snappedf(dist, 0.01)
+		out["in_frustum"] = _aabb_in_frustum(cam, world_aabb)
+		out["in_frustum_test"] = "aabb corners + center + camera-inside"
+		if not bool(out["in_frustum"]):
+			warnings.append("the AABB is outside the camera frustum — it is off-screen, not mis-shaded")
+		if dist > cam.far:
+			warnings.append("distance %.1fm is beyond the camera far plane (%.1fm)" % [dist, cam.far])
+		if (vi.layers & cam.cull_mask) == 0:
+			warnings.append("layers 0b%s and the camera cull_mask 0b%s do not overlap — this camera never renders this node" % [
+				String.num_uint64(vi.layers, 2), String.num_uint64(cam.cull_mask, 2)])
+		out["layers"] = vi.layers
+		out["camera_cull_mask"] = cam.cull_mask
+		if vi is GeometryInstance3D:
+			var gi := vi as GeometryInstance3D
+			if gi.visibility_range_end > 0.0 and dist > gi.visibility_range_end:
+				warnings.append("distance %.1fm is past visibility_range_end (%.1fm) — LOD culled it" % [dist, gi.visibility_range_end])
+			if dist < gi.visibility_range_begin:
+				warnings.append("distance %.1fm is nearer than visibility_range_begin (%.1fm)" % [dist, gi.visibility_range_begin])
+			out["cast_shadow"] = int(gi.cast_shadow)
+			out["transparency"] = gi.transparency
+			if is_equal_approx(gi.transparency, 1.0):
+				warnings.append("transparency = 1.0 — fully see-through")
+
+	var mesh: Mesh = null
+	if vi is MeshInstance3D:
+		mesh = (vi as MeshInstance3D).mesh
+		if mesh == null:
+			warnings.append("mesh is null — the MeshInstance3D has nothing assigned")
+	elif vi is MultiMeshInstance3D:
+		var mm := (vi as MultiMeshInstance3D).multimesh
+		if mm == null:
+			warnings.append("multimesh is null")
+		else:
+			mesh = mm.mesh
+			out["instance_count"] = mm.instance_count
+			out["visible_instance_count"] = mm.visible_instance_count
+			if mm.instance_count == 0:
+				warnings.append("instance_count = 0 — the MultiMesh has no instances to draw")
+			elif mm.visible_instance_count == 0:
+				warnings.append("visible_instance_count = 0 — every instance is suppressed (set it to -1 to draw them all)")
+
+	if mesh != null:
+		out["surfaces"] = _surface_report(vi, mesh, warnings)
+		var w := _winding_report(mesh, vi.global_transform, cam)
+		if not w.is_empty():
+			out["winding"] = w
+			_winding_warnings(w, out.get("surfaces", []), warnings)
+
+	if not warnings.is_empty():
+		out["warnings"] = warnings
+	else:
+		out["verdict"] = "nothing here explains an invisible mesh — the geometry reaches the camera; look at material colour, lighting, or what is drawn IN FRONT of it"
+	return out
+
+
+func _v3a(v: Vector3) -> Array:
+	return [snappedf(v.x, 0.001), snappedf(v.y, 0.001), snappedf(v.z, 0.001)]
+
+
+## surface_get_primitive_type lives on ArrayMesh, NOT on the Mesh base class, so calling it
+## blind blows up on every PrimitiveMesh (BoxMesh, PlaneMesh, SphereMesh...) — which is most
+## of what a scene is built from. A PrimitiveMesh is always triangles.
+func _primitive_of(mesh: Mesh, surface: int) -> int:
+	if mesh.has_method("surface_get_primitive_type"):
+		return int(mesh.call("surface_get_primitive_type", surface))
+	return Mesh.PRIMITIVE_TRIANGLES
+
+
+## Frustum test via the engine's own per-point answer, so no assumption is made about
+## which way Camera3D.get_frustum() plane normals face.
+func _aabb_in_frustum(cam: Camera3D, box: AABB) -> bool:
+	if box.has_point(cam.global_position):
+		return true
+	if cam.is_position_in_frustum(box.get_center()):
+		return true
+	for i in 8:
+		if cam.is_position_in_frustum(box.get_endpoint(i)):
+			return true
+	return false
+
+
+## Per-surface material state, resolved through the real override chain
+## (material_override > surface override > the mesh's own material).
+func _surface_report(vi: VisualInstance3D, mesh: Mesh, warnings: Array) -> Array:
+	const CULL_NAMES := ["back", "front", "disabled"]
+	var mi := vi as MeshInstance3D
+	var out: Array = []
+	for s in mesh.get_surface_count():
+		var mat: Material = null
+		if mi != null:
+			mat = mi.get_active_material(s)
+		else:
+			mat = mesh.surface_get_material(s)
+		var entry := {"index": s, "primitive": _primitive_of(mesh, s)}
+		if mat == null:
+			# Not a warning: a MeshInstance3D with no material draws with the engine's white
+			# default, which is normal. The null here is enough for an agent to notice.
+			entry["material"] = null
+			out.append(entry)
+			continue
+		entry["material"] = mat.get_class()
+		if mat is BaseMaterial3D:
+			var bm := mat as BaseMaterial3D
+			entry["cull_mode"] = CULL_NAMES[int(bm.cull_mode)] if int(bm.cull_mode) < CULL_NAMES.size() else str(bm.cull_mode)
+			entry["shading_mode"] = int(bm.shading_mode)
+			entry["transparency"] = int(bm.transparency)
+			entry["albedo"] = str(bm.albedo_color)
+			entry["no_depth_test"] = bm.no_depth_test
+			if bm.albedo_color.a <= 0.001:
+				warnings.append("surface %d albedo alpha is 0 — fully transparent" % s)
+		elif mat is ShaderMaterial:
+			var sm := mat as ShaderMaterial
+			var sh := sm.shader
+			entry["shader"] = str(sh.resource_path) if sh != null else null
+			if sh == null:
+				warnings.append("surface %d has a ShaderMaterial with no shader" % s)
+			else:
+				# The render_mode line is the only place a shader states its cull mode, and a
+				# stray cull_front there produces exactly the same invisible mesh as reversed
+				# winding — worth naming so the two are told apart.
+				var code := sh.code
+				if code.contains("cull_front"):
+					entry["cull_mode"] = "front (render_mode cull_front)"
+				elif code.contains("cull_disabled"):
+					entry["cull_mode"] = "disabled (render_mode cull_disabled)"
+				else:
+					entry["cull_mode"] = "back (shader default)"
+				if code.strip_edges().is_empty():
+					warnings.append("surface %d shader %s has empty code" % [s, str(sh.resource_path)])
+		out.append(entry)
+	return out
+
+
+## Sample the index buffer and answer the two winding questions that matter:
+## how many triangles face the camera right now, and whether the index order agrees with
+## the mesh's own normals. Godot treats CLOCKWISE winding as the FRONT face, which makes
+## the front-face normal (v2-v0) x (v1-v0) — the REVERSE of the habitual cross product.
+## (Verified against BoxMesh / SphereMesh / CylinderMesh / PlaneMesh, all unanimous.)
+func _winding_report(mesh: Mesh, xf: Transform3D, cam: Camera3D) -> Dictionary:
+	const MAX_SAMPLES := 1200
+	var facing := 0
+	var away := 0
+	var degenerate := 0
+	var agree := 0
+	var flipped := 0
+	var nan_verts := 0
+	var total_tris := 0
+	var sampled := 0
+	var cam_pos := cam.global_position if cam != null else Vector3.ZERO
+	for s in mesh.get_surface_count():
+		if _primitive_of(mesh, s) != Mesh.PRIMITIVE_TRIANGLES:
+			continue
+		var arr: Array = mesh.surface_get_arrays(s)
+		if arr.is_empty() or arr[Mesh.ARRAY_VERTEX] == null:
+			continue
+		var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+		var idx: PackedInt32Array = arr[Mesh.ARRAY_INDEX] if arr[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
+		var norms: PackedVector3Array = arr[Mesh.ARRAY_NORMAL] if arr[Mesh.ARRAY_NORMAL] != null else PackedVector3Array()
+		var tris := (idx.size() / 3) if idx.size() > 0 else (verts.size() / 3)
+		total_tris += tris
+		if tris == 0:
+			continue
+		var step: int = maxi(1, tris / MAX_SAMPLES)
+		for t in range(0, tris, step):
+			var i0: int = idx[t * 3] if idx.size() > 0 else t * 3
+			var i1: int = idx[t * 3 + 1] if idx.size() > 0 else t * 3 + 1
+			var i2: int = idx[t * 3 + 2] if idx.size() > 0 else t * 3 + 2
+			var v0 := verts[i0]
+			var v1 := verts[i1]
+			var v2 := verts[i2]
+			if is_nan(v0.x) or is_nan(v1.x) or is_nan(v2.x):
+				nan_verts += 1
+				continue
+			# Godot: clockwise = front, so the outward normal is (v2-v0) x (v1-v0).
+			var face := (v2 - v0).cross(v1 - v0)
+			if face.length_squared() < 1e-12:
+				degenerate += 1
+				continue
+			sampled += 1
+			if norms.size() > i0:
+				var supplied := norms[i0]
+				if not is_nan(supplied.x) and supplied.length_squared() > 1e-12:
+					if face.normalized().dot(supplied.normalized()) > 0.0:
+						agree += 1
+					else:
+						flipped += 1
+			if cam != null:
+				var wv0 := xf * v0
+				var wface := (xf.basis * face)
+				if wface.dot(cam_pos - wv0) > 0.0:
+					facing += 1
+				else:
+					away += 1
+	if total_tris == 0:
+		return {}
+	var out := {"triangles": total_tris, "sampled": sampled, "degenerate": degenerate}
+	if nan_verts > 0:
+		out["nan_vertices"] = nan_verts
+	if cam != null:
+		out["facing_camera"] = facing
+		out["facing_away"] = away
+	var judged := agree + flipped
+	if judged == 0:
+		out["vs_normals"] = "no usable normals"
+	elif agree >= int(judged * 0.9):
+		out["vs_normals"] = "agree"
+	elif flipped >= int(judged * 0.9):
+		out["vs_normals"] = "reversed"
+	else:
+		out["vs_normals"] = "mixed (%d agree / %d reversed)" % [agree, flipped]
+	return out
+
+
+## Turn the winding numbers into the sentence the agent actually needs.
+func _winding_warnings(w: Dictionary, surfaces: Array, warnings: Array) -> void:
+	var culls_back := true
+	for s in surfaces:
+		if s is Dictionary and str(s.get("cull_mode", "back")).begins_with("disabled"):
+			culls_back = false
+	var sampled := int(w.get("sampled", 0))
+	if sampled > 0 and w.has("facing_camera") and int(w["facing_camera"]) == 0 and culls_back:
+		warnings.append("0 of %d sampled triangles face the camera while back-face culling is on — with Godot's CLOCKWISE-is-front convention this is a reversed index buffer, so the whole surface is culled away. Flip the winding, or set cull_mode/render_mode to disabled to confirm it in one step." % sampled)
+	if str(w.get("vs_normals", "")) == "reversed":
+		warnings.append("the index order disagrees with the mesh's own normals on nearly every sampled triangle — winding and normals were generated with opposite conventions")
+	if int(w.get("degenerate", 0)) > 0 and int(w.get("degenerate", 0)) >= sampled:
+		warnings.append("every sampled triangle is degenerate (zero area) — the vertex buffer is collapsed")
+	if int(w.get("nan_vertices", 0)) > 0:
+		warnings.append("%d sampled triangles contain NaN vertices — the whole surface is dropped by the GPU" % int(w["nan_vertices"]))
+
+
+## Hot-swap a .gdshader into every live ShaderMaterial that uses it, so a shader edit
+## costs one call instead of stop -> play -> wait -> re-place the camera (~40 s a round).
+func _reload_shader(msg: Dictionary) -> Dictionary:
+	var path := str(msg.get("path", ""))
+	if not path.begins_with("res://"):
+		return {"ok": false, "error": "path must be a res:// path to a .gdshader file"}
+	if not ResourceLoader.exists(path):
+		return {"ok": false, "error": "no such resource: %s" % path}
+	# CACHE_MODE_IGNORE is the whole point: the running game already holds the OLD text in
+	# its resource cache, so a plain load() would hand back exactly what we are replacing.
+	var res: Resource = ResourceLoader.load(path, "Shader", ResourceLoader.CACHE_MODE_IGNORE)
+	if res == null or not (res is Shader):
+		return {"ok": false, "error": "%s did not load as a Shader" % path}
+	var sh := res as Shader
+	var mats: Array = []
+	_collect_shader_materials(_root(), path, mats)
+	for m in mats:
+		(m as ShaderMaterial).shader = sh
+	var out := {"ok": true, "path": path, "swapped": mats.size()}
+	if mats.is_empty():
+		out["ok"] = false
+		out["error"] = "no live ShaderMaterial in the scene tree references %s" % path
+		out["suggestion"] = "the material may be created in code, assigned to a resource outside the tree, or the game may be running an older scene — check with render_probe on the node you expect to use it"
+		return out
+	# A shader with a compile error still LOADS; the GPU reports it when the frame draws.
+	# Say so rather than implying the swap validated anything.
+	out["note"] = "swapped into %d material(s); any compile error shows up in game_logs on the next frame" % mats.size()
+	return out
+
+
+func _collect_shader_materials(node: Node, path: String, out: Array) -> void:
+	if node == null:
+		return
+	if node is CanvasItem:
+		_note_shader_material((node as CanvasItem).material, path, out)
+	if node is GeometryInstance3D:
+		var gi := node as GeometryInstance3D
+		_note_shader_material(gi.material_override, path, out)
+		_note_shader_material(gi.material_overlay, path, out)
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		for s in mi.get_surface_override_material_count():
+			_note_shader_material(mi.get_surface_override_material(s), path, out)
+		if mi.mesh != null:
+			for s in mi.mesh.get_surface_count():
+				_note_shader_material(mi.mesh.surface_get_material(s), path, out)
+	for c in node.get_children():
+		_collect_shader_materials(c, path, out)
+
+
+func _note_shader_material(mat: Material, path: String, out: Array) -> void:
+	if mat == null:
+		return
+	if mat is ShaderMaterial:
+		var sm := mat as ShaderMaterial
+		if sm.shader != null and str(sm.shader.resource_path) == path and not out.has(sm):
+			out.append(sm)
+	# next_pass chains are materials too, and a missed one keeps drawing the stale shader.
+	if mat.next_pass != null:
+		_note_shader_material(mat.next_pass, path, out)
 
 
 func _safe(v: Variant) -> Variant:

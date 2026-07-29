@@ -54,7 +54,7 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "describe_object",
-		"description": "Dump a live object's properties as JSON. target = a res:// path, a node name/path in the open scene, or a class name (falls back to describe_class).",
+		"description": "Dump a live object's properties as JSON. target = a res:// path, a node name/path in the OPEN scene, or a class name (falls back to describe_class). While a game is running it also resolves live nodes (/root/Main/Player), the same paths runtime_get_property takes; the answer says which scope it came from, since the edited scene and the running game share one path syntax but are different worlds.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string"},
@@ -189,11 +189,25 @@ func _describe_object(args: Dictionary) -> Dictionary:
 	var target := str(args.get("target", ""))
 	var obj := Reflect.resolve(target)
 	if obj == null:
+		# The editor and the running game are two different scopes that share one path
+		# syntax, and nothing said so: runtime_get_property happily takes /root/Main/Player
+		# while describe_object on the same string said "could not resolve" and sent the
+		# agent off to get_remote_tree to guess. If the game is up, just ask it.
+		if server.bridge.is_game_connected():
+			var r: Dictionary = server.bridge.send_command({"cmd": "describe", "path": target})
+			if bool(r.get("ok", false)):
+				return {"json": {
+					"target": target,
+					"scope": "runtime (the running game — not the edited scene)",
+					"class": r.get("class", ""),
+					"resolved": r.get("resolved", target),
+					"properties": r.get("properties", {}),
+				}}
 		if ClassDB.class_exists(target) or not _global_class_entry(target).is_empty():
 			return _describe_class({"class": target, "inherited": args.get("inherited", false)})
 		return {
 			"error": "Could not resolve target: %s" % target,
-			"suggestion": "Use a res:// path, a node name/path in the open scene, or a class name.",
+			"suggestion": "Use a res:// path, a node name/path in the OPEN scene, a class name, or (while the game is running) a live node path such as /root/Main/Player.",
 		}
 	return {"json": {
 		"target": target,
