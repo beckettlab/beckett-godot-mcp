@@ -10,6 +10,23 @@ class_name BeckettClientConfig
 ## stdio-only clients (e.g. Claude Desktop) bridge via `npx mcp-remote <url>`.
 
 const SERVER_KEY := "beckett"
+const DEFAULT_PORT := 8770
+
+
+## The one place the CONFIGURED port is resolved: env override → project setting → default.
+## It lives beside mcp_url because everyone who needs the port needs it to build an endpoint —
+## the plugin at boot, the dock's Start button, the config writers, doctor. This used to be
+## copy-pasted into each of them and the copies drifted: the dock's Start button fell back to
+## the bare default, so in a project set to `beckett/port=8772` a Stop→Start bound 8770 while
+## every client config still said 8772. One resolver, no drift.
+##
+## This is the port we ASK for. The port actually bound can differ (start_server walks up to
+## 10 ports past a busy one), so anything reporting on a RUNNING server must read http.port.
+static func configured_port() -> int:
+	var penv := OS.get_environment("BECKETT_PORT")
+	if penv != "" and penv.is_valid_int():
+		return penv.to_int()
+	return int(ProjectSettings.get_setting("beckett/port", DEFAULT_PORT))
 
 
 ## The one place the endpoint URL is built. With auth on (v1.9), the token rides as a URL

@@ -182,6 +182,24 @@ func _t_client_config() -> void:
 	_ok(txt.contains("url = \"http://127.0.0.1:8770/mcp\""), "codex upsert: our table is rewritten")
 	_ok(txt.contains("[model]") and txt.contains("[mcp_servers.zed]") and txt.contains("url = \"x\""), "codex upsert: other tables survive verbatim")
 
+	# v1.12.1 regression: the configured port had four copy-pasted resolvers and the dock's
+	# Start button used none of them, so Stop→Start bound 8770 in a project set to 8772 while
+	# every client config still pointed at 8772. Resolution now lives here alone.
+	var had_port := ProjectSettings.has_setting("beckett/port")
+	var prev_port: Variant = ProjectSettings.get_setting("beckett/port", null)
+	var prev_env := OS.get_environment("BECKETT_PORT")
+	OS.set_environment("BECKETT_PORT", "")
+	ProjectSettings.set_setting("beckett/port", null)
+	_ok(ClientConfig.configured_port() == ClientConfig.DEFAULT_PORT, "configured_port falls back to the default when unset")
+	ProjectSettings.set_setting("beckett/port", 8772)
+	_ok(ClientConfig.configured_port() == 8772, "configured_port honors the beckett/port project setting")
+	OS.set_environment("BECKETT_PORT", "9001")
+	_ok(ClientConfig.configured_port() == 9001, "BECKETT_PORT env overrides the project setting")
+	OS.set_environment("BECKETT_PORT", "not-a-port")
+	_ok(ClientConfig.configured_port() == 8772, "a junk BECKETT_PORT falls through to the project setting")
+	OS.set_environment("BECKETT_PORT", prev_env)
+	ProjectSettings.set_setting("beckett/port", prev_port if had_port else null)
+
 
 # ---------------------------------------------------------------- serializer (mcp_server._tool_result)
 

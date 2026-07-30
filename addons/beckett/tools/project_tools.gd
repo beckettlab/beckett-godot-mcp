@@ -367,8 +367,7 @@ func _doctor(_args: Dictionary) -> Dictionary:
 	if server.is_readonly():
 		warnings.append("BECKETT_READONLY is on — every mutating tool is blocked this session")
 
-	var penv := OS.get_environment("BECKETT_PORT")
-	var base_port: int = penv.to_int() if penv != "" and penv.is_valid_int() else int(ProjectSettings.get_setting("beckett/port", 8770))
+	var base_port: int = MCPClientConfigScript.configured_port()
 	var port: int = server.http.port if running and server.http != null else base_port
 	if running and port != base_port:
 		warnings.append("configured port %d was busy — serving on %d (B5 walk; client configs were regenerated for the live port, but anything hand-pointed at %d will not reach this editor)" % [base_port, port, base_port])

@@ -17,7 +17,6 @@ const MCPReflectScript := preload("res://addons/beckett/core/reflection.gd")  # 
 var server   # mcp_server node
 var plugin   # EditorPlugin
 
-const DEFAULT_PORT := 8770
 const ACTIVITY_ROWS := 6
 # TODO(W5.1): point at the live store page before the Lite listing ships.
 const UPGRADE_URL := "https://beckettlabs.itch.io/beckett-godot-mcp"
@@ -1265,7 +1264,7 @@ func _on_toggle_server() -> void:
 		server.stop_server()
 		_flash("Server stopped")
 	else:
-		server.start_server(DEFAULT_PORT)
+		server.start_server(MCPClientConfig.configured_port())
 		_flash("Server running on port %d" % _port())
 	_refresh()
 
@@ -1842,10 +1841,14 @@ func _plugin_version() -> String:
 	return ""
 
 
+## Running: the port actually BOUND (start_server may have walked past a busy one). Stopped:
+## the port we would ask for. Never the bare default — this feeds the copy-URL/copy-config
+## buttons AND the client-config writers, which would otherwise hand out (and write) 8770 for
+## a project configured to 8772.
 func _port() -> int:
 	if server != null and server.is_running():
 		return server.http.port
-	return DEFAULT_PORT
+	return MCPClientConfig.configured_port()
 
 
 ## One row in the "Active tools" list. It supplies its OWN tooltip because the editor's default

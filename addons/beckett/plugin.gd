@@ -9,7 +9,6 @@ const MCPServerScript := preload("res://addons/beckett/core/mcp_server.gd")
 const PanelScript := preload("res://addons/beckett/panel/panel.gd")
 const MCPClientConfig := preload("res://addons/beckett/core/client_config.gd")
 
-const DEFAULT_PORT := 8770
 const RUNTIME_AUTOLOAD := "BeckettRuntime"
 const RUNTIME_SCRIPT := "res://addons/beckett/runtime/mcp_runtime.gd"
 
@@ -113,11 +112,10 @@ func _exit_tree() -> void:
 		remove_autoload_singleton(RUNTIME_AUTOLOAD)
 
 
+## The port we ask for at boot. Shared with the dock (MCPClientConfig.configured_port) so a
+## manual Stop→Start can never bind a different port than this did.
 func _port() -> int:
-	var penv := OS.get_environment("BECKETT_PORT")
-	if penv != "" and penv.is_valid_int():
-		return penv.to_int()
-	return int(ProjectSettings.get_setting("beckett/port", DEFAULT_PORT))
+	return MCPClientConfig.configured_port()
 
 
 func _autostart() -> bool:
