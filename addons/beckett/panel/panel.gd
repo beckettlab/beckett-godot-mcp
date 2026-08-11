@@ -364,6 +364,9 @@ func _build_effort_card() -> void:
 	_tier_stats.add_theme_font_size_override("font_size", int(11 * _es))
 	_tier_stats.add_theme_color_override("font_color", _dim())
 	_tier_stats.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	# Right-aligned because it can carry a second line (the saving vs this build's ceiling)
+	# and a ragged left edge on a right-hand stat reads as a layout accident.
+	_tier_stats.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	head.add_child(_tier_stats)
 
 	# Faster <-> Smarter rail labels.
@@ -1808,17 +1811,39 @@ func _update_tool_counts() -> void:
 
 
 ## The tier-stats line: how many tools the agent actually sees now (effort tier minus the off
-## switches) and a rough tools/list token cost. Shared by _refresh_effort and a toggle.
+## switches) and a rough tools/list token cost. Below this build's ceiling it adds a second line
+## naming what the cap is saving, so the trade-off is legible at the dial that makes it. Shared
+## by _refresh_effort and a toggle.
 func _update_tier_stats() -> void:
 	if _tier_stats == null:
 		return
 	var tools := 0
 	var est_tokens := 0
+	var saved := 0
+	var ceiling := _max_effort()
 	if server != null and server.registry != null:
 		var specs: Array = server.effective_specs(_eff_cur)
 		tools = specs.size()
-		est_tokens = int(JSON.stringify(specs).length() / 4.0)
+		est_tokens = _spec_tokens(specs)
+		# Second pass only when there's a saving to name: at the ceiling it would be ~70 KB of
+		# throwaway string work per checkbox click for a clause we'd then throw away.
+		if _eff_cur < ceiling:
+			saved = _spec_tokens(server.effective_specs(ceiling)) - est_tokens
 	_tier_stats.text = "%d tools · ~%s tok" % [tools, _fmt_k(est_tokens)]
+	if saved > 0:
+		# Name the ceiling THIS build actually has, never the literal "Max": Lite stops at L4
+		# "See", and offering to compare against a tier the build cannot reach is a lie in
+		# every screenshot. On its own line, not a longer first line — the dock's horizontal
+		# scroll is disabled (plugin.gd), so a wider label widens the whole editor dock.
+		var top := str(MCPEffortScript.LEVELS.get(ceiling, {}).get("name", "L%d" % ceiling))
+		_tier_stats.text += "\n-%s vs %s" % [_fmt_k(saved), top]
+
+
+## Rough model cost of a tools/list payload: UTF-8 BYTES over ~4 bytes/token. Bytes, not
+## String.length() — the descriptions carry ~100 non-ASCII characters that code-point counting
+## under-reports, and doctor's context block counts the same way, so the two can never disagree.
+func _spec_tokens(specs: Array) -> int:
+	return int(JSON.stringify(specs).to_utf8_buffer().size() / 4.0)
 
 
 ## Cap the active-tools list height; it grows to fit a short tier and scrolls past the cap

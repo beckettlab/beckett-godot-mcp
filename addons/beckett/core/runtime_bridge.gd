@@ -236,6 +236,123 @@ func is_game_connected() -> bool:
 	return _peer.get_status() == StreamPeerTCP.STATUS_CONNECTED
 
 
+# --- Game workspace embedding (v1.13 S11) ------------------------------------------------
+# Since 4.4 the editor can run the game INSIDE itself (the Game workspace) instead of in its
+# own OS window, and embedding on play is the DEFAULT — so this is the common case, not an
+# exotic one. It decides whether a window-mode assert can ever pass, and it is the first half
+# of the Suspend diagnosis in send_command below.
+#
+# The engine resolves the mode as TWO booleans (embed_on_play / make_floating_on_play), so we
+# report the same shape: `mode` is "embedded" whenever the game runs inside the editor, and
+# main-window-vs-floating goes in `placement` (a floating Game workspace is still embedded).
+# Every read is reflection-guarded, and a read we cannot actually perform degrades to
+# mode "unknown" with a `source` naming what was missing — a probe that guesses is worse
+# than no probe.
+const EMBED_MODE_SETTING := "run/window_placement/game_embed_mode"
+
+## What holds in BOTH modes, and what only bites in the embedded one. Beckett captures the
+## game's own viewport and pushes events in-process, so nothing it does goes through the OS
+## window — which is why embedding costs the agent nothing except these three caveats.
+const GAME_VIEW_NOTE := ("capture and input work in both modes (Beckett reads the game's own"
+	+ " viewport and injects events in-process, never through the OS window). Embedded"
+	+ " caveats: the Game workspace's Suspend button stops the whole SceneTree, so every"
+	+ " runtime call times out until you resume; the game cannot go fullscreen or move/resize"
+	+ " its window; and frames come back sized to the workspace, not to the project resolution.")
+
+
+## Is the game played inside the editor, and how do we know? Static so `doctor` can mount it
+## without a live bridge instance. Never throws: every failure path returns a stated "unknown".
+static func game_view_state() -> Dictionary:
+	# No editor, no EditorSettings — the unit suite and any exported build land here. Say so
+	# instead of inventing a mode from whatever display server a headless run happens to have.
+	if not Engine.is_editor_hint():
+		return _game_view("unknown", "unknown", "not running inside the editor, so the Game workspace settings are unreadable")
+
+	# The engine applies the mode only when the display server can embed windows at all, so
+	# ask it the same question first. FEATURE_WINDOW_EMBEDDING is 4.4+ and is reached by
+	# reflection so that naming it can never parse-fail an older engine. Probed as a BOUND
+	# ClassDB constant on 4.4.1 and 4.7 (both = 29) before this code was written.
+	if not ClassDB.class_has_integer_constant("DisplayServer", "FEATURE_WINDOW_EMBEDDING"):
+		return _game_view("windowed", "own_window",
+			"this Godot build exposes no DisplayServer.FEATURE_WINDOW_EMBEDDING, so it cannot embed the game at all")
+	if not DisplayServer.has_feature(ClassDB.class_get_integer_constant("DisplayServer", "FEATURE_WINDOW_EMBEDDING")):
+		return _game_view("windowed", "own_window",
+			"this display server (%s) does not advertise window embedding, so the game always runs in its own window" % DisplayServer.get_name())
+
+	var es: Object = EditorInterface.get_editor_settings()
+	if es == null or not es.has_method("has_setting") or not bool(es.call("has_setting", EMBED_MODE_SETTING)):
+		return _game_view("unknown", "unknown", "editor setting %s is not present on this build" % EMBED_MODE_SETTING)
+	return _game_view_from_setting(es, int(es.call("get_setting", EMBED_MODE_SETTING)))
+
+
+## The setting -> {mode, placement} mapping, split from the reads above so the unit suite can
+## pin all four documented values (and an unrecognised fifth) against a stub, with no editor.
+## Values are inlined ints, never engine enums: the hint string is
+## "Disabled:-1,Use Per-Project Configuration:0,Embed Game:1,Make Game Workspace Floating:2"
+## in the shipped 4.4.1 AND 4.7 binaries. Anything outside that set belongs to a build we have
+## not seen (the Android editor substitutes its own hint set), so it reads as unknown.
+static func _game_view_from_setting(es: Object, mode: int) -> Dictionary:
+	var where := "Editor Settings > Run > Window Placement > Game Embed Mode"
+	# The labels below are the DESKTOP hint set. The Android editor rebinds the same integers
+	# to its own ("Disabled:-1,Auto (based on screen size):0,Enabled:1", and "Disabled:-1"
+	# alone under xr_editor), so 0 there means "auto by screen size", NOT "read this project's
+	# metadata" — reading it with the desktop labels would print a confident lie in the one
+	# field whose whole job is to be checkable. Only -1 carries across unchanged.
+	if mode != -1 and OS.has_feature("android"):
+		return _game_view("unknown", "unknown",
+			"%s = %d on the Android editor, which rebinds these values to its own hint set (Auto by screen size / Enabled); treat as unknown" % [where, mode])
+	match mode:
+		-1:
+			return _game_view("windowed", "own_window", "%s = Disabled" % where)
+		1:
+			return _game_view("embedded", "main", "%s = Embed Game" % where)
+		2:
+			return _game_view("embedded", "floating", "%s = Make Game Workspace Floating" % where)
+		0:
+			return _game_view_per_project(es, where)
+	return _game_view("unknown", "unknown",
+		"%s = %d, a value this build introduced; treat as unknown" % [where, mode])
+
+
+## Mode 0 ("Use Per-Project Configuration") is the shipped default and the case that matters:
+## the two booleans come from this project's Game workspace metadata, defaulting to embedded.
+static func _game_view_per_project(es: Object, where: String) -> Dictionary:
+	if not es.has_method("get_project_metadata"):
+		return _game_view("unknown", "unknown",
+			"%s = Use Per-Project Configuration, but EditorSettings on this build has no get_project_metadata to resolve it with" % where)
+	var embed := _game_view_flag(es, "embed_on_play")
+	var floating := _game_view_flag(es, "make_floating_on_play")
+	var src := "%s = Use Per-Project Configuration, resolved from this project's Game workspace metadata: embed_on_play=%s (%s), make_floating_on_play=%s (%s)" % [
+		where, str(bool(embed["value"])).to_lower(), str(embed["origin"]),
+		str(bool(floating["value"])).to_lower(), str(floating["origin"]),
+	]
+	if not bool(embed["value"]):
+		return _game_view("windowed", "own_window", src)
+	return _game_view("embedded", "floating" if bool(floating["value"]) else "main", src)
+
+
+## One game_view metadata flag, plus whether it was actually STORED. get_project_metadata
+## cannot report presence, so ask twice with opposite defaults: an absent key hands back
+## whichever default it was given, a stored one answers itself both times. Worth the second
+## read — no real project stores these (checked three on this machine), so without it every
+## source line would claim a stored setting the user never touched.
+static func _game_view_flag(es: Object, key: String) -> Dictionary:
+	var with_true := bool(es.call("get_project_metadata", "game_view", key, true))
+	var with_false := bool(es.call("get_project_metadata", "game_view", key, false))
+	if with_true == with_false:
+		return {"value": with_true, "origin": "set in this project"}
+	# Absent, which is the normal case: no project on this machine stores either key. Both
+	# flags default to TRUE in the engine's own per-project read, so an untouched project
+	# embeds on play — which is exactly why this probe exists. That default is read off the
+	# engine's behaviour, not off anything we can measure from here, so `origin` says so out
+	# loud: a user who sees the wrong placement knows which assumption to blame.
+	return {"value": true, "origin": "engine default, never set here"}
+
+
+static func _game_view(mode: String, placement: String, source: String) -> Dictionary:
+	return {"mode": mode, "placement": placement, "source": source, "note": GAME_VIEW_NOTE}
+
+
 ## Send one command to the running game and block (bounded) for its JSON-line reply.
 ## Each command carries a sequence id the game echoes back. A LATE reply from an earlier
 ## command that timed out (its handler errored or blocked past the deadline) lands in the
@@ -282,4 +399,27 @@ func send_command(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
 						return parsed
 					# stale reply (old id) or malformed line → drop and keep reading
 		OS.delay_msec(4)
-	return {"ok": false, "error": "runtime timeout after %d ms" % timeout_ms}
+	return {"ok": false, "error": _timeout_error(timeout_ms)}
+
+
+## v1.13 S12: an embedded game has one failure mode that looks exactly like a dead channel.
+## The Game workspace's Suspend button suspends the whole SceneTree, and the runtime autoload's
+## PROCESS_MODE_ALWAYS (mcp_runtime.gd) only survives get_tree().paused, not suspension — so
+## the game stops answering, every runtime call times out, and nothing else is visibly wrong.
+## Both placements are embedded, so both get the line.
+static func _timeout_error(timeout_ms: int) -> String:
+	return _timeout_message(timeout_ms, game_view_state())
+
+
+## Split from the probe so the unit suite can pin the sentence the agent actually reads:
+## the embedded branch only fires in a real editor with a real Game workspace, which no
+## headless check can stage.
+static func _timeout_message(timeout_ms: int, gv: Dictionary) -> String:
+	var msg := "runtime timeout after %d ms" % timeout_ms
+	if str(gv.get("mode", "")) == "embedded":
+		msg += (" - the game is running EMBEDDED in the editor's Game workspace (placement: %s),"
+			+ " so the likeliest cause is its Suspend button: suspending stops the entire SceneTree,"
+			+ " this channel included, and every runtime call then times out with no other symptom."
+			+ " Press Suspend again (or Next Frame) and retry. This is NOT time_control op=freeze,"
+			+ " which pauses the game and leaves the channel answering.") % str(gv.get("placement", "?"))
+	return msg

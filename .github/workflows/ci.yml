@@ -11,6 +11,21 @@
 # CI and local runs share one code path. No secrets; only actions/checkout +
 # actions/cache; every OS-specific step runs under PowerShell 7 (pwsh) which ships
 # preinstalled on all three GitHub-hosted runners.
+#
+# Engine pins are exact tags, never resolved at run time. A dynamic "latest" would
+# move the cache key under an unrelated PR and turn someone else's upstream publish
+# into a red run here. Bump BOTH pins per release - the current stable AND the next-
+# engine snapshot - per dev/RELEASE-PLAYBOOK.md section 1, step 2.
+#
+# The next-engine (4.8-dev) lane is continue-on-error and says "(experimental)" in its
+# job name: the badge must not be able to stay green silently while the engine people
+# are actually upgrading to is broken. Read the job list, not just the badge.
+#
+# "The job list" means the PUBLIC repo's. This file is also committed to the private
+# authoring monorepo, where the LAST step ("Boot + probe MCP endpoint") asserts the Lite
+# tool count against a Full checkout and so always fails. Only THAT step is expected to be
+# red there - the parse-check and unit-suite steps above it are real signals on the
+# monorepo too, so read which step failed instead of writing the whole run off.
 name: ci
 
 on:
@@ -29,23 +44,46 @@ permissions:
 
 jobs:
   verify:
-    name: ${{ matrix.os }} - Godot ${{ matrix.godot }}
+    name: "${{ matrix.os }} - Godot ${{ matrix.godot }}${{ matrix.experimental && ' (experimental)' || '' }}"
     runs-on: ${{ matrix.os }}
+    # Only the snapshot lane may fail the run. matrix.experimental is null on every
+    # stable row and `null == true` is false, so those seven still gate the run.
+    continue-on-error: ${{ matrix.experimental == true }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # Linux carries the version floor (4.4.1) AND a current build (4.6.2);
-        # macOS + Windows run the current build only to keep runner minutes sane.
+        # Engine pins - bump both stable and snapshot per release (see the header).
+        #   4.4.1    version floor, Linux only (the parse-time floor every release
+        #            has to hold; the other two OSes cannot break it independently)
+        #   4.6.2    previous stable, all three OSes
+        #   4.7.1    current stable, all three OSes - what the editor's own updater
+        #            is pushing people onto, so it is the lane that must be honest
+        #   4.8-dev3 next-engine snapshot, Linux only, WARN-ONLY (see continue-on-error)
+        # Measured billable minutes are 0 on BOTH repos this file lands in (public Lite
+        # and the private monorepo; actions/runs/<id>/timing reports 0 for every OS on
+        # each), and the jobs run in parallel under a ceiling of 20, so dropping mac/win
+        # coverage would only buy back wall-clock we do not need - and would quietly
+        # falsify README.md's and INSTALL.md's "CI-verified on" lines on two OSes.
+        # Quoted so YAML can never fold a two-component version into a float.
         include:
           - os: ubuntu-latest
-            godot: 4.4.1
+            godot: '4.4.1'
           - os: ubuntu-latest
-            godot: 4.6.2
+            godot: '4.6.2'
+          - os: ubuntu-latest
+            godot: '4.7.1'
           - os: macos-latest
-            godot: 4.6.2
+            godot: '4.6.2'
+          - os: macos-latest
+            godot: '4.7.1'
           - os: windows-latest
-            godot: 4.6.2
+            godot: '4.6.2'
+          - os: windows-latest
+            godot: '4.7.1'
+          - os: ubuntu-latest
+            godot: '4.8-dev3'
+            experimental: true
 
     env:
       # Isolated port for the probe (runtime bridge uses PORT+1). Kept out of the
@@ -56,8 +94,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Pinned official builds from godotengine/godot releases. Keyed by version+OS
-      # so a warm cache skips the download entirely.
+      # Pinned official builds (godotengine/godot for stable, godotengine/godot-builds
+      # for snapshots). Keyed by version+OS so a warm cache skips the download entirely,
+      # and so bumping a pin mints a fresh key instead of serving the old binary.
       - name: Cache Godot ${{ matrix.godot }}
         id: cache-godot
         uses: actions/cache@v4
@@ -74,13 +113,27 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $ver = $env:GODOT_VERSION
-          $base = "https://github.com/godotengine/godot/releases/download/$ver-stable"
+          # Two channels, one asset-naming rule. Pre-releases (dev/beta/rc) are published
+          # to godotengine/godot-builds and their tag IS the version ("4.8-dev3"); stable
+          # releases live in godotengine/godot under "<ver>-stable". Either way the asset
+          # names carry the tag verbatim, so derive the tag once and interpolate it.
+          if ($ver -match '-(dev|beta|rc)\d*$') {
+            $repo = 'godotengine/godot-builds'
+            $tag  = $ver
+          } else {
+            $repo = 'godotengine/godot'
+            $tag  = "$ver-stable"
+          }
+          $base = "https://github.com/$repo/releases/download/$tag"
+          # Echo the derivation: a mis-derived tag should read as a wrong tag here rather
+          # than as a bare 404 from the download three lines down.
+          Write-Host "resolved '$ver' -> $repo @ $tag"
           # Standard (non-mono) builds. Windows uses the *_console.exe variant so
           # headless output reaches stdout; it ships inside the win64.exe.zip.
           switch ($env:RUNNER_OS) {
-            'Linux'   { $asset = "Godot_v$ver-stable_linux.x86_64.zip";   $inner = "Godot_v$ver-stable_linux.x86_64" }
-            'macOS'   { $asset = "Godot_v$ver-stable_macos.universal.zip"; $inner = "Godot.app/Contents/MacOS/Godot" }
-            'Windows' { $asset = "Godot_v$ver-stable_win64.exe.zip";       $inner = "Godot_v$ver-stable_win64_console.exe" }
+            'Linux'   { $asset = "Godot_v${tag}_linux.x86_64.zip";   $inner = "Godot_v${tag}_linux.x86_64" }
+            'macOS'   { $asset = "Godot_v${tag}_macos.universal.zip"; $inner = "Godot.app/Contents/MacOS/Godot" }
+            'Windows' { $asset = "Godot_v${tag}_win64.exe.zip";       $inner = "Godot_v${tag}_win64_console.exe" }
             default   { throw "unsupported runner OS: $($env:RUNNER_OS)" }
           }
           New-Item -ItemType Directory -Path godot-bin -Force | Out-Null

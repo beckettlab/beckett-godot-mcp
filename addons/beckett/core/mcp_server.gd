@@ -20,6 +20,10 @@ const SERVER_NAME := "beckett-godot-mcp"
 const SERVER_VERSION := "1.0.0"
 
 const IDEMPOTENCY_MAX := 128  # bound the result cache (FIFO eviction)
+# ...and bound it by BYTES too. An entry count alone is not a bound when a single
+# screenshot result is ~5 MB of base64: 128 of those parked ~700 MB in the editor.
+# A result larger than the ceiling is simply not cached (the repeat call re-runs).
+const IDEMPOTENCY_MAX_BYTES := 8 * 1024 * 1024
 const AUDIT_MAX := 200        # in-memory audit ring: last N tool calls
 
 const MCPHttpServerScript := preload("res://addons/beckett/core/http_server.gd")
@@ -94,6 +98,8 @@ var _confirm_destructive: bool = false
 var _allowlist: Array[String] = []  # regex strings; empty = allow all
 var _disabled: Dictionary = {}       # tool name -> true: dock per-tool off switches (beckett/disabled_tools)
 var _idempotency: Dictionary = {}    # key -> cached result dict (FIFO-capped at IDEMPOTENCY_MAX)
+var _idempotency_sizes: Dictionary = {}  # same keys -> approx byte size, so eviction can hold a byte ceiling
+var _idempotency_bytes := 0          # running total of _idempotency_sizes (see IDEMPOTENCY_MAX_BYTES)
 var _audit: Array = []               # ring of {t, tool, ms, ok, args[, error|result]} — who did what (D6)
 var _audit_total := 0                # total calls this session (the ring keeps only the last AUDIT_MAX)
 var _client_info: Dictionary = {}    # clientInfo {name, version} from the last initialize
@@ -427,10 +433,27 @@ func _instructions() -> String:
 			+ " Dev loop: edit -> play_scene -> wait_until game_connected -> SEE it (screenshot, get_remote_tree, runtime_get_property, game_logs) -> diagnose -> fix."
 			+ " Lite can SEE the running game but cannot DRIVE it: input injection, UI/3D clicks, drag/scroll, runtime writes, assertions, the test runner, animation_manage, background exports and the skill packs are Full-edition features."
 			+ " If the user asks for one of those, say it needs the Full edition (upgrade link on the Beckett dock panel).")
+	var packs := _skill_pack_count()
 	return ("Beckett — MCP for Godot, Full edition. " + core
 		+ " Loop: author -> play_scene -> wait_until game_connected -> playtest (screenshot, simulate_input, click_button_by_text, assert_*, test_run) -> logs_read -> fix -> export_project (background; poll job_status)."
-		+ " Call list_skills early: 44 knowledge packs name the exact classes/properties/methods per domain (physics, shaders, animation, multiplayer, ...)."
+		+ " Call list_skills early: " + ("%d knowledge packs" % packs if packs > 0 else "knowledge packs") + " name the exact classes/properties/methods per domain (physics, shaders, animation, multiplayer, ...)."
 		+ " For a 'make me a game' request, however vague: load_skill name=game-oneshot FIRST and follow it — it expands the idea, routes to a genre blueprint pack, and gates each build phase.")
+
+
+## Count the knowledge packs actually on disk, bundled plus any project overrides, the
+## same way list_skills does. Derived rather than written down: the literal that used to
+## live in the instructions had already drifted one pack behind the addon.
+func _skill_pack_count() -> int:
+	var names := {}
+	for dir_path in ["res://addons/beckett/skills", "res://.beckett/skills"]:
+		var dir := DirAccess.open(dir_path)
+		if dir == null:
+			continue
+		for f in dir.get_files():
+			if f.ends_with(".md"):
+				names[f.get_basename()] = true
+	return names.size()
+
 
 func _dispatch(id: Variant, rpc_method: String, params: Dictionary) -> Dictionary:
 	_last_activity_ms = Time.get_ticks_msec()
@@ -574,10 +597,44 @@ func _call_tool(id: Variant, params: Dictionary) -> Dictionary:
 	_audit_record(name, args, Time.get_ticks_msec() - t0, str(r.get("error", "")), rprev, r.get("focus", {}))
 
 	if not idem.is_empty():
-		if _idempotency.size() >= IDEMPOTENCY_MAX:
-			_idempotency.erase(_idempotency.keys()[0])  # FIFO: insertion order is preserved
-		_idempotency[idem] = result
+		_idempotency_put(idem, result)
 	return _body(MCPJsonRpcScript.result(id, result))
+
+
+## Cache a result under an idempotency key, holding BOTH bounds (entry count and total
+## bytes). Oversized results are skipped rather than evicting the whole cache for one
+## screenshot; the repeat call just re-runs, which is the pre-cache behaviour.
+func _idempotency_put(key: String, result: Dictionary) -> void:
+	var size := _result_bytes(result)
+	if size > IDEMPOTENCY_MAX_BYTES:
+		return
+	if _idempotency.has(key):
+		_idempotency_bytes -= int(_idempotency_sizes.get(key, 0))
+		_idempotency.erase(key)
+		_idempotency_sizes.erase(key)
+	while not _idempotency.is_empty() and (_idempotency.size() >= IDEMPOTENCY_MAX or _idempotency_bytes + size > IDEMPOTENCY_MAX_BYTES):
+		var oldest: String = str(_idempotency.keys()[0])  # FIFO: insertion order is preserved
+		_idempotency_bytes -= int(_idempotency_sizes.get(oldest, 0))
+		_idempotency.erase(oldest)
+		_idempotency_sizes.erase(oldest)
+	_idempotency[key] = result
+	_idempotency_sizes[key] = size
+	_idempotency_bytes += size
+
+
+## Approximate the wire size of a tool result without re-serializing it: String.length()
+## is O(1) in Godot, and text + base64 image data are where every byte that matters is.
+func _result_bytes(result: Dictionary) -> int:
+	var total := 0
+	var content: Variant = result.get("content", [])
+	if content is Array:
+		for c in content:
+			if c is Dictionary:
+				total += str(c.get("text", "")).length()
+				total += str(c.get("data", "")).length()
+	if result.has("structuredContent"):
+		total += 512  # structured payloads are small next to a capture; charge a flat estimate
+	return total
 
 
 ## Append one entry to the audit ring (D6: see who/what ran, when, how long).
@@ -779,19 +836,26 @@ func _tool_result(r: Dictionary) -> Dictionary:
 	var is_error := false
 	var structured: Variant = null
 	if r.has("error"):
+		# An error stays exclusive: a failed handler's half-written text must not ride
+		# along and read like a partial success.
 		is_error = true
 		var msg := "Error: " + str(r["error"])
 		if r.has("suggestion"):
 			msg += "\nSuggestion: " + str(r["suggestion"])
 		content.append({"type": "text", "text": msg})
-	elif r.has("text"):
-		content.append({"type": "text", "text": str(r["text"])})
-	elif r.has("json"):
-		# Text for every client + structuredContent (spec 2025-06-18) for the ones
-		# that can consume machine-readable results directly.
-		content.append({"type": "text", "text": JSON.stringify(r["json"], "  ")})
-		if typeof(r["json"]) == TYPE_DICTIONARY:
-			structured = r["json"]
+	else:
+		# text and json are INDEPENDENT (they were an if/elif until v1.13.0, which
+		# silently dropped whichever came second - an annotated screenshot had to hide
+		# its human-readable line inside the json to survive).
+		if r.has("text"):
+			content.append({"type": "text", "text": str(r["text"])})
+		if r.has("json"):
+			# Text for every client + structuredContent (spec 2025-06-18) for the ones
+			# that can consume machine-readable results directly. Compact on purpose:
+			# the 2-space indent was pure token cost for the model that reads this.
+			content.append({"type": "text", "text": JSON.stringify(r["json"])})
+			if typeof(r["json"]) == TYPE_DICTIONARY:
+				structured = r["json"]
 	if r.has("image_png_base64"):
 		content.append({"type": "image", "data": str(r["image_png_base64"]), "mimeType": "image/png"})
 	elif r.has("image_base64"):

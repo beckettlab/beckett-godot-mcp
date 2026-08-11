@@ -44,6 +44,9 @@ func _init() -> void:
 	_t_http_static()
 	_t_client_config()
 	_t_server_serializer()
+	_t_idempotency_bounds()
+	_t_instructions_skill_count()
+	_t_http_content_type()
 	_t_secure_equals()
 	_t_validate_args()
 	_t_call_args()
@@ -64,10 +67,17 @@ func _init() -> void:
 	await _t_focus_graph()
 	_t_type_stream()
 	_t_bridge_compare()
+	_t_game_view_probe()
 	_t_setting_type_mirror()
+	_t_doctor_context()
 	_t_property_owner()
 	_t_winding()
 	_t_screenshot_metric()
+	_t_screenshot_cap()
+	_t_compare_downscale_chain()
+	_t_dock_tier_stats()
+	_t_resolver_suggestions()
+	_t_ci_matrix()
 	print("")
 	if _fail > 0:
 		print("[unit] FAIL: %d failed, %d passed" % [_fail, _pass])
@@ -224,6 +234,62 @@ func _t_server_serializer() -> void:
 	_ok(tm.has("structuredContent") and (tm["structuredContent"] as Dictionary).has("marks"), "json legend rides beside the image")
 	var tn: Dictionary = s._tool_result({})
 	_ok(str((tn["content"] as Array)[0]["text"]) == "(no output)", "empty result says so instead of vanishing")
+	# v1.13 S1: text and json are independent. The if/elif dropped whichever came
+	# second, which is why annotated screenshots used to hide their line in the json.
+	var tb: Dictionary = s._tool_result({"text": "shot", "json": {"marks": [1]}})
+	var tb_texts: Array = (tb["content"] as Array).filter(func(c): return str(c.get("type", "")) == "text")
+	_ok(tb_texts.size() == 2 and str(tb_texts[0]["text"]) == "shot", "text block survives beside a json payload")
+	_ok(tb.has("structuredContent") and (tb["structuredContent"] as Dictionary).has("marks"), "json still rides as structuredContent when text is present")
+	# v1.13 S1: an error stays exclusive - no half-written text alongside a failure.
+	var tex: Dictionary = s._tool_result({"error": "boom", "text": "half done"})
+	_ok((tex["content"] as Array).size() == 1 and not str((tex["content"] as Array)[0]["text"]).contains("half done"), "error suppresses the handler's own text")
+	# v1.13 S2: the json mirror is compact; the 2-space indent was pure token cost.
+	var tc: Dictionary = s._tool_result({"json": {"a": {"b": 1}}})
+	_ok(not str((tc["content"] as Array)[0]["text"]).contains("\n"), "json mirror is compact (no pretty-print newlines)")
+	s.free()
+
+
+# ---------------------------------------------------------------- idempotency cache bounds (v1.13 S3)
+
+func _t_idempotency_bounds() -> void:
+	print("[unit] mcp_server idempotency cache is bounded by bytes, not just entries")
+	var s = MCPServer.new()
+	var big := ""
+	for i in 64:
+		big += "0123456789abcdef".repeat(1024)  # 1 MB of base64-ish payload
+	var one: Dictionary = {"content": [{"type": "image", "data": big}], "isError": false}
+	_ok(s._result_bytes(one) > 1000000, "_result_bytes counts image payloads")
+	for i in 200:
+		s._idempotency_put("k%d" % i, {"content": [{"type": "image", "data": big}], "isError": false})
+	_ok(s._idempotency.size() <= MCPServer.IDEMPOTENCY_MAX, "entry bound still holds")
+	_ok(s._idempotency_bytes <= MCPServer.IDEMPOTENCY_MAX_BYTES, "byte ceiling holds after 200 image results")
+	_ok(s._idempotency.size() == s._idempotency_sizes.size(), "size bookkeeping stays in step with the cache")
+	# A result larger than the whole ceiling is skipped, not cached at any cost.
+	var huge := big.repeat(9)
+	s._idempotency_put("huge", {"content": [{"type": "image", "data": huge}], "isError": false})
+	_ok(not s._idempotency.has("huge"), "an oversized result is not cached")
+	# Small results still cache and replay.
+	s._idempotency_put("small", {"content": [{"type": "text", "text": "ok"}], "isError": false})
+	_ok(s._idempotency.has("small"), "a small result still caches")
+	s.free()
+
+
+# ---------------------------------------------------------------- instructions (v1.13 S4)
+
+func _t_instructions_skill_count() -> void:
+	print("[unit] initialize instructions derive the skill-pack count from disk")
+	var s = MCPServer.new()
+	var on_disk := 0
+	var dir := DirAccess.open("res://addons/beckett/skills")
+	if dir != null:
+		for f in dir.get_files():
+			if f.ends_with(".md"):
+				on_disk += 1
+	_ok(on_disk > 0, "bundled skills directory is readable (%d packs)" % on_disk)
+	_ok(s._skill_pack_count() == on_disk, "_skill_pack_count matches the .md files on disk")
+	# _max_effort defaults to 6, so a bare server renders the Full instructions.
+	var instr := s._instructions()
+	_ok(instr.contains("%d knowledge packs" % on_disk), "instructions quote the real pack count (%d)" % on_disk)
 	s.free()
 
 
@@ -953,3 +1019,372 @@ func _t_screenshot_metric() -> void:
 			half.set_pixel(x, y, Color(0.9, 0.1, 0.1))
 	var snr_half := float((base.call("compute_image_metrics", half, false) as Dictionary).get("peak_snr", 0.0))
 	_ok(snr_half < want, "half the frame changed FAILS (snr %.1f)" % snr_half)
+
+
+# ---------------------------------------------------------------- capture bytes (v1.13 S5/S7)
+
+## S5: the default resolution cap is folded INTO the resize factor, because that same factor
+## draws the Set-of-Mark boxes and remaps the legend rects. A cap applied anywhere else
+## desyncs the boxes from the returned picture, and nothing else in the suite would see it.
+func _t_screenshot_cap() -> void:
+	print("[unit] screenshot resolution cap (v1.13 S5)")
+	_ok(is_equal_approx(MCPRuntime._capped_scale(1.0, 2560, 1440, 1280), 0.5), "2560x1440 capped at 1280 -> 0.5")
+	_ok(is_equal_approx(MCPRuntime._capped_scale(1.0, 1440, 2560, 1280), 0.5), "portrait frames cap on the long edge too")
+	_ok(is_equal_approx(MCPRuntime._capped_scale(1.0, 1024, 768, 1280), 1.0), "a frame already under the cap is untouched")
+	_ok(is_equal_approx(MCPRuntime._capped_scale(1.0, 2560, 1440, 0), 1.0), "max_dim=0 is the explicit opt-out")
+	_ok(is_equal_approx(MCPRuntime._capped_scale(0.25, 2560, 1440, 1280), 0.25), "an explicit smaller scale still wins")
+	_ok(is_equal_approx(MCPRuntime._capped_scale(0.8, 2560, 1440, 1280), 0.5), "the cap wins when it is the smaller factor")
+	_ok(is_equal_approx(MCPRuntime._capped_scale(9.0, 2560, 1440, 0), 1.0), "scale is still clamped to 1.0")
+	_ok(is_equal_approx(MCPRuntime._capped_scale(0.0, 2560, 1440, 0), 0.05), "scale is still clamped up to 0.05")
+	# Now the part only pixels can prove: crop -> capped scale -> annotate -> legend remap.
+	var img := Image.create(2560, 1440, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.1, 0.2, 0.3))
+	var marks: Array = [{"i": 1, "path": "/root/Main/Btn", "rect": [1000, 600, 400, 200]}]
+	var off := Vector2(200.0, 100.0)  # as if region=[200,100,2000,1200] had been requested
+	img = img.get_region(Rect2i(200, 100, 2000, 1200))
+	var scale: float = MCPRuntime._capped_scale(1.0, img.get_width(), img.get_height(), 1280)
+	_ok(is_equal_approx(scale, 0.64), "post-crop 2000x1200 capped at 1280 -> 0.64")
+	img.resize(maxi(1, roundi(img.get_width() * scale)), maxi(1, roundi(img.get_height() * scale)), Image.INTERPOLATE_BILINEAR)
+	_ok(img.get_width() == 1280 and img.get_height() == 768, "the returned frame is %dx%d" % [img.get_width(), img.get_height()])
+	UiInspect.annotate_image(img, marks, off, scale)
+	var r4: Array = marks[0]["rect"]
+	var lx := roundi((float(r4[0]) - off.x) * scale)
+	var ly := roundi((float(r4[1]) - off.y) * scale)
+	var lw := roundi(float(r4[2]) * scale)
+	var lh := roundi(float(r4[3]) * scale)
+	_ok(lx + lw <= img.get_width() and ly + lh <= img.get_height(), "the legend rect fits inside the capped picture")
+	_ok(img.get_pixel(lx + 1, ly + 1).is_equal_approx(UiInspect.MARK_COLOR), "the legend corner lands ON the drawn box")
+	_ok(img.get_pixel(lx + lw - 1, ly + lh / 2).is_equal_approx(UiInspect.MARK_COLOR), "the legend right edge lands ON the drawn box")
+	_ok(not img.get_pixel(lx + 1, maxi(0, ly - 3)).is_equal_approx(UiInspect.MARK_COLOR), "3 px above the legend rect is still background")
+
+
+## S7: compare_screenshots now pulls a quarter-res frame, so the baseline has to travel the
+## SAME downscale before both collapse to 64x64. Godot's bilinear resize does not pre-filter,
+## so one-step and two-step downscales of the same picture land on different samples - which
+## would otherwise fail every existing baseline the moment the capture got smaller.
+func _t_compare_downscale_chain() -> void:
+	print("[unit] compare_screenshots downscale chain (v1.13 S7)")
+	var w := 512
+	var h := 288
+	var src := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 99  # fixed: this check must not be able to flake
+	for y in h:
+		for x in w:
+			var v := float((x / 32 + y / 32) % 3) / 3.0
+			if x % 17 == 0 or y % 23 == 0:
+				v = 1.0  # thin bright lines: the detail a mismatched chain samples differently
+			v = clampf(v + rng.randf() * 0.25, 0.0, 1.0)
+			src.set_pixel(x, y, Color(v, v * 0.6, 1.0 - v))
+	var cur := src.duplicate() as Image  # what the game now returns at scale=0.25
+	cur.resize(maxi(1, roundi(w * 0.25)), maxi(1, roundi(h * 0.25)), Image.INTERPOLATE_BILINEAR)
+	var small := cur.duplicate() as Image
+	small.resize(64, 64)
+	var naive := src.duplicate() as Image
+	naive.resize(64, 64)
+	var matched := src.duplicate() as Image
+	matched.resize(cur.get_width(), cur.get_height(), Image.INTERPOLATE_BILINEAR)
+	matched.resize(64, 64)
+	var d_matched := _img_diff_pct(matched, small)
+	var d_naive := _img_diff_pct(naive, small)
+	_ok(d_matched < 0.001, "baseline down the same chain compares clean (diff %.4f%%)" % d_matched)
+	_ok(d_naive > d_matched, "a mismatched chain does NOT (diff %.4f%% on an unchanged frame)" % d_naive)
+
+
+## qa_tools._compare_screenshots' metric, in one place so the check above measures what
+## the tool measures.
+func _img_diff_pct(a: Image, b: Image) -> float:
+	var ad := a.get_data()
+	var bd := b.get_data()
+	var d := 0
+	for i in ad.size():
+		d += abs(int(ad[i]) - int(bd[i]))
+	return 100.0 * float(d) / float(ad.size() * 255)
+
+
+# ---------------------------------------------------------------- transport (v1.13 S8)
+
+func _t_http_content_type() -> void:
+	print("[unit] http_server content-type")
+	# S8: JSON is UTF-8 by definition, so a client that trusts a MISSING charset over the
+	# spec guesses Latin-1 and mangles every em-dash in a tool description - which is how
+	# the published glama/tools.json got corrupted. Smoke checks the header on the wire;
+	# this pins the literal so the declaration cannot be dropped by accident.
+	var ct: String = HttpServer._JSON_CONTENT_TYPE
+	_ok(ct.begins_with("application/json"), "default Content-Type is still JSON")
+	_ok(ct.to_lower().contains("charset=utf-8"), "default Content-Type declares charset=utf-8")
+
+
+# ---------------------------------------------------------------- game view + Suspend (v1.13 S11/S12)
+
+## Stands in for EditorSettings: the probe only ever reaches it through has_method + call,
+## so a plain script object exercises the whole mapping with no editor to boot.
+class FakeEditorSettings:
+	var meta := {}
+
+	func get_project_metadata(section: String, key: String, default_value: Variant) -> Variant:
+		return meta.get(section + "/" + key, default_value)
+
+
+## The Game workspace has embedded the game BY DEFAULT since 4.4, so this probe answers the
+## common case, not an exotic one - and getting the mapping backwards would make doctor lie
+## about whether a window-mode assert can ever pass. Two booleans, never one mode string.
+func _t_game_view_probe() -> void:
+	print("[unit] game_view probe + Suspend diagnosis (v1.13 S11/S12)")
+	var live: Dictionary = RuntimeBridge.game_view_state()
+	_ok(["embedded", "windowed", "unknown"].has(str(live.get("mode", ""))), "mode is one of embedded|windowed|unknown")
+	_ok(str(live.get("mode", "")) == "unknown", "outside the editor the probe answers unknown, never a guess")
+	_ok(not str(live.get("source", "")).is_empty(), "unknown still names the read that was unavailable")
+	_ok(live.has("placement") and live.has("note"), "payload always carries placement + note")
+
+	var es := FakeEditorSettings.new()
+	var disabled: Dictionary = RuntimeBridge._game_view_from_setting(es, -1)
+	_ok(str(disabled["mode"]) == "windowed" and str(disabled["source"]).contains("Disabled"), "-1 Disabled -> windowed")
+	var embed: Dictionary = RuntimeBridge._game_view_from_setting(es, 1)
+	_ok(str(embed["mode"]) == "embedded" and str(embed["placement"]) == "main", "1 Embed Game -> embedded / main")
+	# The case the original design had backwards: a FLOATING Game workspace is still embedded.
+	var floating: Dictionary = RuntimeBridge._game_view_from_setting(es, 2)
+	_ok(str(floating["mode"]) == "embedded" and str(floating["placement"]) == "floating", "2 Make Game Workspace Floating -> embedded / floating")
+	# Mode 0 is the shipped default and resolves from per-project metadata that no real
+	# project stores, so it must resolve to the ENGINE default and say which it used.
+	var untouched: Dictionary = RuntimeBridge._game_view_from_setting(es, 0)
+	_ok(str(untouched["mode"]) == "embedded", "0 Use Per-Project Configuration on an untouched project -> embedded")
+	_ok(str(untouched["source"]).contains("engine default"), "...and the source says the value was defaulted, not stored")
+	es.meta["game_view/embed_on_play"] = false
+	var opted_out: Dictionary = RuntimeBridge._game_view_from_setting(es, 0)
+	_ok(str(opted_out["mode"]) == "windowed" and str(opted_out["source"]).contains("set in this project"), "a stored embed_on_play=false is honoured and named")
+	es.meta["game_view/embed_on_play"] = true
+	es.meta["game_view/make_floating_on_play"] = false
+	_ok(str(RuntimeBridge._game_view_from_setting(es, 0)["placement"]) == "main", "stored make_floating_on_play=false -> main placement")
+	var alien: Dictionary = RuntimeBridge._game_view_from_setting(es, 7)
+	_ok(str(alien["mode"]) == "unknown", "a value outside the documented set reads as unknown (the Android editor ships its own hints)")
+
+	# S12: the timeout an embedded game produces must name the Suspend button, and both
+	# placements are embedded so both get the line.
+	var bare := RuntimeBridge._timeout_message(4000, {"mode": "windowed", "placement": "own_window"})
+	_ok(bare == "runtime timeout after 4000 ms", "a windowed game keeps the bare timeout")
+	var jam := RuntimeBridge._timeout_message(4000, {"mode": "embedded", "placement": "floating"})
+	_ok(jam.begins_with("runtime timeout after 4000 ms"), "the embedded message still leads with the timeout")
+	_ok(jam.contains("Suspend") and jam.contains("floating"), "an embedded timeout names the Suspend button + the placement")
+	_ok(jam.contains("time_control op=freeze"), "...and distinguishes it from freeze, which leaves the channel alive")
+
+
+# ---------------------------------------------------------------- doctor context block (v1.13 S10)
+
+## Only what _doctor actually reaches for. A synthetic surface keeps the tier maths
+## deterministic (a real registry would drift with every tool edit).
+class DoctorStubServer:
+	const PROTOCOL_VERSION := "2025-11-25"
+	var registry
+	var http = null
+	var bridge = null
+	var error_echo = null
+	var effort := 6
+	var ceiling := 6
+
+	func get_effort() -> int: return effort
+	func max_effort() -> int: return ceiling
+	func is_lite() -> bool: return ceiling < 6
+	func is_running() -> bool: return false
+	func auth_enabled() -> bool: return true
+	func auth_token() -> String: return ""
+	func is_readonly() -> bool: return false
+	func disabled_tools() -> PackedStringArray: return PackedStringArray()
+	func effective_specs(level: int) -> Array: return registry.list_specs(level)
+
+
+## doctor prices the surface in the SAME bytes the wire carries, so a user can check it
+## against a live tools/list. String.length() would count code points and quietly under-report
+## the non-ASCII prose, which is exactly the mistake this check exists to prevent.
+func _t_doctor_context() -> void:
+	print("[unit] doctor context block (v1.13 S10)")
+	var reg = Registry.new()
+	for pair in [["doctor", 1], ["write_file", 2], ["play_scene", 3], ["screenshot", 4], ["playtest", 5], ["export_project", 6]]:
+		reg.register({
+			"name": str(pair[0]),
+			"description": "tier %d probe — em-dash included so the byte count has non-ASCII to trip on" % int(pair[1]),
+			"readonly": true,
+			"handler": Callable(self, "_ok"),
+		})
+	var srv := DoctorStubServer.new()
+	srv.registry = reg
+	var pt = ProjectTools.new()
+	pt.server = srv
+
+	var j: Dictionary = (pt._doctor({}) as Dictionary)["json"]
+	_ok(j.has("context"), "doctor carries a context block")
+	var ctx: Dictionary = j["context"]
+	var per_tier: Array = ctx["per_tier"]
+	_ok(per_tier.size() == Effort.MAX_LEVEL, "per_tier covers every tier this build can reach (%d)" % per_tier.size())
+	_ok(int(per_tier[0]["level"]) == 1 and str(per_tier[0]["name"]) == "Inspect", "tiers are numbered and named from the effort map")
+	_ok(int(per_tier[5]["tools"]) == 6 and int(per_tier[0]["tools"]) == 1, "tool counts are cumulative per tier")
+	# THE convention: raw UTF-8 bytes of the compact array, which is what tools/list ships.
+	var l6_bytes: int = JSON.stringify(srv.effective_specs(6)).to_utf8_buffer().size()
+	_ok(int(per_tier[5]["bytes"]) == l6_bytes, "per_tier bytes equal JSON.stringify(specs) in UTF-8 bytes")
+	_ok(l6_bytes > JSON.stringify(srv.effective_specs(6)).length(), "bytes exceed code points on a non-ASCII surface (String.length would under-report)")
+	_ok(int(per_tier[5]["approx_tokens"]) == int(l6_bytes / 4.0), "approx_tokens is bytes/4, the stated ratio")
+	_ok(int(ctx["bytes"]) == int(per_tier[5]["bytes"]), "context.bytes is the tier the dial actually sits on")
+	_ok(int(ctx["advertised_tools"]) == 6 and str(ctx["ratio_note"]).contains("approximate"), "context names the advertised count and labels the ratio as approximate")
+	# The block must never make a healthy install report not-ok: `ok` is warnings.is_empty().
+	var before: int = (j["warnings"] as Array).size()
+	srv.effort = 4
+	srv.ceiling = 4
+	var lite: Dictionary = (pt._doctor({}) as Dictionary)["json"]
+	_ok((lite["context"]["per_tier"] as Array).size() == 4, "a Lite ceiling reports 4 tiers, not 6")
+	_ok(int(lite["context"]["bytes"]) == int((lite["context"]["per_tier"] as Array)[3]["bytes"]), "context.bytes tracks the dial on a capped build")
+	_ok(bool(lite["ok"]) == (lite["warnings"] as Array).is_empty(), "ok stays exactly warnings.is_empty()")
+	_ok((lite["warnings"] as Array).size() == before, "neither the context block nor game_view appends a warning")
+	_ok(j.has("game_view") and ["embedded", "windowed", "unknown"].has(str(j["game_view"]["mode"])), "doctor mounts game_view beside game_bridge")
+
+
+# ---------------------------------------------------------------- dock tier stats (v1.13 S13)
+
+## S13: the dock's effort read-out. Two things are easy to get subtly wrong here: the byte
+## convention has to be the one doctor reports (UTF-8 bytes, not code points), and the saving
+## has to be named against THIS build's ceiling — Lite tops out at L4 "See", so a hardcoded
+## "Max" would name a tier that build cannot reach.
+func _t_dock_tier_stats() -> void:
+	print("[unit] dock tier stats (v1.13 S13)")
+	var dock_script := load("res://addons/beckett/panel/panel.gd")  # load, not preload: dock UI, not a core module
+	var p = dock_script.new()
+	var specs := [{"name": "a", "description": "an em dash — costs 3 bytes, not 1"}]
+	var raw := JSON.stringify(specs)
+	_ok(raw.to_utf8_buffer().size() > raw.length(), "the sample really carries multi-byte characters")
+	_ok(p._spec_tokens(specs) == int(raw.to_utf8_buffer().size() / 4.0), "_spec_tokens counts UTF-8 bytes (doctor's convention)")
+
+	p._tier_stats = Label.new()
+	p.server = _DockStub.new()
+	# Lite shape: the ceiling is L4 "See".
+	p.server.ceiling = 4
+	p._eff_cur = 2
+	p._update_tier_stats()
+	var txt := str(p._tier_stats.text)
+	_ok(txt.begins_with("2 tools · ~"), "line 1 stays the live tool/token cost")
+	_ok(txt.contains("vs See") and not txt.contains("vs Max"), "the saving names the edition ceiling, never the literal Max")
+	_ok(txt.contains("\n-"), "the saving rides a second line (a wider label would widen the dock)")
+	# At the ceiling there is nothing to save — a fresh Lite install sits here.
+	p._eff_cur = 4
+	p._update_tier_stats()
+	_ok(not str(p._tier_stats.text).contains(" vs "), "no saving clause at the ceiling")
+	# Full shape: same code path, ceiling L6 "Max".
+	p.server.ceiling = 6
+	p._eff_cur = 4
+	p._update_tier_stats()
+	_ok(str(p._tier_stats.text).contains("vs Max"), "Full names Max, the ceiling it really has")
+	p._tier_stats.free()
+	p.free()
+
+
+## Stand-in for MCPServer: just enough surface for _update_tier_stats (a non-null registry,
+## an edition ceiling, and per-tier specs that grow with the level).
+class _DockStub extends RefCounted:
+	var registry := RefCounted.new()
+	var ceiling := 6
+
+	func max_effort() -> int:
+		return ceiling
+
+	func effective_specs(level: int) -> Array:
+		var out: Array = []
+		for i in range(level):
+			out.append({"name": "t%d" % i, "description": "a description long enough to cost real tokens — %d" % i})
+		return out
+
+
+# ---------------------------------------------------------------- ci engine matrix (v1.13 S14/S15)
+
+func _t_ci_matrix() -> void:
+	print("[unit] ci.yml engine matrix")
+	# ci.yml is the one non-addon file pack.ps1 stages byte-identical into the Lite repo,
+	# so this group runs in both CIs. README/INSTALL are NOT staged (the Lite repo keeps
+	# its own), which is why the pin-vs-prose cross-check lives in smoke.ps1 instead.
+	var f := FileAccess.open("res://.github/workflows/ci.yml", FileAccess.READ)
+	if f == null:
+		print("  skip .github/workflows/ci.yml absent (addon-only checkout)")
+		return
+	var yml := f.get_as_text()
+	f.close()
+
+	# \r tolerated: a contributor cloning with core.autocrlf=true must not read as a broken matrix.
+	var row_re := RegEx.create_from_string("(?m)^[ \\t]*- os: (\\S+)[ \\t\\r]*\\n[ \\t]*godot: '([^']+)'")
+	var rows := row_re.search_all(yml)
+	_ok(rows.size() == 8, "matrix declares 8 lanes (got %d)" % rows.size())
+	# An unquoted "godot: 4.7" is a YAML float and interpolates as "4.7", silently
+	# fetching the wrong tag. The quotes are load-bearing, so assert none went missing.
+	_ok(RegEx.create_from_string("(?m)^[ \\t]*godot: [^'\"\\s]").search(yml) == null,
+			"every godot pin is quoted")
+
+	var pins := {}
+	for m in rows:
+		pins[m.get_string(2)] = true
+	_ok(pins.has("4.4.1"), "the 4.4.1 parse-time floor is still a lane")
+	_ok(pins.size() >= 3, "at least 3 distinct engine pins (got %d)" % pins.size())
+
+	# Exactly one warn-only lane. continue-on-error on a stable row would let a real
+	# break ship under a green badge, which is the whole hazard this lane introduces.
+	var exp := RegEx.create_from_string("experimental: true").search_all(yml)
+	_ok(exp.size() == 1, "exactly one experimental lane (got %d)" % exp.size())
+	_ok(yml.contains("continue-on-error: ${{ matrix.experimental == true }}"),
+			"warn-only is gated on matrix.experimental, not hardcoded true")
+	_ok(yml.contains("(experimental)"), "the job name flags the experimental lane")
+
+	# S14: pre-release tags live in godotengine/godot-builds, stable ones in
+	# godotengine/godot. Without the branch the snapshot lane 404s.
+	_ok(yml.contains("godotengine/godot-builds"), "fetch step knows the pre-release channel")
+	_ok(yml.contains("-(dev|beta|rc)"), "fetch step detects a pre-release version")
+	_ok(not yml.contains("$ver-stable_linux"),
+			"asset names interpolate the derived tag, not a hardcoded -stable")
+
+	# The two count-site anchors release.ps1 pins on (Get-CountSites). Adding matrix
+	# rows must never disturb them, or -FixCounts reports a missing site.
+	_ok(RegEx.create_from_string("the full \\d+-tool Lite").search(yml) != null,
+			"count-site anchor 'the full N-tool Lite' intact")
+	_ok(RegEx.create_from_string("-ExpectedTools \\d+").search(yml) != null,
+			"count-site anchor '-ExpectedTools N' intact")
+
+
+# ---------------------------------------------------------------- resolver suggestions (v1.13 S17)
+
+func _t_resolver_suggestions() -> void:
+	print("[unit] resolver did-you-mean (S17)")
+	var R = load("res://addons/beckett/core/reflection.gd")
+	_ok(R._lev("kitten", "sitting") == 3, "_lev: kitten/sitting costs 3")
+	_ok(R._lev("", "abc") == 3 and R._lev("abc", "") == 3, "_lev: an empty side costs the other's length")
+	_ok(R._lev("player", "player") == 0, "_lev: identical costs nothing")
+	var scene := ["Player", "PlayerSprite", "Enemy", "HUD"]
+	_ok(R.nearest("Playr", scene, 3) == ["Player"], "nearest: one typo hits, the unrelated names do not")
+	_ok(R.nearest("player", scene, 3) == ["Player"], "nearest: a case-only slip scores 0")
+	_ok(R.nearest("Zzzzzz", scene, 3).is_empty(), "nearest: nothing close suggests nothing")
+	_ok(R.nearest("", scene, 3).is_empty() and R.nearest("Playr", [], 3).is_empty(), "nearest: empty query / candidates are safe")
+	_ok(R.nearest("x".repeat(200), scene, 3).is_empty(), "nearest: an over-long query is refused before the DP")
+	_ok(R.nearest("Sprite2", ["Sprite3D", "Sprite2D", "Sprite2DX"], 3)[0] == "Sprite2D", "nearest: the closest candidate ranks first")
+	_ok(R.nearest("Playr", scene, 1).size() == 1, "nearest: limit is honoured")
+	var classes: Array = []
+	for c in ClassDB.get_class_list():
+		classes.append(String(c))
+	_ok(R.nearest("Sprit2D", classes, 5).has("Sprite2D"), "nearest: Sprit2D -> Sprite2D across the whole ClassDB")
+	var rt = load("res://addons/beckett/tools/reflection_tools.gd").new()
+	_ok(str(rt._did_you_mean("Sprit2D")).contains("Sprite2D"), "describe_class: a typo now names the class (was the generic fallback)")
+	_ok(str(rt._did_you_mean("Sprite")).contains("Sprite2D"), "describe_class: substring still wins for a prefix query")
+	_ok(str(rt._did_you_mean("Zzzqqqwww")).contains("find_classes"), "describe_class: a hopeless query still gets the generic advice")
+	# describe_object answers for the RUNNING game too, so its miss must suggest live nodes.
+	# Two stub instances, never one pointing at itself: a self-cycle leaks at exit.
+	var gd := GDScript.new()
+	gd.source_code = "\n".join([
+		"extends RefCounted",
+		"var bridge",
+		"func is_game_connected() -> bool:",
+		"\treturn true",
+		"func send_command(_c: Dictionary) -> Dictionary:",
+		"\treturn {'ok': true, 'nodes': [{'path': 'World/Player'}, {'path': 'HUD/Score'}]}",
+		"",
+	])
+	gd.reload()
+	var srv = gd.new()
+	srv.bridge = gd.new()
+	rt.server = srv
+	var live: String = rt._did_you_mean_target("Playr", true)
+	_ok(live.contains("World/Player") and live.contains("RUNNING"), "describe_object miss: candidates come from the running game when the bridge is up")
+	_ok(str(rt._did_you_mean_target("/root/Main/Playr", true)).contains("World/Player"), "describe_object miss: an absolute live path matches on its last segment")
+	_ok(str(rt._did_you_mean_target("res://nope.tscn", true)).is_empty(), "a res:// miss is a load failure, not a typo: no suggestion")
+	_ok(str(rt._did_you_mean_target("Zzzqqq", true)).is_empty(), "no live node is close: no suggestion")

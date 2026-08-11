@@ -10,6 +10,8 @@ var server
 const _TEXT_EXTS := ["gd", "tscn", "tres", "cfg", "json", "md", "txt", "gdshader", "shader", "cs", "import", "godot"]
 const MCPClientConfigScript := preload("res://addons/beckett/core/client_config.gd")
 const InputCodecScript := preload("res://addons/beckett/runtime/input_codec.gd")  # device-id probe for doctor
+const MCPEffortScript := preload("res://addons/beckett/core/effort.gd")            # tier names for doctor's context block
+const RuntimeBridgeScript := preload("res://addons/beckett/core/runtime_bridge.gd")  # static game-view probe for doctor
 
 ## Opt-in: reload a scene the editor has open after we overwrite its file on disk.
 ## Default FALSE on purpose. Scripts have an editor setting for this and it defaults on,
@@ -102,7 +104,7 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "doctor",
-		"description": "Beckett self-diagnosis — one call answers 'why can't the agent see or do X?'. Reports: edition (Lite/Full), the effort dial vs its ceiling AND where the cap comes from (a beckett/effort= line committed in project.godot silently trims every clone's tool list), advertised-vs-ceiling tool counts, dock-disabled tools, server/port/auth state, per-client config freshness (does each written config still carry the CURRENT endpoint URL?), runtime-bridge liveness, and whether the editor auto-reloads externally-changed scripts (off = every script this server writes waits behind a modal the human must click). Run this FIRST when tools seem missing, counts look wrong, or calls fail unexpectedly.",
+		"description": "Beckett self-diagnosis — one call answers 'why can't the agent see or do X?'. Reports: edition (Lite/Full), the effort dial vs its ceiling AND where the cap comes from (a beckett/effort= line committed in project.godot silently trims every clone's tool list), advertised-vs-ceiling tool counts, dock-disabled tools, server/port/auth state, per-client config freshness (does each written config still carry the CURRENT endpoint URL?), runtime-bridge liveness, what this tool surface costs your context (exact tools/list bytes and approximate tokens for every effort tier, measured on THIS install, so you can price a tier before dialing to it), whether the game plays EMBEDDED in the editor's Game workspace or in its own window (embedded means the Suspend button freezes every runtime call and window-mode asserts can never pass), and whether the editor auto-reloads externally-changed scripts (off = every script this server writes waits behind a modal the human must click). Run this FIRST when tools seem missing, counts look wrong, or calls fail unexpectedly.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {}},
 		"handler": Callable(self, "_doctor"),
@@ -409,6 +411,29 @@ func _doctor(_args: Dictionary) -> Dictionary:
 	if bool(ProjectSettings.get_setting(AUTO_RELOAD_SCENES, false)):
 		scene_reload = "on (beckett/auto_reload_scenes=true: open scenes reload without asking)"
 
+	# v1.13 S10: what this tool surface costs the model, measured on THIS install instead of
+	# quoted from a release note. `bytes` is the exact wire figure — tools/list ships
+	# JSON.stringify over the compact spec array — so per_tier[N].bytes can be checked against
+	# a live tools/list at that tier byte for byte. Never String.length(): it counts code
+	# points and under-reports the ~100 non-ASCII characters in the payload by ~200 bytes.
+	# Costs up to 6 stringify passes over the whole surface (~200 KB of transient string work),
+	# which is fine for a rare human-triggered call and must not go anywhere near a hot path.
+	# No warning is appended: paying context for tools you asked for is not a fault.
+	var per_tier: Array = []
+	var context_bytes := 0
+	for lvl in range(1, ceiling + 1):
+		var lvl_specs: Array = server.effective_specs(lvl)
+		var lvl_bytes: int = JSON.stringify(lvl_specs).to_utf8_buffer().size()
+		if lvl == effort:
+			context_bytes = lvl_bytes
+		per_tier.append({
+			"level": lvl,
+			"name": str((MCPEffortScript.LEVELS.get(lvl, {}) as Dictionary).get("name", "L%d" % lvl)),
+			"tools": lvl_specs.size(),
+			"bytes": lvl_bytes,
+			"approx_tokens": int(lvl_bytes / 4.0),
+		})
+
 	return {"json": {
 		"ok": warnings.is_empty(),
 		"edition": "Lite" if server.is_lite() else "Full",
@@ -416,6 +441,13 @@ func _doctor(_args: Dictionary) -> Dictionary:
 		"godot_version": String(Engine.get_version_info().get("string", "")),
 		"effort": {"level": effort, "ceiling": ceiling, "source": effort_source},
 		"tools": {"advertised_now": advertised, "at_ceiling": at_ceiling, "disabled": Array(disabled)},
+		"context": {
+			"advertised_tools": advertised,
+			"bytes": context_bytes,
+			"approx_tokens": int(context_bytes / 4.0),
+			"ratio_note": "~4 bytes/token, approximate: the byte figures are exact wire bytes, the token figures are bytes/4",
+			"per_tier": per_tier,
+		},
 		"server": {"running": running, "port": port, "auth": ("token on" if auth_on else "off"), "error_echo": echo_state},
 		"security": _security_state(auth_on),
 		"editor": {"script_auto_reload_on_external_change": script_reload, "scene_auto_reload": scene_reload},
@@ -424,6 +456,12 @@ func _doctor(_args: Dictionary) -> Dictionary:
 			"auth": ("handshake on" if server.bridge != null and not str(server.bridge.expected_token).is_empty() else "off"),
 			"port": server.bridge.port if server.bridge != null else 0,
 		},
+		# v1.13 S11: does the game play inside the editor's Game workspace or in its own OS
+		# window? Embedded has been the default since 4.4, so this is the common case, and it
+		# is what decides whether a window-mode assert can ever pass (see the note field).
+		# Not a warning either: embedded is the ENGINE's recommended default, and warning on
+		# the recommended state would make every doctor report not-ok forever.
+		"game_view": RuntimeBridgeScript.game_view_state(),
 		"clients": clients,
 		"warnings": warnings,
 	}}

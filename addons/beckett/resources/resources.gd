@@ -157,4 +157,5 @@ func root_rel(n: Node) -> NodePath:
 
 
 func _json(v: Variant) -> Dictionary:
-	return {"ok": true, "mime": "application/json", "text": JSON.stringify(v, "  ")}
+	# Compact: the reader is a model (or a parser), and the indent was pure token cost.
+	return {"ok": true, "mime": "application/json", "text": JSON.stringify(v)}

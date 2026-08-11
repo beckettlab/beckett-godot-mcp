@@ -18,16 +18,22 @@ var server  # mcp_server node (exposes .bridge)
 
 const MCPJobsScript := preload("res://addons/beckett/core/jobs.gd")  # poll_until (B2)
 
+## Long-edge cap applied to a screenshot call that asked for no framing of its own (1.13).
+## A bare capture of a 1440p game moved 5.5 MB of base64 for a picture the model reads just
+## as well at 1280 px; any explicit sizing argument opts out (see _screenshot).
+const DEFAULT_MAX_DIM := 1280
+
 
 func _register(registry) -> void:
 	registry.register({
 		"name": "screenshot",
-		"description": "Capture an image the agent can see. target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport (PNG only). Token-cost dials (game target, 1.10+): scale=0.5 quarters the pixels; format=jpeg|webp with quality (default 0.8) compresses far below PNG for game frames; region=[x,y,w,h] crops (clamped). annotate=ui draws numbered Set-of-Mark boxes over every visible interactive control and ALSO returns the legend as structured {marks:[{i, path, rect, text?}]} — one glance answers both 'does it look right' and 'what can I click where'; follow up with click_control path=<legend path>. For pure functional state, ui_snapshot is cheaper than any image.",
+		"description": "Capture an image the agent can see. target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport (PNG only). Token-cost dials (game target, 1.10+): scale=0.5 quarters the pixels; max_dim (1.13+) caps the long edge in px, and a call passing NO framing argument defaults to max_dim=1280, so pass scale=1.0, region, max_dim=0, format or save_to to opt out; format=jpeg|webp with quality (default 0.8) compresses far below PNG for game frames; region=[x,y,w,h] crops (clamped). annotate=ui draws numbered Set-of-Mark boxes over every visible interactive control and ALSO returns the legend as structured {marks:[{i, path, rect, text?}]} — one glance answers both 'does it look right' and 'what can I click where'; follow up with click_control path=<legend path>. For pure functional state, ui_snapshot is cheaper than any image.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string", "description": "game | editor"},
 			"region": {"type": "array", "description": "[x,y,w,h] pixel crop"},
 			"scale": {"type": "number", "description": "0.05..1.0 downscale before encode (game target; default 1.0)"},
+			"max_dim": {"type": "integer", "description": "cap the long edge in px (default 1280 on a call with no other framing argument; 0 = no cap)"},
 			"format": {"type": "string", "description": "png (default) | jpeg | webp (game target)"},
 			"quality": {"type": "number", "description": "jpeg/webp quality 0.1..1.0 (default 0.8)"},
 			"annotate": {"type": "string", "description": "'ui' = draw numbered marks on interactive controls + return the legend (game target)"},
@@ -154,9 +160,17 @@ func _screenshot(args: Dictionary) -> Dictionary:
 	if target == "editor":
 		return _editor_screenshot(args)
 	var cmd := {"cmd": "screenshot"}
-	for k in ["region", "scale", "format", "quality", "annotate", "max_marks"]:
+	for k in ["region", "scale", "format", "quality", "annotate", "max_marks", "max_dim"]:
 		if args.has(k):
 			cmd[k] = args[k]
+	# Cap the DEFAULT capture only. Any argument that frames or sizes the frame means the
+	# caller already decided what they want back: scale/region/max_dim are explicit sizing,
+	# format is a deliberate quality call, and save_to is how a baseline gets minted, which
+	# must be native. annotate is deliberately NOT in that list: the cap rides in `scale`
+	# runtime-side, so the marks and their legend stay correct at any factor.
+	if not (args.has("scale") or args.has("region") or args.has("max_dim") \
+			or args.has("format") or args.has("save_to")):
+		cmd["max_dim"] = DEFAULT_MAX_DIM
 	# Big frames + jpeg/webp encode + the annotate walk can push a cold heavy scene
 	# past the 4 s default — same reasoning as ui_snapshot's longer deadline.
 	var r: Dictionary = server.bridge.send_command(cmd, 10000)
@@ -177,12 +191,13 @@ func _screenshot(args: Dictionary) -> Dictionary:
 			desc += " → saved %s" % str(args["save_to"])
 		else:
 			desc += " (save failed: %s)" % saved
+	out["text"] = desc
 	if r.has("marks"):
-		# Legend rides as structuredContent; the serializer renders it as text too, so
-		# the human-readable line moves inside the json for annotated captures.
-		out["json"] = {"screenshot": desc, "marks": r.get("marks", [])}
-	else:
-		out["text"] = desc
+		# Legend rides as structuredContent, beside the plain line. Before v1.13.0 the
+		# serializer's if/elif made these exclusive, so annotated captures had to bury
+		# the readable line inside the json to keep both - and the line is not repeated
+		# in here now that it does not have to be.
+		out["json"] = {"marks": r.get("marks", [])}
 	return out
 
 

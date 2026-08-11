@@ -5,7 +5,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Instantiate a bundled (or project) template into res:// in one call â copies its files and, if the template declares a main_scene, sets and opens it. Generic: a template can be a game starter, a UI screen, a settings menu, a test harness. Project templates under res://.beckett/templates/ override bundled ones. Call with no \u0027template\u0027 to list what\u0027s available.",
+        "description":  "Instantiate a bundled (or project) template into res:// in one call — copies its files and, if the template declares a main_scene, sets and opens it. Generic: a template can be a game starter, a UI screen, a settings menu, a test harness. Project templates under res://.beckett/templates/ override bundled ones. Call with no \u0027template\u0027 to list what\u0027s available.",
         "inputSchema":  {
                             "properties":  {
                                                "force":  {
@@ -51,7 +51,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Run several tool calls in one request, in order. steps = [{tool, args}]. Stops at the first failure (stop_on_error, default true). When a step fails, scene edits made by the batch are rolled back via the editor undo history (rollback, default true) â file/resource writes are not. Use to collapse multi-step authoring (create node â set props â attach script) into one atomic call. ok per step means the handler completed - verify EFFECTS with a trailing read-back step (assert_scene / assert_node_state / a get_*) before trusting a mutation batch.",
+        "description":  "Run several tool calls in one request, in order. steps = [{tool, args}]. Stops at the first failure (stop_on_error, default true). When a step fails, scene edits made by the batch are rolled back via the editor undo history (rollback, default true) — file/resource writes are not. Use to collapse multi-step authoring (create node → set props → attach script) into one atomic call. ok per step means the handler completed - verify EFFECTS with a trailing read-back step (assert_scene / assert_node_state / a get_*) before trusting a mutation batch.",
         "inputSchema":  {
                             "properties":  {
                                                "rollback":  {
@@ -83,7 +83,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Compile-check a C#/.NET Godot project with `dotnet build`, returning structured diagnostics (errors/warnings with file:line:col + CS-code). Isolated build (scratch output) â never touches the editor\u0027s loaded assembly, so it\u0027s safe while the editor is open. Auto-detects the .csproj if omitted. Needs the .NET SDK (already installed for any C# Godot project). First build restores packages (slower); incremental ~1-3s. Use after editing .cs â the GDScript compile-gate (write_script) does NOT cover C#.",
+        "description":  "Compile-check a C#/.NET Godot project with `dotnet build`, returning structured diagnostics (errors/warnings with file:line:col + CS-code). Isolated build (scratch output) — never touches the editor\u0027s loaded assembly, so it\u0027s safe while the editor is open. Auto-detects the .csproj if omitted. Needs the .NET SDK (already installed for any C# Godot project). First build restores packages (slower); incremental ~1-3s. Use after editing .cs — the GDScript compile-gate (write_script) does NOT cover C#.",
         "inputSchema":  {
                             "properties":  {
                                                "configuration":  {
@@ -316,7 +316,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Beckett self-diagnosis â one call answers \u0027why can\u0027t the agent see or do X?\u0027. Reports: edition (Lite/Full), the effort dial vs its ceiling AND where the cap comes from (a beckett/effort= line committed in project.godot silently trims every clone\u0027s tool list), advertised-vs-ceiling tool counts, dock-disabled tools, server/port/auth state, per-client config freshness (does each written config still carry the CURRENT endpoint URL?), and runtime-bridge liveness. Run this FIRST when tools seem missing, counts look wrong, or calls fail unexpectedly.",
+        "description":  "Beckett self-diagnosis — one call answers \u0027why can\u0027t the agent see or do X?\u0027. Reports: edition (Lite/Full), the effort dial vs its ceiling AND where the cap comes from (a beckett/effort= line committed in project.godot silently trims every clone\u0027s tool list), advertised-vs-ceiling tool counts, dock-disabled tools, server/port/auth state, per-client config freshness (does each written config still carry the CURRENT endpoint URL?), runtime-bridge liveness, what this tool surface costs your context (exact tools/list bytes and approximate tokens for every effort tier, measured on THIS install, so you can price a tier before dialing to it), whether the game plays EMBEDDED in the editor\u0027s Game workspace or in its own window (embedded means the Suspend button freezes every runtime call and window-mode asserts can never pass), and whether the editor auto-reloads externally-changed scripts (off = every script this server writes waits behind a modal the human must click). Run this FIRST when tools seem missing, counts look wrong, or calls fail unexpectedly.",
         "inputSchema":  {
                             "properties":  {
 
@@ -354,7 +354,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Search classes by name substring â engine classes AND your project\u0027s own types (GDScript class_name + C# [GlobalClass]). Optional \u0027base\u0027 restricts to subclasses (e.g. base=Node2D). The discovery entry point â pair with describe_class.",
+        "description":  "Search classes by name substring — engine classes AND your project\u0027s own types (GDScript class_name + C# [GlobalClass]). Optional \u0027base\u0027 restricts to subclasses (e.g. base=Node2D). The discovery entry point — pair with describe_class.",
         "inputSchema":  {
                             "properties":  {
                                                "base":  {
@@ -406,7 +406,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Find LIVE nodes in the RUNNING game by type and/or name; returns their paths to feed into runtime_call/runtime_get_property/runtime_set_property. \u0027class\u0027 matches native classes AND custom class_name scripts (is_class alone misses custom nodes â they read as @Node@NN). name=substring on the node name. path=scope root (default scene root). recursive=true. max=cap (default 100).",
+        "description":  "Find LIVE nodes in the RUNNING game by type and/or name; returns their paths to feed into runtime_call/runtime_get_property/runtime_set_property. \u0027class\u0027 matches native classes AND custom class_name scripts (is_class alone misses custom nodes — they read as @Node@NN). name=substring on the node name. path=scope root (default scene root). recursive=true. max=cap (default 100).",
         "inputSchema":  {
                             "properties":  {
                                                "class":  {
@@ -435,7 +435,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Read the RUNNING game\u0027s captured output off the runtime channel (real-time, no file logging): runtime SCRIPT errors WITH stack traces, push_error/push_warning, and print(). This is the play-\u003esee-error-\u003efix signal â the blind spot logs_read (file-based) can\u0027t reliably cover. level=error (default: errors+script+shader) | warning (adds warnings) | all (adds print/stderr). limit=newest N (default 100), filter=substring, clear=true empties the buffer after reading.",
+        "description":  "Read the RUNNING game\u0027s captured output off the runtime channel (real-time, no file logging): runtime SCRIPT errors WITH stack traces, push_error/push_warning, and print(). This is the play-\u003esee-error-\u003efix signal — the blind spot logs_read (file-based) can\u0027t reliably cover. level=error (default: errors+script+shader) | warning (adds warnings) | all (adds print/stderr). limit=newest N (default 100), filter=substring, clear=true empties the buffer after reading.",
         "inputSchema":  {
                             "properties":  {
                                                "clear":  {
@@ -477,7 +477,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics) â measured engine counters, never estimates. target=game (default when a play session is connected) reads the RUNNING game; target=editor reads the editor. duration_s\u003e0 (game only, max 30) SAMPLES OVER TIME: polls every interval_ms (default 100, min 30) while the game keeps running, then returns per-monitor stats {min,avg,p95,max} â e.g. fps.p95 or process_time.max over a stress window; series=true also returns the raw per-sample series (token-heavy). Editor-target sampling is refused honestly: a tool call blocks the editor\u0027s own loop, so an over-time editor read would only measure a stalled editor.",
+        "description":  "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics) — measured engine counters, never estimates. target=game (default when a play session is connected) reads the RUNNING game; target=editor reads the editor. duration_s\u003e0 (game only, max 30) SAMPLES OVER TIME: polls every interval_ms (default 100, min 30) while the game keeps running, then returns per-monitor stats {min,avg,p95,max} — e.g. fps.p95 or process_time.max over a stress window; series=true also returns the raw per-sample series (token-heavy). Editor-target sampling is refused honestly: a tool call blocks the editor\u0027s own loop, so an over-time editor read would only measure a stalled editor.",
         "inputSchema":  {
                             "properties":  {
                                                "duration_s":  {
@@ -557,7 +557,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Dump the live scene tree of the RUNNING game (runtime counterpart of get_scene_tree). SCOPE IT to stay under token limits â a full game tree blows the budget. path=subtree root (name, relative, or absolute /root/...); depth=levels (-1=all); max_nodes (default 250); max_children per node (default 50); collapse=true groups runs of identical leaf siblings (e.g. \u00278x CPUParticles2D\u0027). Returns {tree, node_count, truncated?}.",
+        "description":  "Dump the live scene tree of the RUNNING game (runtime counterpart of get_scene_tree). SCOPE IT to stay under token limits — a full game tree blows the budget. path=subtree root (name, relative, or absolute /root/...); depth=levels (-1=all); max_nodes (default 250); max_children per node (default 50); collapse=true groups runs of identical leaf siblings (e.g. \u00278x CPUParticles2D\u0027). Returns {tree, node_count, truncated?}.",
         "inputSchema":  {
                             "properties":  {
                                                "collapse":  {
@@ -665,7 +665,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Tail Godot\u0027s log FILE (the editor session and any played game log here). For the RUNNING game\u0027s errors/stack traces/prints in REAL TIME, prefer game_logs (runtime channel, no file needed) â this file reader is a fallback and needs file logging enabled (off by default; the result tells you how). Optional: level=\u0027error\u0027|\u0027warning\u0027, \u0027filter\u0027 substring, \u0027lines\u0027 (default 200), \u0027path\u0027 to override.",
+        "description":  "Tail Godot\u0027s log FILE (the editor session and any played game log here). For the RUNNING game\u0027s errors/stack traces/prints in REAL TIME, prefer game_logs (runtime channel, no file needed) — this file reader is a fallback and needs file logging enabled (off by default; the result tells you how). Optional: level=\u0027error\u0027|\u0027warning\u0027, \u0027filter\u0027 substring, \u0027lines\u0027 (default 200), \u0027path\u0027 to override.",
         "inputSchema":  {
                             "properties":  {
                                                "filter":  {
@@ -673,7 +673,7 @@
                                                               "type":  "string"
                                                           },
                                                "level":  {
-                                                             "description":  "error | warning â keep only matching lines",
+                                                             "description":  "error | warning — keep only matching lines",
                                                              "type":  "string"
                                                          },
                                                "lines":  {
@@ -769,7 +769,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Play a scene in the editor. \u0027scene\u0027 (res://) plays a specific scene; current=true plays the open scene; otherwise the project\u0027s main scene. Then wait_until condition=play_started, and logs_read for errors. on_ready=[{path|class|name, property, value}, ...] queues runtime writes that are applied automatically the moment the new game connects â the restart boundary batch_execute cannot cross. Use it to restore camera pose, debug flags or spawn state in ONE call instead of re-issuing them after every restart; wait_until condition=game_connected then reports whether each one landed. Writes whose target is still spawning are retried for a few seconds, then reported as failures rather than dropped.",
+        "description":  "Play a scene in the editor. \u0027scene\u0027 (res://) plays a specific scene; current=true plays the open scene; otherwise the project\u0027s main scene. Then wait_until condition=play_started, and logs_read for errors. on_ready=[{path|class|name, property, value}, ...] queues runtime writes that are applied automatically the moment the new game connects — the restart boundary batch_execute cannot cross. Use it to restore camera pose, debug flags or spawn state in ONE call instead of re-issuing them after every restart; wait_until condition=game_connected then reports whether each one landed. Writes whose target is still spawning are retried for a few seconds, then reported as failures rather than dropped.",
         "inputSchema":  {
                             "properties":  {
                                                "current":  {
@@ -858,7 +858,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Ask WHY a 3D node is or is not on screen, as data instead of pixels. Answers the \u0027the node exists, visible is true, the log is clean, and I still see nothing\u0027 case: visibility chain, world AABB, frustum test, distance vs far plane and visibility range, layers vs the camera cull_mask, per-surface material + cull mode, and the triangle winding the camera actually sees (facing_camera=0 with back-face culling means a reversed index buffer â Godot treats CLOCKWISE winding as the FRONT face). Returns a \u0027warnings\u0027 list naming the stage that broke, or a verdict saying the geometry does reach the camera. USE THIS BEFORE tuning lighting, fog, exposure or palette on anything you cannot clearly see â those are invisible-mesh symptoms far more often than they are art problems.",
+        "description":  "Ask WHY a 3D node is or is not on screen, as data instead of pixels. Answers the \u0027the node exists, visible is true, the log is clean, and I still see nothing\u0027 case: visibility chain, world AABB, frustum test, distance vs far plane and visibility range, layers vs the camera cull_mask, per-surface material + cull mode, and the triangle winding the camera actually sees (facing_camera=0 with back-face culling means a reversed index buffer — Godot treats CLOCKWISE winding as the FRONT face). Returns a \u0027warnings\u0027 list naming the stage that broke, or a verdict saying the geometry does reach the camera. USE THIS BEFORE tuning lighting, fog, exposure or palette on anything you cannot clearly see — those are invisible-mesh symptoms far more often than they are art problems.",
         "inputSchema":  {
                             "properties":  {
                                                "class":  {
@@ -912,7 +912,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Read a property of a node in the RUNNING game. Address by path (node path/name) OR a live selector: class (native or custom class_name) / name / text [+ nth, default 0]. The selector resolves fresh each call â no need to re-fetch volatile @Node@NN paths. Returns the value plus the \u0027resolved\u0027 path that matched.",
+        "description":  "Read a property of a node in the RUNNING game. Address by path (node path/name) OR a live selector: class (native or custom class_name) / name / text [+ nth, default 0]. The selector resolves fresh each call — no need to re-fetch volatile @Node@NN paths. Returns the value plus the \u0027resolved\u0027 path that matched.",
         "inputSchema":  {
                             "properties":  {
                                                "class":  {
@@ -967,7 +967,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Capture an image the agent can see. target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport (PNG only). Token-cost dials (game target, 1.10+): scale=0.5 quarters the pixels; format=jpeg|webp with quality (default 0.8) compresses far below PNG for game frames; region=[x,y,w,h] crops (clamped). annotate=ui draws numbered Set-of-Mark boxes over every visible interactive control and ALSO returns the legend as structured {marks:[{i, path, rect, text?}]} â one glance answers both \u0027does it look right\u0027 and \u0027what can I click where\u0027; follow up with click_control path=\u003clegend path\u003e. For pure functional state, ui_snapshot is cheaper than any image.",
+        "description":  "Capture an image the agent can see. target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport (PNG only). Token-cost dials (game target, 1.10+): scale=0.5 quarters the pixels; max_dim (1.13+) caps the long edge in px, and a call passing NO framing argument defaults to max_dim=1280, so pass scale=1.0, region, max_dim=0, format or save_to to opt out; format=jpeg|webp with quality (default 0.8) compresses far below PNG for game frames; region=[x,y,w,h] crops (clamped). annotate=ui draws numbered Set-of-Mark boxes over every visible interactive control and ALSO returns the legend as structured {marks:[{i, path, rect, text?}]} — one glance answers both \u0027does it look right\u0027 and \u0027what can I click where\u0027; follow up with click_control path=\u003clegend path\u003e. For pure functional state, ui_snapshot is cheaper than any image.",
         "inputSchema":  {
                             "properties":  {
                                                "annotate":  {
@@ -978,6 +978,10 @@
                                                               "description":  "png (default) | jpeg | webp (game target)",
                                                               "type":  "string"
                                                           },
+                                               "max_dim":  {
+                                                               "description":  "cap the long edge in px (default 1280 on a call with no other framing argument; 0 = no cap)",
+                                                               "type":  "integer"
+                                                           },
                                                "max_marks":  {
                                                                  "description":  "cap on annotate marks (default 40)",
                                                                  "type":  "integer"
@@ -991,7 +995,7 @@
                                                               "type":  "array"
                                                           },
                                                "save_to":  {
-                                                               "description":  "also write the frame to this path (res://, user:// or absolute) so later captures can be diffed against it â the agent still gets the image inline",
+                                                               "description":  "also write the frame to this path (res://, user:// or absolute) so later captures can be diffed against it — the agent still gets the image inline",
                                                                "type":  "string"
                                                            },
                                                "scale":  {
@@ -1198,7 +1202,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "One-call UI snapshot of the RUNNING game: every visible Control as structured data â path, class (+custom class_name), text, rect [x,y,w,h] (gui space, ints), and the semantic state pixels can\u0027t tell you: disabled, focused, checked (toggles), value + range (sliders/spin/progress), selected (+selected_text / tabs / item_count), editable / placeholder / secret (text fields), tooltip, mouse_ignore. Interactive controls also get honesty flags: clipped (scrolled out of view) and occluded_by (another control would swallow the click â popup/modal/overlay). Top level: focus owner, open popup/dialog windows (exclusive = modal), viewport size, and a stable content \u0027hash\u0027 â pass it back as since_hash and an unchanged UI returns {unchanged:true} for ~free. For functional UI checks this replaces the screenshot + find_ui_elements + get_control_rect + runtime_get_property round-trips (keep screenshot for VISUAL/render bugs). Walks the whole SceneTree root (autoload HUD layers and popups included); scope with path=, slim with interactive_only=true, cap with max_nodes (default 400).",
+        "description":  "One-call UI snapshot of the RUNNING game: every visible Control as structured data — path, class (+custom class_name), text, rect [x,y,w,h] (gui space, ints), and the semantic state pixels can\u0027t tell you: disabled, focused, checked (toggles), value + range (sliders/spin/progress), selected (+selected_text / tabs / item_count), editable / placeholder / secret (text fields), tooltip, mouse_ignore. Interactive controls also get honesty flags: clipped (scrolled out of view) and occluded_by (another control would swallow the click — popup/modal/overlay). Top level: focus owner, open popup/dialog windows (exclusive = modal), viewport size, and a stable content \u0027hash\u0027 — pass it back as since_hash and an unchanged UI returns {unchanged:true} for ~free. For functional UI checks this replaces the screenshot + find_ui_elements + get_control_rect + runtime_get_property round-trips (keep screenshot for VISUAL/render bugs). Walks the whole SceneTree root (autoload HUD layers and popups included); scope with path=, slim with interactive_only=true, cap with max_nodes (default 400).",
         "inputSchema":  {
                             "properties":  {
                                                "interactive_only":  {
@@ -1218,7 +1222,7 @@
                                                             "type":  "string"
                                                         },
                                                "since_hash":  {
-                                                                  "description":  "hash from a previous call â unchanged UI returns {unchanged:true} instead of the payload",
+                                                                  "description":  "hash from a previous call — unchanged UI returns {unchanged:true} instead of the payload",
                                                                   "type":  "string"
                                                               }
                                            },
@@ -1232,14 +1236,14 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Parse/compile GDScript WITHOUT writing it. Pass \u0027content\u0027 (source) or \u0027path\u0027 (res://). Returns whether it compiles â use before write_script to catch hallucinated APIs. Scripts whose class_name is already registered validate correctly (v1.9; the old false \u0027hides a global class\u0027 error is fixed); when validating \u0027content\u0027 destined for an existing file, ALSO pass its \u0027path\u0027 so a real cross-file class_name duplicate is still reported as the error it is.",
+        "description":  "Parse/compile GDScript WITHOUT writing it. Pass \u0027content\u0027 (source) or \u0027path\u0027 (res://). Returns whether it compiles — use before write_script to catch hallucinated APIs. Scripts whose class_name is already registered validate correctly (v1.9; the old false \u0027hides a global class\u0027 error is fixed); when validating \u0027content\u0027 destined for an existing file, ALSO pass its \u0027path\u0027 so a real cross-file class_name duplicate is still reported as the error it is.",
         "inputSchema":  {
                             "properties":  {
                                                "content":  {
                                                                "type":  "string"
                                                            },
                                                "path":  {
-                                                            "description":  "res:// path â the file to validate, or (with content) the file the content is destined for",
+                                                            "description":  "res:// path — the file to validate, or (with content) the file the content is destined for",
                                                             "type":  "string"
                                                         }
                                            },
@@ -1276,7 +1280,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Wait for a condition. Blocks the editor at most ~1.5 s per call â longer would stall the editor\u0027s own game-launch pipeline and background jobs (they need main-thread frames). If not met yet it answers \u0027not yet\u0027: just call it again. condition = play_started | play_stopped | game_connected | seconds:N | file_exists:res://path.",
+        "description":  "Wait for a condition. Blocks the editor at most ~1.5 s per call — longer would stall the editor\u0027s own game-launch pipeline and background jobs (they need main-thread frames). If not met yet it answers \u0027not yet\u0027: just call it again. condition = play_started | play_stopped | game_connected | seconds:N | file_exists:res://path.",
         "inputSchema":  {
                             "properties":  {
                                                "condition":  {
@@ -1299,7 +1303,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Write a text file under res:// (or user://), path-traversal guarded. Refreshes the editor filesystem.",
+        "description":  "Write a text file under res:// (or user://), path-traversal guarded. Refreshes the editor filesystem. If the file is a .tscn the editor currently has OPEN, the result says so: Godot prompts the human to reload it and until they do the editor still holds the old version (scripts have no such problem, the editor auto-reloads them). Set beckett/auto_reload_scenes=true to reload open scenes automatically. Prefer the scene tools (create_node / set_property / save_scene) over writing .tscn text at all - editor-side edits never go stale.",
         "inputSchema":  {
                             "properties":  {
                                                "content":  {
@@ -1323,7 +1327,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Write a GDScript (or other text, e.g. .cs) file under res://. GDScript is validated first by default â refuses code that doesn\u0027t compile; non-.gd files (C#, configâ¦) are written as-is (use build_csharp to compile-check C#). Set validate=false to force.",
+        "description":  "Write a GDScript (or other text, e.g. .cs) file under res://. GDScript is validated first by default — refuses code that doesn\u0027t compile; non-.gd files (C#, config…) are written as-is (use build_csharp to compile-check C#). Set validate=false to force.",
         "inputSchema":  {
                             "properties":  {
                                                "content":  {

@@ -9,6 +9,9 @@ class_name BeckettReflectionTools
 const Reflect := preload("res://addons/beckett/core/reflection.gd")
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")
 
+## Cap on names harvested for a "did you mean" — a whole big scene tree, and no more.
+const SUGGEST_CANDIDATE_MAX := 2000
+
 var server  # mcp_server node (for get_undo_redo); set by the caller
 
 
@@ -205,9 +208,14 @@ func _describe_object(args: Dictionary) -> Dictionary:
 				}}
 		if ClassDB.class_exists(target) or not _global_class_entry(target).is_empty():
 			return _describe_class({"class": target, "inherited": args.get("inherited", false)})
+		var how := "Use a res:// path, a node name/path in the OPEN scene, a class name, or (while the game is running) a live node path such as /root/Main/Player."
+		# This miss path is reached for RUNTIME targets too (the branch above), so the
+		# suggestion has to come from the tree the agent is actually driving — naming the
+		# edited scene's nodes mid-playtest points at the wrong world entirely.
+		var near := _did_you_mean_target(target, true)
 		return {
 			"error": "Could not resolve target: %s" % target,
-			"suggestion": "Use a res:// path, a node name/path in the OPEN scene, a class name, or (while the game is running) a live node path such as /root/Main/Player.",
+			"suggestion": ("%s %s" % [near, how]) if not near.is_empty() else how,
 		}
 	return {"json": {
 		"target": target,
@@ -223,7 +231,7 @@ func _set_property(args: Dictionary) -> Dictionary:
 		return {"error": "value is required"}
 	var obj := Reflect.resolve(target)
 	if obj == null:
-		return {"error": "Could not resolve target: %s" % target}
+		return _unresolved(target)
 	if not _has_property(obj, prop):
 		return {"error": "%s has no property '%s'" % [obj.get_class(), prop],
 			"suggestion": "Call describe_object target=%s (or describe_class) to see valid properties." % target}
@@ -244,7 +252,7 @@ func _call_method(args: Dictionary) -> Dictionary:
 	var method := str(args.get("method", ""))
 	var obj := Reflect.resolve(target)
 	if obj == null:
-		return {"error": "Could not resolve target: %s" % target}
+		return _unresolved(target)
 	if not obj.has_method(method):
 		return {"error": "%s has no method '%s'" % [obj.get_class(), method],
 			"suggestion": "Call find_methods query=%s class=%s to discover callable methods." % [method, obj.get_class()]}
@@ -332,9 +340,83 @@ func _did_you_mean(cls: String) -> String:
 		var nm := String(e.get("class", ""))
 		if not nm.is_empty() and nm.to_lower().contains(q) and not hits.has(nm):
 			hits.append(nm)
+	# Substring only finds names that CONTAIN the query, so a typo ("Sprit2D") has zero hits
+	# and used to fall through to the generic advice. Edit distance catches exactly that.
+	# Order matters: substring first, so a prefix query like "Light" still lists the family.
+	if hits.is_empty():
+		hits = Reflect.nearest(cls, _class_name_pool(), 5)
 	if hits.is_empty():
 		return "Use find_classes to search for the right class name."
 	return "Did you mean: %s" % ", ".join(hits)
+
+
+## Every class name a describe_class query could legitimately have meant: engine classes
+## plus the project's own global types. Built only on a miss.
+func _class_name_pool() -> Array:
+	var pool: Array = []
+	for c in ClassDB.get_class_list():
+		pool.append(String(c))
+	for e in _global_classes():
+		var nm := String(e.get("class", ""))
+		if not nm.is_empty():
+			pool.append(nm)
+	return pool
+
+
+## "Did you mean ...?" for a target that did not resolve, or "" when nothing is close.
+## The candidate SCOPE is the CALLER's scope, never "whatever is reachable": describe_object
+## also answers for the running game, so its misses match against the live tree, while
+## set_property / call_method only ever touch the edited scene and would send the agent after
+## a node they cannot address if they borrowed the game's names.
+func _did_you_mean_target(target: String, from_runtime: bool) -> String:
+	# A res:// / uid:// miss is a load failure, not a mistyped node name — say nothing.
+	if target.begins_with("res://") or target.begins_with("uid://"):
+		return ""
+	var leaf := target.get_file()  # "/root/Main/Playr" -> "Playr"; a bare name is unchanged
+	if leaf.is_empty():
+		return ""
+	var runtime: bool = from_runtime and server != null and server.bridge != null and server.bridge.is_game_connected()
+	var by_leaf: Dictionary = {}  # leaf name -> the exact string to pass back
+	if runtime:
+		var r: Dictionary = server.bridge.send_command({"cmd": "find", "recursive": true, "max": SUGGEST_CANDIDATE_MAX})
+		for e in r.get("nodes", []):  # absent on a failed find, which just means no suggestion
+			var p := str((e as Dictionary).get("path", ""))
+			if not p.is_empty():
+				by_leaf[p.get_file()] = p
+	else:
+		var root := EditorInterface.get_edited_scene_root()
+		if root == null:
+			return ""
+		by_leaf[String(root.name)] = String(root.name)
+		_collect_node_names(root, by_leaf)
+	var hits: Array = Reflect.nearest(leaf, by_leaf.keys(), 3)
+	if hits.is_empty():
+		return ""
+	var names: Array = []
+	for h in hits:
+		names.append(str(by_leaf[h]))
+	var scope := "live nodes in the RUNNING game" if runtime else "nodes in the OPEN scene"
+	return "Did you mean %s? (%s)" % [", ".join(names), scope]
+
+
+## Every node name under the edited scene root, keyed by itself: Reflect.resolve finds a node
+## by bare name anywhere in the tree, so the name IS the string to hand back.
+func _collect_node_names(n: Node, into: Dictionary) -> void:
+	for c in n.get_children():
+		if into.size() >= SUGGEST_CANDIDATE_MAX:
+			return
+		into[String(c.name)] = String(c.name)
+		_collect_node_names(c, into)
+
+
+## The shared "target did not resolve" error for the EDITOR-scoped tools, carrying a nearby
+## name when there is one.
+func _unresolved(target: String) -> Dictionary:
+	var out := {"error": "Could not resolve target: %s" % target}
+	var near := _did_you_mean_target(target, false)
+	if not near.is_empty():
+		out["suggestion"] = near
+	return out
 
 
 ## User-defined global classes (GDScript class_name + C# [GlobalClass]) — the surface

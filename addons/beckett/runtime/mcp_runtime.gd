@@ -1120,7 +1120,11 @@ func _screenshot(msg: Dictionary = {}) -> Dictionary:
 	if rg is Array and (rg as Array).size() >= 4:
 		off = Vector2(float(clampi(int(rg[0]), 0, full_w - 1)), float(clampi(int(rg[1]), 0, full_h - 1)))
 	img = _maybe_crop(img, msg)
-	var scale := clampf(float(msg.get("scale", 1.0)), 0.05, 1.0)
+	# max_dim is folded INTO `scale` rather than applied as a second resize because `scale` is
+	# not only the resize factor: it is what annotate_image() draws the Set-of-Mark boxes with
+	# and what the legend remap below reports rects in. Capping anywhere else would leave the
+	# boxes and the rects describing a picture the caller never received.
+	var scale := _capped_scale(float(msg.get("scale", 1.0)), img.get_width(), img.get_height(), int(msg.get("max_dim", 0)))
 	if scale < 1.0:
 		img.resize(maxi(1, roundi(img.get_width() * scale)), maxi(1, roundi(img.get_height() * scale)), Image.INTERPOLATE_BILINEAR)
 	if not marks_list.is_empty():
@@ -1145,13 +1149,15 @@ func _screenshot(msg: Dictionary = {}) -> Dictionary:
 		data = img.save_png_to_buffer()
 	var out := {"ok": true, "data": Marshalls.raw_to_base64(data), "mime": mime,
 		"w": img.get_width(), "h": img.get_height(), "full_w": full_w, "full_h": full_h}
-	if mime == "image/png":
-		out["png"] = out["data"]  # legacy key — playtest/compare baseline readers use it
 	if note != "":
 		out["note"] = note
 	if annotate:
-		# Legend rects are remapped into FINAL image pixels so a follow-up region= crop
-		# or a click plan can reuse them directly against the returned picture.
+		# Legend rects are remapped into FINAL image pixels, so a reported rect and the box
+		# drawn for it are the same numbers — including when max_dim capped the frame. They
+		# are PICTURE coordinates, not input coordinates: drive a mark by its path
+		# (click_control). A follow-up region= is measured against the FULL frame instead, so
+		# a legend rect has to be scaled back by full_w/w (region_w/w when this call cropped)
+		# and re-offset by the region origin before it can be reused there.
 		var legend: Array = []
 		for m in marks_list:
 			var md := m as Dictionary
@@ -1180,6 +1186,19 @@ func _ui_audit(msg: Dictionary) -> Dictionary:
 		if scope == null:
 			return {"ok": false, "error": "node not found: %s" % p}
 	return UiInspect.audit(vp, get_tree().root, _root(), scope, msg)
+
+
+## The one resize factor a capture uses: the caller's `scale` dial, reduced further so the
+## long edge of a WxH frame lands inside max_dim (0 or less = no cap). Static and named so
+## the headless unit suite can pin it — annotation and the legend both ride on this number.
+static func _capped_scale(scale: float, w: int, h: int, max_dim: int) -> float:
+	var s := clampf(scale, 0.05, 1.0)
+	if max_dim <= 0:
+		return s
+	var long_edge := maxi(w, h)
+	if long_edge <= max_dim:
+		return s
+	return minf(s, float(max_dim) / float(long_edge))
 
 
 ## Crop to region=[x,y,w,h] (pixels, clamped to bounds) to save tokens; returns the

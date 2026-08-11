@@ -66,6 +66,81 @@ static func _resolve_property_walk(root: Node, target: String) -> Object:
 	return cur
 
 
+## Longer than any real node, class or property name — bounds the DP row on a hostile query.
+const NEAREST_MAX_QUERY := 64
+## Ceiling on candidates compared. A big scene tree, or the whole ClassDB (968 classes on a
+## headless 4.4.1, more in the editor) — both fit, so nothing useful is silently dropped.
+const NEAREST_MAX_CANDIDATES := 4000
+
+
+## Candidates within one typo per four query characters, closest first, at most `limit`.
+## Empty when nothing is close: a confident wrong name costs the agent more than a miss.
+## Matching is case-insensitive, so a pure case slip ("sprite2d" for "Sprite2D") scores 0
+## and wins — that is the commonest miss, not an exotic one.
+## The (query, candidates, limit) shape is deliberate: an engine-side fuzzy matcher can
+## replace the body without touching a call site. Godot's FuzzySearch is not exposed to
+## script on 4.4.1, 4.6.2 or 4.7 (measured), so there is nothing to gate on today.
+static func nearest(query: String, candidates: Array, limit: int = 3) -> Array:
+	var q := query.strip_edges().to_lower()
+	if q.is_empty() or q.length() > NEAREST_MAX_QUERY or candidates.is_empty() or limit <= 0:
+		return []
+	var budget: int = maxi(1, q.length() / 4)
+	# Bucket by distance instead of sorting: the budget is tiny, and this keeps the order
+	# stable (closest first, input order within a distance) without a comparator.
+	var buckets: Array = []
+	for _i in range(budget + 1):
+		buckets.append([])
+	var seen: Dictionary = {}
+	var n: int = mini(candidates.size(), NEAREST_MAX_CANDIDATES)
+	for i in range(n):
+		var c := str(candidates[i])
+		if c.is_empty() or seen.has(c):
+			continue
+		seen[c] = true
+		var lc := c.to_lower()
+		# A length gap alone can blow the budget — skip the DP for those, which is most of
+		# a real tree or class list.
+		if absi(lc.length() - q.length()) > budget:
+			continue
+		var d := _lev(q, lc)
+		if d <= budget:
+			buckets[d].append(c)
+	var out: Array = []
+	for d in range(buckets.size()):
+		for c in buckets[d]:
+			out.append(c)
+			if out.size() >= limit:
+				return out
+	return out
+
+
+## Levenshtein distance, two rows instead of a full matrix. Pure GDScript on purpose:
+## it behaves identically on every engine from 4.0 up, and it only runs on a miss path.
+static func _lev(a: String, b: String) -> int:
+	var la := a.length()
+	var lb := b.length()
+	if la == 0:
+		return lb
+	if lb == 0:
+		return la
+	var prev := PackedInt32Array()
+	prev.resize(lb + 1)
+	var cur := PackedInt32Array()
+	cur.resize(lb + 1)
+	for j in range(lb + 1):
+		prev[j] = j
+	for i in range(1, la + 1):
+		cur[0] = i
+		var ca := a.unicode_at(i - 1)
+		for j in range(1, lb + 1):
+			var cost := 0 if ca == b.unicode_at(j - 1) else 1
+			cur[j] = mini(mini(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost)
+		var swap := prev
+		prev = cur
+		cur = swap
+	return prev[lb]
+
+
 ## Human-readable signature for a class_get_method_list / get_method_list entry.
 static func method_signature(m: Dictionary) -> String:
 	var arg_strs: Array = []

@@ -28,6 +28,12 @@ var port: int = 0
 const _HEADER_LIMIT := 64 * 1024
 const _BODY_LIMIT := 16 * 1024 * 1024
 
+# JSON is UTF-8 by definition (RFC 8259), so the charset is redundant for a client that
+# follows the spec and load-bearing for one that does not: PowerShell's Invoke-RestMethod
+# falls back to ISO-8859-1 when no charset is declared, which is how every em-dash in
+# Beckett's tool descriptions reached the published glama/tools.json as mojibake.
+const _JSON_CONTENT_TYPE := "application/json; charset=utf-8"
+
 # Editor responsiveness: when unfocused, the editor raises its main-loop sleep
 # (interface/editor/unfocused_low_processor_mode_sleep_usec, default 50000+ µs) —
 # exactly the situation when an agent drives it from a terminal. Every request then
@@ -262,7 +268,7 @@ func _respond(peer: StreamPeerTCP, resp: Dictionary) -> void:
 	var body_bytes := body.to_utf8_buffer()
 
 	if not headers.has("Content-Type") and body_bytes.size() > 0:
-		headers["Content-Type"] = "application/json"
+		headers["Content-Type"] = _JSON_CONTENT_TYPE
 	headers["Content-Length"] = str(body_bytes.size())
 	headers["Connection"] = "close"
 
