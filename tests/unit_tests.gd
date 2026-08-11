@@ -285,8 +285,13 @@ func _t_instructions_skill_count() -> void:
 		for f in dir.get_files():
 			if f.ends_with(".md"):
 				on_disk += 1
-	_ok(on_disk > 0, "bundled skills directory is readable (%d packs)" % on_disk)
-	_ok(s._skill_pack_count() == on_disk, "_skill_pack_count matches the .md files on disk")
+	_ok(s._skill_pack_count() == on_disk, "_skill_pack_count matches the .md files on disk (%d)" % on_disk)
+	if on_disk == 0:
+		# Lite: pack.ps1 trims addons/beckett/skills entirely, and the Lite instructions
+		# never quote a pack count. Same shape as the playtest groups above.
+		print("[unit] instructions pack-count assert skipped (Lite build: skills trimmed)")
+		s.free()
+		return
 	# _max_effort defaults to 6, so a bare server renders the Full instructions.
 	var instr := s._instructions()
 	_ok(instr.contains("%d knowledge packs" % on_disk), "instructions quote the real pack count (%d)" % on_disk)
