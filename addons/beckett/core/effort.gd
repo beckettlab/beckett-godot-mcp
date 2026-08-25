@@ -48,6 +48,10 @@ const _DELTA := {
 		# self-diagnosis (v1.9): must survive ANY effort cap — it is how a capped
 		# surface explains itself (the 1.7.0 "42-tool trap" postmortem)
 		"doctor",
+		# the long form of every trimmed description (v1.14 context diet). Same rule as
+		# doctor: the tool that explains a capped surface cannot itself be capped away,
+		# and every short description points at it.
+		"help",
 	],
 	# L2 — author static content: the core editor authoring loop.
 	2: [

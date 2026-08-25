@@ -323,7 +323,64 @@
                                            },
                             "type":  "object"
                         },
-        "name":  "doctor"
+        "name":  "doctor",
+        "outputSchema":  {
+                             "properties":  {
+                                                "beckett_version":  {
+                                                                        "type":  "string"
+                                                                    },
+                                                "clients":  {
+                                                                "type":  "array"
+                                                            },
+                                                "context":  {
+                                                                "type":  "object"
+                                                            },
+                                                "edition":  {
+                                                                "type":  "string"
+                                                            },
+                                                "editor":  {
+                                                               "type":  "object"
+                                                           },
+                                                "effort":  {
+                                                               "type":  "object"
+                                                           },
+                                                "game_bridge":  {
+                                                                    "type":  "object"
+                                                                },
+                                                "game_view":  {
+                                                                  "type":  "object"
+                                                              },
+                                                "godot_version":  {
+                                                                      "type":  "string"
+                                                                  },
+                                                "ok":  {
+                                                           "type":  "boolean"
+                                                       },
+                                                "security":  {
+                                                                 "type":  "object"
+                                                             },
+                                                "server":  {
+                                                               "type":  "object"
+                                                           },
+                                                "tools":  {
+                                                              "type":  "object"
+                                                          },
+                                                "warnings":  {
+                                                                 "type":  "array"
+                                                             }
+                                            },
+                             "required":  [
+                                              "ok",
+                                              "edition",
+                                              "beckett_version",
+                                              "godot_version",
+                                              "effort",
+                                              "tools",
+                                              "context",
+                                              "server"
+                                          ],
+                             "type":  "object"
+                         }
     },
     {
         "annotations":  {
@@ -477,7 +534,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics) — measured engine counters, never estimates. target=game (default when a play session is connected) reads the RUNNING game; target=editor reads the editor. duration_s\u003e0 (game only, max 30) SAMPLES OVER TIME: polls every interval_ms (default 100, min 30) while the game keeps running, then returns per-monitor stats {min,avg,p95,max} — e.g. fps.p95 or process_time.max over a stress window; series=true also returns the raw per-sample series (token-heavy). Editor-target sampling is refused honestly: a tool call blocks the editor\u0027s own loop, so an over-time editor read would only measure a stalled editor.",
+        "description":  "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics) — measured engine counters, never estimates. target=game (default with a play session) | editor. duration_s\u003e0 samples over time and returns per-monitor {min, avg, p95, max}. Sampling rules and why an editor-target window is refused: help(tool=\"get_performance_monitors\").",
         "inputSchema":  {
                             "properties":  {
                                                "duration_s":  {
@@ -499,7 +556,36 @@
                                            },
                             "type":  "object"
                         },
-        "name":  "get_performance_monitors"
+        "name":  "get_performance_monitors",
+        "outputSchema":  {
+                             "properties":  {
+                                                "interval_ms":  {
+                                                                    "type":  "integer"
+                                                                },
+                                                "monitors":  {
+                                                                 "type":  "object"
+                                                             },
+                                                "samples":  {
+                                                                "type":  "integer"
+                                                            },
+                                                "series":  {
+                                                               "type":  "array"
+                                                           },
+                                                "stats":  {
+                                                              "type":  "object"
+                                                          },
+                                                "target":  {
+                                                               "type":  "string"
+                                                           },
+                                                "window_ms":  {
+                                                                  "type":  "integer"
+                                                              }
+                                            },
+                             "required":  [
+                                              "target"
+                                          ],
+                             "type":  "object"
+                         }
     },
     {
         "annotations":  {
@@ -594,6 +680,25 @@
                             "type":  "object"
                         },
         "name":  "get_scene_tree"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
+                            "idempotentHint":  true,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  true
+                        },
+        "description":  "Full syntax for one tool - the argument catalogue and worked examples that descriptions no longer carry. Call help(tool=\"NAME\") before a call you are unsure of; bare help() lists what is documented.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "tool":  {
+                                                            "description":  "tool name; omit for the index",
+                                                            "type":  "string"
+                                                        }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "help"
     },
     {
         "annotations":  {
@@ -769,14 +874,14 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Play a scene in the editor. \u0027scene\u0027 (res://) plays a specific scene; current=true plays the open scene; otherwise the project\u0027s main scene. Then wait_until condition=play_started, and logs_read for errors. on_ready=[{path|class|name, property, value}, ...] queues runtime writes that are applied automatically the moment the new game connects — the restart boundary batch_execute cannot cross. Use it to restore camera pose, debug flags or spawn state in ONE call instead of re-issuing them after every restart; wait_until condition=game_connected then reports whether each one landed. Writes whose target is still spawning are retried for a few seconds, then reported as failures rather than dropped.",
+        "description":  "Play a scene in the editor. \u0027scene\u0027 (res://) plays a specific scene; current=true plays the open scene; otherwise the project\u0027s main scene. Then wait_until condition=play_started, and logs_read for errors. on_ready queues runtime property writes applied the moment the new game connects — the restart boundary batch_execute cannot cross. on_ready shape and its retry behaviour: help(tool=\"play_scene\").",
         "inputSchema":  {
                             "properties":  {
                                                "current":  {
                                                                "type":  "boolean"
                                                            },
                                                "on_ready":  {
-                                                                "description":  "property writes applied once the game connects: [{path, property, value}, ...] (path may be a name/class selector, same as runtime_set_property)",
+                                                                "description":  "property writes applied once the game connects (shape in help)",
                                                                 "type":  "array"
                                                             },
                                                "scene":  {
@@ -858,7 +963,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Ask WHY a 3D node is or is not on screen, as data instead of pixels. Answers the \u0027the node exists, visible is true, the log is clean, and I still see nothing\u0027 case: visibility chain, world AABB, frustum test, distance vs far plane and visibility range, layers vs the camera cull_mask, per-surface material + cull mode, and the triangle winding the camera actually sees (facing_camera=0 with back-face culling means a reversed index buffer — Godot treats CLOCKWISE winding as the FRONT face). Returns a \u0027warnings\u0027 list naming the stage that broke, or a verdict saying the geometry does reach the camera. USE THIS BEFORE tuning lighting, fog, exposure or palette on anything you cannot clearly see — those are invisible-mesh symptoms far more often than they are art problems.",
+        "description":  "Ask WHY a 3D node is or is not on screen, as data instead of pixels — the \"node exists, visible is true, log is clean, and I still see nothing\" case. Returns a \u0027warnings\u0027 list naming the stage that broke, or a verdict that the geometry does reach the camera. USE THIS BEFORE tuning lighting, fog, exposure or palette on anything you cannot clearly see. The stages it checks: help(tool=\"render_probe\").",
         "inputSchema":  {
                             "properties":  {
                                                "class":  {
@@ -967,13 +1072,17 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Capture an image the agent can see. target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport (PNG only). Token-cost dials (game target, 1.10+): scale=0.5 quarters the pixels; max_dim (1.13+) caps the long edge in px, and a call passing NO framing argument defaults to max_dim=1280, so pass scale=1.0, region, max_dim=0, format or save_to to opt out; format=jpeg|webp with quality (default 0.8) compresses far below PNG for game frames; region=[x,y,w,h] crops (clamped). annotate=ui draws numbered Set-of-Mark boxes over every visible interactive control and ALSO returns the legend as structured {marks:[{i, path, rect, text?}]} — one glance answers both \u0027does it look right\u0027 and \u0027what can I click where\u0027; follow up with click_control path=\u003clegend path\u003e. For pure functional state, ui_snapshot is cheaper than any image.",
+        "description":  "Capture an image the agent can see. target=game (default) captures the RUNNING game; target=editor captures the 2D editor viewport (PNG only). A bare call caps the long edge at max_dim=1280 — pass scale, region, max_dim=0, format or save_to to opt out. annotate=ui draws numbered Set-of-Mark boxes and returns the legend. For pure functional state ui_snapshot is cheaper. Token dials + delivery: help(tool=\"screenshot\").",
         "inputSchema":  {
                             "properties":  {
                                                "annotate":  {
                                                                 "description":  "\u0027ui\u0027 = draw numbered marks on interactive controls + return the legend (game target)",
                                                                 "type":  "string"
                                                             },
+                                               "deliver":  {
+                                                               "description":  "inline (default) | link (a capture:// resource_link, no base64) | both",
+                                                               "type":  "string"
+                                                           },
                                                "format":  {
                                                               "description":  "png (default) | jpeg | webp (game target)",
                                                               "type":  "string"
@@ -995,7 +1104,7 @@
                                                               "type":  "array"
                                                           },
                                                "save_to":  {
-                                                               "description":  "also write the frame to this path (res://, user:// or absolute) so later captures can be diffed against it — the agent still gets the image inline",
+                                                               "description":  "also write the frame to this path (res://, user:// or absolute); mints a diff baseline",
                                                                "type":  "string"
                                                            },
                                                "scale":  {
@@ -1202,11 +1311,11 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "One-call UI snapshot of the RUNNING game: every visible Control as structured data — path, class (+custom class_name), text, rect [x,y,w,h] (gui space, ints), and the semantic state pixels can\u0027t tell you: disabled, focused, checked (toggles), value + range (sliders/spin/progress), selected (+selected_text / tabs / item_count), editable / placeholder / secret (text fields), tooltip, mouse_ignore. Interactive controls also get honesty flags: clipped (scrolled out of view) and occluded_by (another control would swallow the click — popup/modal/overlay). Top level: focus owner, open popup/dialog windows (exclusive = modal), viewport size, and a stable content \u0027hash\u0027 — pass it back as since_hash and an unchanged UI returns {unchanged:true} for ~free. For functional UI checks this replaces the screenshot + find_ui_elements + get_control_rect + runtime_get_property round-trips (keep screenshot for VISUAL/render bugs). Walks the whole SceneTree root (autoload HUD layers and popups included); scope with path=, slim with interactive_only=true, cap with max_nodes (default 400).",
+        "description":  "One-call UI snapshot of the RUNNING game: every visible Control as structured data — path, class, text, rect, and the semantic state pixels cannot tell you (disabled, focused, checked, value, selected, editable, tooltip) plus per-control honesty flags. For FUNCTIONAL UI checks this replaces screenshot + find_ui_elements + get_control_rect + runtime_get_property; keep screenshot for visual/render bugs. Every field, and the free since_hash re-read: help(tool=\"ui_snapshot\").",
         "inputSchema":  {
                             "properties":  {
                                                "interactive_only":  {
-                                                                        "description":  "only buttons/sliders/text fields/lists/tabs + focusables (default false: all visible controls, labels included)",
+                                                                        "description":  "only buttons/sliders/fields/lists/tabs + focusables (default false = all visible controls)",
                                                                         "type":  "boolean"
                                                                     },
                                                "max_nodes":  {

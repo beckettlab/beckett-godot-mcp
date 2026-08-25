@@ -17,6 +17,7 @@ class_name BeckettRuntimeObserveTools
 var server  # mcp_server node (exposes .bridge)
 
 const MCPJobsScript := preload("res://addons/beckett/core/jobs.gd")  # poll_until (B2)
+const CapturesScript := preload("res://addons/beckett/core/captures.gd")  # deliver=link (v1.14)
 
 ## Long-edge cap applied to a screenshot call that asked for no framing of its own (1.13).
 ## A bare capture of a 1440p game moved 5.5 MB of base64 for a picture the model reads just
@@ -27,7 +28,8 @@ const DEFAULT_MAX_DIM := 1280
 func _register(registry) -> void:
 	registry.register({
 		"name": "screenshot",
-		"description": "Capture an image the agent can see. target=game (default) screenshots the RUNNING game via the runtime channel; target=editor captures the 2D editor viewport (PNG only). Token-cost dials (game target, 1.10+): scale=0.5 quarters the pixels; max_dim (1.13+) caps the long edge in px, and a call passing NO framing argument defaults to max_dim=1280, so pass scale=1.0, region, max_dim=0, format or save_to to opt out; format=jpeg|webp with quality (default 0.8) compresses far below PNG for game frames; region=[x,y,w,h] crops (clamped). annotate=ui draws numbered Set-of-Mark boxes over every visible interactive control and ALSO returns the legend as structured {marks:[{i, path, rect, text?}]} — one glance answers both 'does it look right' and 'what can I click where'; follow up with click_control path=<legend path>. For pure functional state, ui_snapshot is cheaper than any image.",
+		"description": "Capture an image the agent can see. target=game (default) captures the RUNNING game; target=editor captures the 2D editor viewport (PNG only). A bare call caps the long edge at max_dim=1280 — pass scale, region, max_dim=0, format or save_to to opt out. annotate=ui draws numbered Set-of-Mark boxes and returns the legend. For pure functional state ui_snapshot is cheaper. Token dials + delivery: help(tool=\"screenshot\").",
+		"help": "Token-cost dials (game target):\n  scale=0.5        quarters the pixels\n  max_dim=N        caps the LONG EDGE in px. A call passing NO framing argument defaults to max_dim=1280, because a bare 1440p capture was measured at 5,583,634 bytes of result body for a picture the model reads just as well smaller. Opt out with scale, region, max_dim=0, format or save_to — any of those means you already decided what you wanted back.\n  format=jpeg|webp with quality (default 0.8) compresses far below PNG on a game frame\n  region=[x, y, w, h]  crops, clamped to the frame\n\nannotate=ui draws numbered Set-of-Mark boxes over every visible interactive control AND returns the legend as structured {marks:[{i, path, rect, text?}]}. One glance answers both \"does it look right\" and \"what can I click where\"; follow up with click_control path=<the legend path>. The 1280 cap is folded into the same factor that draws the boxes, so an annotated capture stays pixel-accurate at any size.\n\ndeliver (1.14) chooses the CHANNEL, not the framing:\n  inline (default)  the image rides in the result, as it always has\n  link              the frame is parked in the capture store and you get a capture:// resource_link plus the absolute path — no base64 in the transcript at all\n  both              link and image\nA client older than MCP 2025-06-18 cannot read a resource_link, so deliver=link degrades to both rather than returning a picture nobody can see.\n\nsave_to also writes the frame to a path of your choosing (res://, user:// or absolute) so later captures can be diffed against it. That is how a baseline is minted, which is why it opts out of the size cap.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string", "description": "game | editor"},
@@ -38,7 +40,8 @@ func _register(registry) -> void:
 			"quality": {"type": "number", "description": "jpeg/webp quality 0.1..1.0 (default 0.8)"},
 			"annotate": {"type": "string", "description": "'ui' = draw numbered marks on interactive controls + return the legend (game target)"},
 			"max_marks": {"type": "integer", "description": "cap on annotate marks (default 40)"},
-			"save_to": {"type": "string", "description": "also write the frame to this path (res://, user:// or absolute) so later captures can be diffed against it — the agent still gets the image inline"},
+			"save_to": {"type": "string", "description": "also write the frame to this path (res://, user:// or absolute); mints a diff baseline"},
+			"deliver": {"type": "string", "description": "inline (default) | link (a capture:// resource_link, no base64) | both"},
 		}},
 		"handler": Callable(self, "_screenshot"),
 	})
@@ -57,11 +60,12 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "ui_snapshot",
-		"description": "One-call UI snapshot of the RUNNING game: every visible Control as structured data — path, class (+custom class_name), text, rect [x,y,w,h] (gui space, ints), and the semantic state pixels can't tell you: disabled, focused, checked (toggles), value + range (sliders/spin/progress), selected (+selected_text / tabs / item_count), editable / placeholder / secret (text fields), tooltip, mouse_ignore. Interactive controls also get honesty flags: clipped (scrolled out of view) and occluded_by (another control would swallow the click — popup/modal/overlay). Top level: focus owner, open popup/dialog windows (exclusive = modal), viewport size, and a stable content 'hash' — pass it back as since_hash and an unchanged UI returns {unchanged:true} for ~free. For functional UI checks this replaces the screenshot + find_ui_elements + get_control_rect + runtime_get_property round-trips (keep screenshot for VISUAL/render bugs). Walks the whole SceneTree root (autoload HUD layers and popups included); scope with path=, slim with interactive_only=true, cap with max_nodes (default 400).",
+		"description": "One-call UI snapshot of the RUNNING game: every visible Control as structured data — path, class, text, rect, and the semantic state pixels cannot tell you (disabled, focused, checked, value, selected, editable, tooltip) plus per-control honesty flags. For FUNCTIONAL UI checks this replaces screenshot + find_ui_elements + get_control_rect + runtime_get_property; keep screenshot for visual/render bugs. Every field, and the free since_hash re-read: help(tool=\"ui_snapshot\").",
+		"help": "Per control: path, class (plus a custom class_name when it has one), text, rect [x, y, w, h] in gui space as ints, and the semantic state a picture cannot carry —\n  disabled, focused, checked (toggles), value + range (sliders / spin / progress), selected (+ selected_text / tabs / item_count), editable / placeholder / secret (text fields), tooltip, mouse_ignore.\n\nInteractive controls also carry honesty flags:\n  clipped        scrolled out of view\n  occluded_by    another control would swallow the click (popup, modal, overlay)\n\nTop level: the focus owner, open popup / dialog windows (exclusive = modal), the viewport size, and a stable content 'hash'.\n\nThe hash is the cheap re-read: pass it back as since_hash and an UNCHANGED UI returns {unchanged:true} instead of the payload. Polling a menu costs almost nothing that way.\n\nScope: walks the whole SceneTree root, so autoload HUD layers and popups are included. Narrow with path=, slim with interactive_only=true, cap with max_nodes.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"path": {"type": "string", "description": "subtree root to scope the walk (name, relative, or /root/...)"},
-			"interactive_only": {"type": "boolean", "description": "only buttons/sliders/text fields/lists/tabs + focusables (default false: all visible controls, labels included)"},
+			"interactive_only": {"type": "boolean", "description": "only buttons/sliders/fields/lists/tabs + focusables (default false = all visible controls)"},
 			"occlusion": {"type": "boolean", "description": "compute occluded_by for interactive controls (default true; one hit-test walk per interactive control)"},
 			"max_nodes": {"type": "integer", "description": "cap on emitted controls (default 150)"},
 			"since_hash": {"type": "string", "description": "hash from a previous call — unchanged UI returns {unchanged:true} instead of the payload"},
@@ -111,7 +115,17 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "get_performance_monitors",
-		"description": "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics) — measured engine counters, never estimates. target=game (default when a play session is connected) reads the RUNNING game; target=editor reads the editor. duration_s>0 (game only, max 30) SAMPLES OVER TIME: polls every interval_ms (default 100, min 30) while the game keeps running, then returns per-monitor stats {min,avg,p95,max} — e.g. fps.p95 or process_time.max over a stress window; series=true also returns the raw per-sample series (token-heavy). Editor-target sampling is refused honestly: a tool call blocks the editor's own loop, so an over-time editor read would only measure a stalled editor.",
+		"description": "Profiling: read Performance monitors (fps, frame time, memory, object/node counts, draw calls, video mem, physics) — measured engine counters, never estimates. target=game (default with a play session) | editor. duration_s>0 samples over time and returns per-monitor {min, avg, p95, max}. Sampling rules and why an editor-target window is refused: help(tool=\"get_performance_monitors\").",
+		# Two success shapes — a snapshot returns `monitors`, an over-time window returns
+		# `stats` — so `target` is the only key on both, and it is also what tells the
+		# client which of the two it got.
+		"output_schema": {"type": "object", "properties": {
+			"target": {"type": "string"}, "monitors": {"type": "object"},
+			"stats": {"type": "object"}, "samples": {"type": "integer"},
+			"window_ms": {"type": "integer"}, "interval_ms": {"type": "integer"},
+			"series": {"type": "array"},
+		}, "required": ["target"]},
+		"help": "target=game is the default whenever a play session is connected; target=editor reads the editor process instead.\n\nduration_s > 0 (game only, max 30) SAMPLES OVER TIME: it polls every interval_ms (default 100, minimum 30) while the game keeps running, then returns per-monitor stats {min, avg, p95, max}. That is how you get fps.p95 or process_time.max across a stress window rather than one lucky instant.\n\nseries=true also returns the raw per-sample series. It is token-heavy — ask for it only when you need the shape of the curve, not its bounds.\n\nEditor-target sampling is refused honestly rather than faked: a tool call blocks the editor's own loop, so an over-time editor read would measure nothing but a stalled editor.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string", "description": "game | editor | auto"},
@@ -134,7 +148,8 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "render_probe",
-		"description": "Ask WHY a 3D node is or is not on screen, as data instead of pixels. Answers the 'the node exists, visible is true, the log is clean, and I still see nothing' case: visibility chain, world AABB, frustum test, distance vs far plane and visibility range, layers vs the camera cull_mask, per-surface material + cull mode, and the triangle winding the camera actually sees (facing_camera=0 with back-face culling means a reversed index buffer — Godot treats CLOCKWISE winding as the FRONT face). Returns a 'warnings' list naming the stage that broke, or a verdict saying the geometry does reach the camera. USE THIS BEFORE tuning lighting, fog, exposure or palette on anything you cannot clearly see — those are invisible-mesh symptoms far more often than they are art problems.",
+		"description": "Ask WHY a 3D node is or is not on screen, as data instead of pixels — the \"node exists, visible is true, log is clean, and I still see nothing\" case. Returns a 'warnings' list naming the stage that broke, or a verdict that the geometry does reach the camera. USE THIS BEFORE tuning lighting, fog, exposure or palette on anything you cannot clearly see. The stages it checks: help(tool=\"render_probe\").",
+		"help": "Stages checked, in the order the renderer would fail them:\n  * the visibility chain (the node and every ancestor);\n  * the world AABB;\n  * the frustum test;\n  * distance vs the far plane and vs the node's visibility range;\n  * layers vs the camera's cull_mask;\n  * per-surface material and cull mode;\n  * the triangle winding the camera actually sees.\n\nThat last one earns its place: facing_camera=0 with back-face culling on means a REVERSED index buffer. Godot treats CLOCKWISE winding as the FRONT face, and a mesh exported the other way is invisible from the side you are looking at while being perfectly present in the tree.\n\nWhy it comes first in a debugging session: an invisible mesh and an under-lit mesh look identical in a screenshot, and \"tune the lighting\" is the expensive wrong answer. Probe first, then light.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"path": {"type": "string", "description": "node path or name in the running game"},
@@ -182,6 +197,7 @@ func _screenshot(args: Dictionary) -> Dictionary:
 	if r.has("note"):
 		desc += " — " + str(r.get("note", ""))
 	var out := {"image_base64": str(r.get("data", r.get("png", ""))), "image_mime": str(r.get("mime", "image/png"))}
+	desc = _apply_delivery(args, out, desc)
 	if args.has("save_to"):
 		# The bytes are already here — saving them server-side costs nothing and removes the
 		# only reason an agent ever had to edit the GAME (adding a capture() helper to the
@@ -217,10 +233,58 @@ func _editor_screenshot(args: Dictionary) -> Dictionary:
 		img = img.get_region(Rect2i(x, y, w, h))
 	var b64 := Marshalls.raw_to_base64(img.save_png_to_buffer())
 	var desc := "editor viewport %dx%d" % [img.get_width(), img.get_height()]
+	var out := {"image_png_base64": b64}
+	# The editor path takes `deliver` too. It shipped in 1.14.0 wired only into the game
+	# path, so target=editor silently ignored the argument — the exact dishonesty class
+	# v1.10.2 was spent removing. An editor capture is always PNG.
+	desc = _apply_delivery(args, out, desc, "image/png")
 	if args.has("save_to"):
 		var saved := _save_capture(b64, str(args["save_to"]))
 		desc += (" → saved %s" % str(args["save_to"])) if saved.is_empty() else (" (save failed: %s)" % saved)
-	return {"image_png_base64": b64, "text": desc}
+	out["text"] = desc
+	return out
+
+
+## v1.14 delivery: choose the CHANNEL the picture rides on. Mutates `out` in place and
+## returns the (possibly extended) text line.
+##
+## deliver=link parks the frame in the capture store and drops the inline base64 entirely —
+## that is the whole saving, ~1.6 MB of result body for a default 1280 px capture. The text
+## block still carries the absolute path, so a client that ignores resource_link can open the
+## file with its own read tool and nothing is lost.
+##
+## Degradation: resource_link is a 2025-06-18 content type. A peer that negotiated
+## 2025-03-26 would get the link stripped by the serializer gate, so on those clients
+## deliver=link becomes deliver=both rather than a result with no picture in it at all.
+func _apply_delivery(args: Dictionary, out: Dictionary, desc: String, mime_hint: String = "") -> String:
+	if not args.has("deliver"):
+		return desc
+	var mode := str(args["deliver"]).strip_edges().to_lower()
+	if mode == "inline":
+		return desc
+	if not (mode in ["link", "both"]):
+		# Never swallow a value we did not understand: a typo'd deliver=lnik used to look
+		# exactly like deliver=inline, so the caller would go on believing it had a link.
+		return desc + " (deliver='%s' is not a known mode — use inline | link | both; returned inline)" % str(args["deliver"])
+	var b64 := str(out.get("image_base64", out.get("image_png_base64", "")))
+	var mime := str(out.get("image_mime", mime_hint if not mime_hint.is_empty() else "image/png"))
+	var stored: Dictionary = CapturesScript.store(b64, mime)
+	if stored.has("error"):
+		# Never lose the picture over a failed park: fall back to inline and say why.
+		return desc + " (deliver=%s failed: %s — returned inline)" % [mode, str(stored["error"])]
+	out["resource_links"] = [{
+		"uri": str(stored["uri"]),
+		"name": str(stored["id"]),
+		"description": "Game capture, %d bytes." % int(stored["bytes"]),
+		"mimeType": str(stored["mime"]),
+	}]
+	desc += " → %s (%d B on disk: %s)" % [str(stored["uri"]), int(stored["bytes"]), str(stored["path"])]
+	if mode == "link" and server.supports_resource_link():
+		out.erase("image_base64")
+		out.erase("image_png_base64")
+	elif mode == "link":
+		desc += " — client negotiated MCP %s, which predates resource_link, so the image still rides inline" % str(server._negotiated_version)
+	return desc
 
 
 ## Write a base64 capture to disk. Returns "" on success, else the reason — a failed save

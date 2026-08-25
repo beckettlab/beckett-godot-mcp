@@ -21,11 +21,12 @@ var server  # mcp_server node (exposes .bridge)
 func _register(registry) -> void:
 	registry.register({
 		"name": "play_scene",
-		"description": "Play a scene in the editor. 'scene' (res://) plays a specific scene; current=true plays the open scene; otherwise the project's main scene. Then wait_until condition=play_started, and logs_read for errors. on_ready=[{path|class|name, property, value}, ...] queues runtime writes that are applied automatically the moment the new game connects — the restart boundary batch_execute cannot cross. Use it to restore camera pose, debug flags or spawn state in ONE call instead of re-issuing them after every restart; wait_until condition=game_connected then reports whether each one landed. Writes whose target is still spawning are retried for a few seconds, then reported as failures rather than dropped.",
+		"description": "Play a scene in the editor. 'scene' (res://) plays a specific scene; current=true plays the open scene; otherwise the project's main scene. Then wait_until condition=play_started, and logs_read for errors. on_ready queues runtime property writes applied the moment the new game connects — the restart boundary batch_execute cannot cross. on_ready shape and its retry behaviour: help(tool=\"play_scene\").",
+		"help": "on_ready = [{path|class|name, property, value}, ...] — runtime writes queued now and applied automatically the moment the NEW game connects.\n\nWhy it exists: a restart is the one boundary batch_execute cannot cross. Without on_ready you re-issue the same camera pose, debug flags and spawn state by hand after every single play. With it, that is part of the play call.\n\nwait_until condition=game_connected then reports whether each write landed.\n\nA write whose target is still spawning is RETRIED for a few seconds and, if it never appears, reported as a failure — never silently dropped. So an on_ready that did not take shows up as a failure you can read, not as a game that quietly came up wrong.",
 		"input_schema": {"type": "object", "properties": {
 			"scene": {"type": "string", "description": "res:// path; omit for main/current"},
 			"current": {"type": "boolean"},
-			"on_ready": {"type": "array", "description": "property writes applied once the game connects: [{path, property, value}, ...] (path may be a name/class selector, same as runtime_set_property)"},
+			"on_ready": {"type": "array", "description": "property writes applied once the game connects (shape in help)"},
 		}},
 		"handler": Callable(self, "_play_scene"),
 	})

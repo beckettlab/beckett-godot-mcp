@@ -27,6 +27,7 @@ const RuntimeBridge := preload("res://addons/beckett/core/runtime_bridge.gd")
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")
 const GameLogSink := preload("res://addons/beckett/runtime/game_log_sink.gd")
 const ProjectTools := preload("res://addons/beckett/tools/project_tools.gd")
+const Captures := preload("res://addons/beckett/core/captures.gd")
 # Full-only modules: loaded dynamically so this suite ALSO runs on the Lite repo's CI,
 # where pack.ps1 physically trims them — their test groups then skip with a note.
 const _PLAYTEST_TOOLS_PATH := "res://addons/beckett/tools/playtest_tools.gd"
@@ -77,6 +78,11 @@ func _init() -> void:
 	_t_compare_downscale_chain()
 	_t_dock_tier_stats()
 	_t_resolver_suggestions()
+	_t_description_budget()
+	_t_help_never_advertised()
+	_t_output_schema()
+	_t_captures()
+	_t_deliver_modes()
 	_t_ci_matrix()
 	print("")
 	if _fail > 0:
@@ -246,7 +252,224 @@ func _t_server_serializer() -> void:
 	# v1.13 S2: the json mirror is compact; the 2-space indent was pure token cost.
 	var tc: Dictionary = s._tool_result({"json": {"a": {"b": 1}}})
 	_ok(not str((tc["content"] as Array)[0]["text"]).contains("\n"), "json mirror is compact (no pretty-print newlines)")
+	# v1.14 B1: resource_link rides beside the other blocks, but ONLY for a peer whose
+	# negotiated revision knows the content type. The gate lives in the serializer so one
+	# check covers every producer; verify BOTH directions or the gate is decoration.
+	var links := [{"uri": "capture://0123456789abcdef.png", "name": "shot", "mimeType": "image/png"}]
+	s._negotiated_version = "2025-06-18"
+	var tl: Dictionary = s._tool_result({"text": "shot", "resource_links": links})
+	var tl_kinds: Array = (tl["content"] as Array).map(func(c): return c["type"])
+	_ok(tl_kinds.has("resource_link"), "resource_link block emitted on 2025-06-18")
+	s._negotiated_version = "2025-03-26"
+	var tl2: Dictionary = s._tool_result({"text": "shot", "resource_links": links})
+	var tl2_kinds: Array = (tl2["content"] as Array).map(func(c): return c["type"])
+	_ok(not tl2_kinds.has("resource_link"), "resource_link suppressed on 2025-03-26 (predates the content type)")
+	_ok(tl2_kinds.has("text"), "the rest of the result survives the suppression")
+	_ok(s.supports_resource_link() == false, "supports_resource_link() reports the gate honestly")
+	# A malformed link entry must be skipped, not crash the whole result.
+	s._negotiated_version = "2025-11-25"
+	var tl3: Dictionary = s._tool_result({"text": "shot", "resource_links": [{"name": "no uri"}, "not a dict"]})
+	_ok((tl3["content"] as Array).size() == 1, "link entries without a uri are dropped, not fatal")
 	s.free()
+
+
+# ---------------------------------------------------------------- v1.14 context diet
+
+## Register every shipped tool module into a throwaway registry. Register-time code touches
+## only the registry (handlers are bound Callables, never invoked here), so this needs no
+## server, no editor and no game — which is what makes the description budget testable at all.
+func _all_tool_specs() -> Array:
+	var reg = Registry.new()
+	for path in MCPServer.TOOL_MODULES:
+		if not ResourceLoader.exists(path):
+			continue  # Lite: pack.ps1 trimmed this module
+		var mod = load(path).new()
+		mod._register(reg)
+	var out: Array = []
+	for n in reg.names():
+		out.append(reg.get_tool(n))
+	return out
+
+
+func _t_description_budget() -> void:
+	print("[unit] v1.14 description budget (the context diet)")
+	var specs := _all_tool_specs()
+	_ok(specs.size() > 40, "tool modules registered (%d tools)" % specs.size())
+	# 600/130 restate the diet RULE rather than its target: v1.14 rewrote every description
+	# over 600 chars down to ~400, and every argument description over 110 down to ~90. The
+	# guard fires on the next one that crosses the line, not on a 402-char rewrite — a guard
+	# that cries at the target is a guard someone deletes. doctor is exempt: it is the tool
+	# whose job is to explain a capped surface, and v1.13.0 grew it deliberately (effort.gd
+	# L1 note). This check found animation_manage (906), which the byte-level survey missed.
+	var fat: Array = []
+	var fat_args: Array = []
+	for t in specs:
+		var name := str(t["name"])
+		if name != "doctor" and str(t["description"]).length() > 600:
+			fat.append("%s (%d)" % [name, str(t["description"]).length()])
+		var props: Dictionary = (t.get("input_schema", {}) as Dictionary).get("properties", {})
+		for k in props:
+			var decl = props[k]
+			if decl is Dictionary and str((decl as Dictionary).get("description", "")).length() > 130:
+				fat_args.append("%s.%s (%d)" % [name, str(k), str((decl as Dictionary)["description"]).length()])
+	_ok(fat.is_empty(), "no tool description over 600 chars except doctor%s" % ("" if fat.is_empty() else ": " + ", ".join(fat)))
+	_ok(fat_args.is_empty(), "no argument description over 130 chars%s" % ("" if fat_args.is_empty() else ": " + ", ".join(fat_args)))
+	# A pointer to nothing is worse than no pointer: it teaches the model a call that
+	# returns the same text it already read.
+	var dangling: Array = []
+	for t in specs:
+		if str(t["description"]).contains("help(tool="):
+			if not t.has("help"):
+				dangling.append(str(t["name"]) + " (no help key)")
+			elif str(t["help"]).length() <= str(t["description"]).length():
+				dangling.append(str(t["name"]) + " (help no longer than the description)")
+	_ok(dangling.is_empty(), "every help(tool=...) pointer resolves to a longer long form%s" % ("" if dangling.is_empty() else ": " + ", ".join(dangling)))
+
+
+func _t_help_never_advertised() -> void:
+	print("[unit] v1.14 the long form never ships on tools/list")
+	var reg = Registry.new()
+	reg.register({"name": "z_diet", "description": "short", "help": "the long form", "handler": Callable(self, "_ok")})
+	var spec: Dictionary = (reg.list_specs(6) as Array)[0]
+	_ok(not spec.has("help"), "list_specs omits the help key (that IS the diet)")
+	_ok(str(spec["description"]) == "short", "the short description is what ships")
+	_ok(reg.help_for("z_diet") == "the long form", "help_for returns the long form")
+	_ok(reg.help_for("z_missing") == "", "help_for on an unknown tool is empty, not an error")
+	_ok(reg.documented_names() == ["z_diet"], "documented_names lists only tools with a long form")
+	reg.register({"name": "z_plain", "description": "only this", "handler": Callable(self, "_ok")})
+	_ok(reg.help_for("z_plain") == "only this", "a tool with no long form falls back to its description")
+
+
+func _t_output_schema() -> void:
+	print("[unit] v1.14 outputSchema is a promise we can keep")
+	var reg = Registry.new()
+	reg.register({"name": "z_typed", "description": "d", "output_schema": {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}, "handler": Callable(self, "_ok")})
+	var spec: Dictionary = (reg.list_specs(6) as Array)[0]
+	_ok(spec.has("outputSchema"), "output_schema is advertised as outputSchema")
+	var declared: Array = []
+	for t in _all_tool_specs():
+		if not t.has("output_schema"):
+			continue
+		declared.append(str(t["name"]))
+		var sc: Dictionary = t["output_schema"]
+		var props: Dictionary = sc.get("properties", {})
+		_ok(str(sc.get("type", "")) == "object", "%s outputSchema is type object (only Dictionaries are promoted)" % str(t["name"]))
+		_ok(not sc.has("additionalProperties"), "%s outputSchema does not close the object" % str(t["name"]))
+		var undeclared: Array = []
+		for r in sc.get("required", []):
+			if not props.has(str(r)):
+				undeclared.append(str(r))
+		_ok(undeclared.is_empty(), "%s required keys are all declared as properties" % str(t["name"]))
+	_ok(declared.size() >= 1, "at least one tool declares an outputSchema (%s)" % ", ".join(declared))
+	# The failure mode that parked this feature: a declared schema on a path that returns
+	# text. Prove the contract end to end — a representative all-json result MUST survive
+	# _tool_result as non-null structuredContent carrying every required key.
+	var s = MCPServer.new()
+	for t in _all_tool_specs():
+		if not t.has("output_schema"):
+			continue
+		var sample: Dictionary = {}
+		for k in (t["output_schema"] as Dictionary).get("required", []):
+			sample[str(k)] = null
+		var res: Dictionary = s._tool_result({"json": sample})
+		var sc_out = res.get("structuredContent")
+		var all_present := sc_out is Dictionary
+		if all_present:
+			for k in (t["output_schema"] as Dictionary).get("required", []):
+				if not (sc_out as Dictionary).has(str(k)):
+					all_present = false
+		_ok(all_present, "%s: a schema-shaped result survives _tool_result as structuredContent" % str(t["name"]))
+	s.free()
+
+
+func _t_captures() -> void:
+	print("[unit] v1.14 capture store")
+	_ok(Captures.is_valid_id("0123456789abcdef.png"), "a well-formed id validates")
+	_ok(not Captures.is_valid_id("../../etc/passwd"), "traversal is rejected")
+	_ok(not Captures.is_valid_id("0123456789ABCDEF.png"), "uppercase hex is rejected (one canonical form)")
+	_ok(not Captures.is_valid_id("0123456789abcdef.exe"), "an unknown extension is rejected")
+	_ok(not Captures.is_valid_id("0123456789abcde.png"), "a 15-digit id is rejected")
+	_ok(Captures.path_for("../secret") == "", "path_for refuses to build a path for a bad id")
+	_ok(Captures.ext_for_mime("image/jpeg") == "jpg" and Captures.ext_for_mime("image/webp") == "webp", "mime maps to an extension")
+	_ok(Captures.ext_for_mime("nonsense") == "png", "an unknown mime falls back to png")
+	_ok(Captures.mime_for_id("0123456789abcdef.webp") == "image/webp", "id maps back to a mime")
+	# Round trip through the real filesystem: store, read, compare.
+	var payload := Marshalls.raw_to_base64("BeckettCaptureRoundTrip".to_utf8_buffer())
+	var stored: Dictionary = Captures.store(payload, "image/png")
+	_ok(not stored.has("error"), "store() wrote a capture%s" % ("" if not stored.has("error") else ": " + str(stored.get("error"))))
+	if not stored.has("error"):
+		_ok(str(stored["uri"]).begins_with("capture://"), "store() returns a capture:// uri")
+		_ok(str(stored["path"]).is_absolute_path(), "store() returns an ABSOLUTE path for the text channel")
+		var back: Dictionary = Captures.read_id(str(stored["id"]))
+		_ok(bool(back.get("ok", false)) and str(back.get("blob", "")) == payload, "read_id round-trips the exact bytes as a blob")
+		_ok(not back.has("text"), "a binary resource carries blob, never text")
+		DirAccess.remove_absolute(Captures.DIR + "/" + str(stored["id"]))
+	var missing: Dictionary = Captures.read_id("ffffffffffffffff.png")
+	_ok(not bool(missing.get("ok", true)), "reading a capture that is gone fails honestly")
+	var bad: Dictionary = Captures.read_id("nope")
+	_ok(not bool(bad.get("ok", true)), "read_id validates before touching the filesystem")
+	_ok(Captures.store("", "image/png").has("error"), "empty data is rejected rather than written")
+	# The prune. Untested when v1.14.0 shipped, which is the whole reason it is here: a store
+	# that never evicts fills a disk one playtest loop at a time, and nothing else would say so.
+	var made: Array = []
+	for i in range(Captures.MAX_KEEP + 5):
+		var st: Dictionary = Captures.store(Marshalls.raw_to_base64(("prune-probe-%d" % i).to_utf8_buffer()), "image/png")
+		if st.has("error"):
+			break
+		made.append(str(st["id"]))
+	_ok(made.size() == Captures.MAX_KEEP + 5, "wrote %d captures to exercise the cap" % made.size())
+	var kept := Captures.list_entries()
+	_ok(kept.size() <= Captures.MAX_KEEP, "the store pruned itself to at most %d (held %d)" % [Captures.MAX_KEEP, kept.size()])
+	var kept_ids := {}
+	for e in kept:
+		kept_ids[str((e as Dictionary)["id"])] = true
+	# Assert the ORDERING GUARANTEE directly, not just its consequence. The consequence check
+	# below passed on a Windows dev box and failed on both macOS CI lanes, because a faster
+	# machine mints every capture inside one millisecond; a strictly-increasing assert is
+	# timing-independent and fails on the dev box too.
+	var strictly_increasing := true
+	for i in range(1, made.size()):
+		if not (str(made[i]) > str(made[i - 1])):
+			strictly_increasing = false
+	_ok(strictly_increasing, "ids mint strictly increasing, however fast the machine is")
+	var newest_survived := true
+	for i in range(made.size() - Captures.MAX_KEEP, made.size()):
+		if not kept_ids.has(str(made[i])):
+			newest_survived = false
+	_ok(newest_survived, "the NEWEST captures are the ones that survived")
+	_ok(not kept_ids.has(str(made[0])), "the oldest capture was evicted")
+	for e in kept:
+		DirAccess.remove_absolute(Captures.DIR + "/" + str((e as Dictionary)["id"]))
+	_ok(Captures.list_entries().is_empty(), "probe captures cleaned up")
+
+
+func _t_deliver_modes() -> void:
+	print("[unit] v1.14 screenshot deliver= modes")
+	var mod = load("res://addons/beckett/tools/runtime_observe_tools.gd").new()
+	# No deliver argument at all: today's behaviour, untouched, no note appended.
+	var out1 := {"image_base64": "QUJD", "image_mime": "image/png"}
+	_ok(mod._apply_delivery({}, out1, "shot") == "shot", "no deliver argument leaves the line alone")
+	_ok(out1.has("image_base64"), "...and leaves the inline image alone")
+	var out2 := {"image_base64": "QUJD", "image_mime": "image/png"}
+	_ok(mod._apply_delivery({"deliver": "inline"}, out2, "shot") == "shot", "deliver=inline is a no-op")
+	# An unknown mode must be REPORTED. Before this check it read exactly like inline, so a
+	# typo left the caller believing it had a link.
+	var out3 := {"image_base64": "QUJD", "image_mime": "image/png"}
+	var d3: String = mod._apply_delivery({"deliver": "lnik"}, out3, "shot")
+	_ok(d3.contains("not a known mode") and d3.contains("lnik"), "an unknown deliver mode is named in the result")
+	_ok(out3.has("image_base64"), "...and the picture still rides inline")
+	# both: link AND image. link: link only.
+	var out4 := {"image_base64": Marshalls.raw_to_base64("both-mode".to_utf8_buffer()), "image_mime": "image/png"}
+	var d4: String = mod._apply_delivery({"deliver": "both"}, out4, "shot")
+	_ok(out4.has("resource_links") and out4.has("image_base64"), "deliver=both keeps the image AND adds the link")
+	_ok(d4.contains("capture://"), "deliver=both names the uri in the line")
+	var out5 := {"image_png_base64": Marshalls.raw_to_base64("editor-mode".to_utf8_buffer())}
+	var d5: String = mod._apply_delivery({"deliver": "both"}, out5, "editor viewport 100x100", "image/png")
+	_ok(out5.has("resource_links"), "the EDITOR key shape (image_png_base64) is delivered too")
+	_ok(d5.contains("capture://"), "...and names its uri")
+	for o in [out4, out5]:
+		for rl in (o as Dictionary).get("resource_links", []):
+			DirAccess.remove_absolute(Captures.DIR + "/" + str((rl as Dictionary)["uri"]).substr(10))
 
 
 # ---------------------------------------------------------------- idempotency cache bounds (v1.13 S3)

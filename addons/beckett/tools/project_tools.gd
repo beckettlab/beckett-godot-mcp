@@ -106,6 +106,21 @@ func _register(registry) -> void:
 		"name": "doctor",
 		"description": "Beckett self-diagnosis — one call answers 'why can't the agent see or do X?'. Reports: edition (Lite/Full), the effort dial vs its ceiling AND where the cap comes from (a beckett/effort= line committed in project.godot silently trims every clone's tool list), advertised-vs-ceiling tool counts, dock-disabled tools, server/port/auth state, per-client config freshness (does each written config still carry the CURRENT endpoint URL?), runtime-bridge liveness, what this tool surface costs your context (exact tools/list bytes and approximate tokens for every effort tier, measured on THIS install, so you can price a tier before dialing to it), whether the game plays EMBEDDED in the editor's Game workspace or in its own window (embedded means the Suspend button freezes every runtime call and window-mode asserts can never pass), and whether the editor auto-reloads externally-changed scripts (off = every script this server writes waits behind a modal the human must click). Run this FIRST when tools seem missing, counts look wrong, or calls fail unexpectedly.",
 		"readonly": true,
+		# One success path, so every key here is genuinely always present. `ok` is
+		# literally warnings.is_empty(), which is why it can be required.
+		# No prose inside the schema: a JSON Schema is read by a parser, the key names are
+		# self-describing, and every description here would ship on EVERY tools/list at
+		# EVERY tier — doctor is L1. The first cut of this block cost 1.4 KB at tier 1,
+		# which is the exact cost the rest of this release was spent removing.
+		"output_schema": {"type": "object", "properties": {
+			"ok": {"type": "boolean"}, "edition": {"type": "string"},
+			"beckett_version": {"type": "string"}, "godot_version": {"type": "string"},
+			"effort": {"type": "object"}, "tools": {"type": "object"},
+			"context": {"type": "object"}, "server": {"type": "object"},
+			"security": {"type": "object"}, "editor": {"type": "object"},
+			"game_bridge": {"type": "object"}, "game_view": {"type": "object"},
+			"clients": {"type": "array"}, "warnings": {"type": "array"},
+		}, "required": ["ok", "edition", "beckett_version", "godot_version", "effort", "tools", "context", "server"]},
 		"input_schema": {"type": "object", "properties": {}},
 		"handler": Callable(self, "_doctor"),
 	})

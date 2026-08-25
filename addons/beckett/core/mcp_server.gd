@@ -44,6 +44,7 @@ const TOOL_MODULES := [
 	"res://addons/beckett/tools/signal_tools.gd",
 	"res://addons/beckett/tools/resource_tools.gd",
 	"res://addons/beckett/tools/project_tools.gd",
+	"res://addons/beckett/tools/help_tools.gd",
 	"res://addons/beckett/tools/skill_tools.gd",
 	"res://addons/beckett/tools/template_tools.gd",
 	"res://addons/beckett/tools/qa_tools.gd",
@@ -91,6 +92,12 @@ var _prompts
 var _runtime_port: int = 8771
 
 var _session_id: String = ""
+# The revision `initialize` actually agreed on. Computed since forever, PERSISTED since
+# v1.14: the resource_link serializer branch has to know whether the peer can read one
+# (resource_link is 2025-06-18+, and we still serve 2025-03-26 clients). Defaults to our
+# latest so a client that skipped the handshake gets the modern shape rather than a
+# silently degraded one.
+var _negotiated_version: String = PROTOCOL_VERSION
 var _token: String = ""
 var _runtime_token: String = ""  # game-channel handshake secret (v1.9.1; see start_server)
 var _readonly: bool = false
@@ -468,6 +475,7 @@ func _dispatch(id: Variant, rpc_method: String, params: Dictionary) -> Dictionar
 			# otherwise offer our latest (the client then decides whether to proceed).
 			var requested := str(params.get("protocolVersion", PROTOCOL_VERSION))
 			var negotiated := requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
+			_negotiated_version = negotiated
 			var result := {
 				"protocolVersion": negotiated,
 				"capabilities": {
@@ -507,11 +515,15 @@ func _dispatch(id: Variant, rpc_method: String, params: Dictionary) -> Dictionar
 			var rr: Dictionary = _resources.read(uri)
 			if not bool(rr.get("ok", false)):
 				return _body(MCPJsonRpcScript.error(id, MCPJsonRpcScript.INVALID_PARAMS, str(rr.get("error", "read failed"))))
-			return _body(MCPJsonRpcScript.result(id, {"contents": [{
-				"uri": uri,
-				"mimeType": str(rr.get("mime", "text/plain")),
-				"text": str(rr.get("text", "")),
-			}]}))
+			# Binary resources (v1.14 captures) carry `blob` — base64, per the MCP resource
+			# contents shape — and a text resource carries `text`. They are mutually
+			# exclusive in the spec, so pick one rather than emitting an empty sibling.
+			var rcontent := {"uri": uri, "mimeType": str(rr.get("mime", "text/plain"))}
+			if rr.has("blob"):
+				rcontent["blob"] = str(rr["blob"])
+			else:
+				rcontent["text"] = str(rr.get("text", ""))
+			return _body(MCPJsonRpcScript.result(id, {"contents": [rcontent]}))
 
 		"prompts/list":
 			return _body(MCPJsonRpcScript.result(id, {"prompts": _prompts.list()}))
@@ -860,6 +872,21 @@ func _tool_result(r: Dictionary) -> Dictionary:
 		content.append({"type": "image", "data": str(r["image_png_base64"]), "mimeType": "image/png"})
 	elif r.has("image_base64"):
 		content.append({"type": "image", "data": str(r["image_base64"]), "mimeType": str(r.get("image_mime", "image/png"))})
+	# v1.14 resource_link: hand the client a URI instead of a megabyte of base64. The
+	# revision gate lives HERE and not in any tool, so one check covers every present and
+	# future producer — resource_link is a 2025-06-18 content type and we still serve
+	# 2025-03-26 peers, which would choke on an unknown block. A producer that cares about
+	# the degradation (screenshot's deliver=link) inspects supports_resource_link() itself
+	# and keeps a readable channel; everything else just loses the link, never the result.
+	if r.has("resource_links") and r["resource_links"] is Array and supports_resource_link():
+		for rl in r["resource_links"]:
+			if not (rl is Dictionary) or not rl.has("uri"):
+				continue
+			var block := {"type": "resource_link", "uri": str(rl["uri"])}
+			for k in ["name", "description", "mimeType"]:
+				if rl.has(k):
+					block[k] = str(rl[k])
+			content.append(block)
 	# v1.11 error echo: engine errors captured during the handler ride BOTH channels -
 	# a text block every client can read, structuredContent.engine_errors for parsers.
 	# Advisory by design: isError is untouched (the handler DID complete); the agent
@@ -884,6 +911,13 @@ func _tool_result(r: Dictionary) -> Dictionary:
 	if structured != null:
 		out["structuredContent"] = structured
 	return out
+
+
+## Can the peer read a `resource_link` content block? It arrived in spec 2025-06-18 and we
+## still serve 2025-03-26. The revisions are ISO dates, so a string compare IS the ordering
+## — no table to keep in sync when a revision is added to SUPPORTED_PROTOCOL_VERSIONS.
+func supports_resource_link() -> bool:
+	return _negotiated_version >= "2025-06-18"
 
 
 # ---------------------------------------------------------------- security helpers

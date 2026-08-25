@@ -7,12 +7,13 @@ class_name BeckettResources
 ## the asset list, and the editor log tail.
 
 const Reflect := preload("res://addons/beckett/core/reflection.gd")
+const Captures := preload("res://addons/beckett/core/captures.gd")
 
 var server
 
 
 func list() -> Array:
-	return [
+	var out: Array = [
 		{"uri": "scene://tree", "name": "Open scene tree", "description": "Node tree of the scene open in the editor.", "mimeType": "application/json"},
 		{"uri": "scene://selection", "name": "Editor selection", "description": "Nodes currently selected in the editor.", "mimeType": "application/json"},
 		{"uri": "project://settings", "name": "Project settings", "description": "Project name, engine version, main scene, autoloads.", "mimeType": "application/json"},
@@ -21,6 +22,17 @@ func list() -> Array:
 		{"uri": "audit://recent", "name": "MCP audit log", "description": "Last %d tool calls this session: time, tool, duration, ok/error, brief args." % 200, "mimeType": "application/json"},
 		{"uri": "status://connection", "name": "Connection status", "description": "Server running state, the connected MCP client (name/version from its handshake), idle time, live tool count. The model is NOT included — MCP does not report it.", "mimeType": "application/json"},
 	]
+	# Captures are DYNAMIC entries (v1.14): screenshot deliver=link parks a frame here and
+	# hands the client a capture:// link instead of a megabyte of inline base64. Listed so a
+	# client that lost the link in a truncated transcript can still find the picture.
+	for c in Captures.list_entries():
+		out.append({
+			"uri": str(c["uri"]),
+			"name": "Capture %s" % str(c["id"]),
+			"description": "Game capture, %d bytes." % int(c["bytes"]),
+			"mimeType": Captures.mime_for_id(str(c["id"])),
+		})
+	return out
 
 
 ## Returns {ok:true, mime:String, text:String} or {ok:false, error:String}.
@@ -48,6 +60,11 @@ func read(uri: String) -> Dictionary:
 		"status://connection":
 			return _json(_connection_status())
 		_:
+			# capture://<16hex>.<ext> — the only dynamic URI family. Captures.read_id does
+			# the validating (regex before any filesystem call), so an unknown or malformed
+			# id falls through to the same "unknown resource" shape as anything else.
+			if uri.begins_with("capture://"):
+				return Captures.read_id(uri.substr(10))
 			return {"ok": false, "error": "unknown resource: %s" % uri}
 
 
