@@ -33,6 +33,12 @@ const Captures := preload("res://addons/beckett/core/captures.gd")
 const _PLAYTEST_TOOLS_PATH := "res://addons/beckett/tools/playtest_tools.gd"
 const _PLAYTEST_RUNNER_PATH := "res://addons/beckett/runtime/playtest_runner.gd"
 
+## The one Beckett file that is compiled inside a player's shipped game (see _t_export_safety).
+const AUTOLOAD_STUB_PATH := "res://addons/beckett/runtime/beckett_autoload.gd"
+## Engine globals no build profile can strip: Node itself, and core singletons that are not
+## ClassDB classes at all. Widening this list widens what can break a user's custom build.
+const AUTOLOAD_SAFE_GLOBALS := ["Node", "OS", "ResourceLoader"]
+
 var _pass := 0
 var _fail := 0
 
@@ -84,6 +90,7 @@ func _init() -> void:
 	_t_captures()
 	_t_deliver_modes()
 	_t_ci_matrix()
+	_t_export_safety()
 	print("")
 	if _fail > 0:
 		print("[unit] FAIL: %d failed, %d passed" % [_fail, _pass])
@@ -1616,3 +1623,105 @@ func _t_resolver_suggestions() -> void:
 	_ok(str(rt._did_you_mean_target("/root/Main/Playr", true)).contains("World/Player"), "describe_object miss: an absolute live path matches on its last segment")
 	_ok(str(rt._did_you_mean_target("res://nope.tscn", true)).is_empty(), "a res:// miss is a load failure, not a typo: no suggestion")
 	_ok(str(rt._did_you_mean_target("Zzzqqq", true)).is_empty(), "no live node is close: no suggestion")
+
+
+## The export-safety contract (v1.15).
+##
+## Enabling Beckett registers a project autoload, so exactly one Beckett file is compiled
+## and run inside the player's shipped game. A custom engine built with a Godot build
+## profile can have hundreds of classes removed from ClassDB, and GDScript resolves class
+## identifiers at PARSE time, so one CamelCase engine class named in that file is a parse
+## error, a dead autoload and a screenful of red in the player's console on a machine we
+## can never test on. These checks are the enforcement: they fail the build if the stub
+## ever grows a dependency, rather than waiting for a bug report from someone whose
+## engine does not have Camera3D.
+func _t_export_safety() -> void:
+	var stub := FileAccess.get_file_as_string(AUTOLOAD_STUB_PATH)
+	_ok(not stub.is_empty(), "export safety: the autoload stub is readable")
+
+	# Only two kinds of identifier are safe to name here: the handful of engine globals a
+	# build profile cannot remove, and SCREAMING_CASE constants (a stripped class can never
+	# be spelled that way). Anything else is a class some user's engine will not have.
+	var offenders: Array = []
+	for word in _identifiers(stub):
+		if word.contains("_"):
+			continue  # IMPL_PATH, PROCESS_MODE_ALWAYS: a class name never looks like this
+		if not AUTOLOAD_SAFE_GLOBALS.has(word):
+			offenders.append(word)
+	_ok(offenders.is_empty(),
+		"export safety: the autoload stub names only strip-proof globals (offending: %s)" % [offenders])
+
+	# preload() resolves at parse time, so a single one would drag the whole implementation
+	# closure back into the file the player compiles. load() is the only legal door.
+	_ok(not _code_of(stub).contains("preload("),
+		"export safety: the autoload stub uses no preload()")
+
+	# Without the feature gate the stub would still open a socket and retry forever inside
+	# a shipped game (and serve whatever answered on localhost). Matched against the RAW
+	# source, since _code_of() deletes the very string literal being looked for.
+	_ok(stub.contains('if not OS.has_feature("editor"):'),
+		"export safety: the autoload stub gates on OS.has_feature(\"editor\")")
+
+	# The two halves must agree. plugin.gd decides what the autoload points at; the export
+	# filter decides what survives into the pack. If they drift, the export keeps an
+	# autoload whose script was stripped, which is a hard error on every boot.
+	var plugin_src := FileAccess.get_file_as_string("res://addons/beckett/plugin.gd")
+	var filter_src := FileAccess.get_file_as_string("res://addons/beckett/core/export_filter.gd")
+	_ok(plugin_src.contains('const RUNTIME_SCRIPT := "%s"' % AUTOLOAD_STUB_PATH),
+		"export safety: plugin.gd points the autoload at the stub, not at the implementation")
+	_ok(filter_src.contains('const KEEP := "%s"' % AUTOLOAD_STUB_PATH),
+		"export safety: the export filter keeps exactly the file plugin.gd registers")
+
+	# Autoload values carry a leading "*", and since 4.4 the editor stores the target as a
+	# uid:// reference, so the upgrade check cannot be a plain string compare.
+	var Plugin := load("res://addons/beckett/plugin.gd")
+	_ok(Plugin._autoload_target("*res://addons/beckett/runtime/mcp_runtime.gd")
+		== "res://addons/beckett/runtime/mcp_runtime.gd",
+		"export safety: _autoload_target strips the singleton marker")
+	_ok(Plugin._autoload_target("*uid://definitely-not-a-real-uid").begins_with("uid://"),
+		"export safety: _autoload_target passes an unresolvable uid through instead of erroring")
+
+
+## Source with comments and string literals removed, so a word inside prose or a path
+## can never be mistaken for code.
+func _code_of(src: String) -> String:
+	var out := ""
+	for line in src.split("
+"):
+		var hash_at := line.find("#")
+		if hash_at != -1:
+			line = line.substr(0, hash_at)
+		out += _without_strings(line) + "
+"
+	return out
+
+
+func _without_strings(line: String) -> String:
+	var out := ""
+	var inside := false
+	for i in line.length():
+		var c := line[i]
+		if c == "\"":
+			inside = not inside
+			continue
+		if not inside:
+			out += c
+	return out
+
+
+## Every distinct identifier the code names that STARTS with an uppercase letter, which is
+## the shape every engine class has. Locals, members and methods are lowercase or _prefixed
+## and are none of this check's business.
+func _identifiers(src: String) -> Array:
+	var seen := {}
+	var cur := ""
+	var code := _code_of(src)
+	for i in code.length() + 1:
+		var c := code[i] if i < code.length() else " "
+		if (c >= "a" and c <= "z") or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9") or c == "_":
+			cur += c
+		else:
+			if cur.length() > 1 and cur[0] >= "A" and cur[0] <= "Z":
+				seen[cur] = true
+			cur = ""
+	return seen.keys()

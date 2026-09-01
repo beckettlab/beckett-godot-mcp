@@ -57,9 +57,9 @@ jobs:
         #   4.4.1    version floor, Linux only (the parse-time floor every release
         #            has to hold; the other two OSes cannot break it independently)
         #   4.6.2    previous stable, all three OSes
-        #   4.7.1    current stable, all three OSes - what the editor's own updater
+        #   4.7.2    current stable, all three OSes - what the editor's own updater
         #            is pushing people onto, so it is the lane that must be honest
-        #   4.8-dev3 next-engine snapshot, Linux only, WARN-ONLY (see continue-on-error)
+        #   4.8-dev4 next-engine snapshot, Linux only, WARN-ONLY (see continue-on-error)
         # Measured billable minutes are 0 on BOTH repos this file lands in (public Lite
         # and the private monorepo; actions/runs/<id>/timing reports 0 for every OS on
         # each), and the jobs run in parallel under a ceiling of 20, so dropping mac/win
@@ -72,17 +72,17 @@ jobs:
           - os: ubuntu-latest
             godot: '4.6.2'
           - os: ubuntu-latest
-            godot: '4.7.1'
+            godot: '4.7.2'
           - os: macos-latest
             godot: '4.6.2'
           - os: macos-latest
-            godot: '4.7.1'
+            godot: '4.7.2'
           - os: windows-latest
             godot: '4.6.2'
           - os: windows-latest
-            godot: '4.7.1'
+            godot: '4.7.2'
           - os: ubuntu-latest
-            godot: '4.8-dev3'
+            godot: '4.8-dev4'
             experimental: true
 
     env:
@@ -114,7 +114,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $ver = $env:GODOT_VERSION
           # Two channels, one asset-naming rule. Pre-releases (dev/beta/rc) are published
-          # to godotengine/godot-builds and their tag IS the version ("4.8-dev3"); stable
+          # to godotengine/godot-builds and their tag IS the version ("4.8-dev4"); stable
           # releases live in godotengine/godot under "<ver>-stable". Either way the asset
           # names carry the tag verbatim, so derive the tag once and interpolate it.
           if ($ver -match '-(dev|beta|rc)\d*$') {

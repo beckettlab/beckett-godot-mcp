@@ -13,7 +13,7 @@
 
 **Beckett** is a **zero-sidecar** Model Context Protocol (MCP) server embedded directly in the **Godot 4** editor as a GDScript `EditorPlugin`. AI agents (Claude and others) drive the editor over HTTP — no Node/Python bridge, no second process, no cloud.
 
-This repository is the free, **MIT-licensed Lite edition**: the complete **inspect → author → run → SEE** dev loop (50 tools), for **GDScript *and* C#**. The AI can now *watch your running game* on the free tier: screenshot it, read the live remote scene tree and node state, poll performance monitors, and tail the game's logs. The paid **Full** edition makes the AI the *playtester* (it drives input, clicks 2D/3D and UI, and asserts the results), plus a test runner, animation tools, `scatter_nodes`, background exports, project-wide analysis, and 37 knowledge packs. See [What Full adds](#what-full-adds).
+This repository is the free, **MIT-licensed Lite edition**: the complete **inspect → author → run → SEE** dev loop (55 tools), for **GDScript *and* C#**. The AI can now *watch your running game* on the free tier: screenshot it, read the live remote scene tree and node state, poll performance monitors, and tail the game's logs. The paid **Full** edition makes the AI the *playtester* (it drives input, clicks 2D/3D and UI, and asserts the results), plus a test runner, animation tools, `scatter_nodes`, background exports, project-wide analysis, and 46 knowledge packs. See [What Full adds](#what-full-adds).
 
 **Lite: the AI sees your game. Full: the AI playtests it.**
 
@@ -61,7 +61,7 @@ The free Lite edition — the complete inspect → author → run → **see** lo
 
 ## What Full adds
 
-The **Full** edition is the same core plus a premium layer that makes the AI the *playtester*: it sees the screen, presses the buttons, and verifies the result. **80 tools, 37 skill packs** total:
+The **Full** edition is the same core plus a premium layer that makes the AI the *playtester*: it sees the screen, presses the buttons, and verifies the result. **91 tools, 46 skill packs** total:
 
 - **The AI drives:** `simulate_input`, UI clicks in 2D + 3D (`click_button_by_text` / `click_control` / `click_node3d` / `click_world`), `scroll` / `drag`, `get_control_rect` / `find_ui_elements`, live `runtime_call` / `runtime_set_property`, and `record_input` / `replay_input`.
 - **The AI verifies:** `assert_node_state`, `assert_screen_text`, `assert_scene`, `compare_screenshots`, plus the in-editor **test runner** (`test_run`).
@@ -94,7 +94,7 @@ Beckett is one of only a few *embedded* (zero-sidecar) servers in the field, and
 
 ## Status
 
-This is the free, MIT-licensed **Lite** edition — the **inspect → author → run → see** core: reflection/discovery, scene & script authoring for **GDScript and C#** (with `build_csharp` compile-check), **signals**, **resource create/assign**, **files & project settings**, the **play → wait → `logs_read`** dev loop, and the **runtime-observation** tools that let the AI *see* the running game (`screenshot`, `get_remote_tree`, live node state, perf monitors, `game_logs`), plus **Resources + Prompts + dock panel**. **50 tools.** Built and verified live on Godot 4.4.1, 4.6.2 and 4.7 (headless editor + a real HTTP MCP client), and CI-tested on every push across Windows, Linux, and macOS.
+This is the free, MIT-licensed **Lite** edition — the **inspect → author → run → see** core: reflection/discovery, scene & script authoring for **GDScript and C#** (with `build_csharp` compile-check), **signals**, **resource create/assign**, **files & project settings**, the **play → wait → `logs_read`** dev loop, and the **runtime-observation** tools that let the AI *see* the running game (`screenshot`, `get_remote_tree`, live node state, perf monitors, `game_logs`), plus **Resources + Prompts + dock panel**. **55 tools.** Built and verified live on Godot 4.4.1, 4.6.2 and 4.7 (headless editor + a real HTTP MCP client), and CI-tested on every push across Windows, Linux, and macOS.
 
 The **Full** edition adds the agent-driven play-test layer (the AI drives input, clicks 2D/3D and UI, and asserts results): the test runner (`test_run`), animation tools (`animation_manage`), `scatter_nodes`, background export jobs, project-wide analysis, and the 40 bundled skill packs. It *playtests* the running game.
 

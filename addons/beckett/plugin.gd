@@ -8,20 +8,33 @@ extends EditorPlugin
 const MCPServerScript := preload("res://addons/beckett/core/mcp_server.gd")
 const PanelScript := preload("res://addons/beckett/panel/panel.gd")
 const MCPClientConfig := preload("res://addons/beckett/core/client_config.gd")
+const ExportFilterScript := preload("res://addons/beckett/core/export_filter.gd")
 
 const RUNTIME_AUTOLOAD := "BeckettRuntime"
-const RUNTIME_SCRIPT := "res://addons/beckett/runtime/mcp_runtime.gd"
+## A parse-safe stub, NOT the implementation. It is the one Beckett file that reaches a
+## shipped game, so it names no engine class that a custom build profile could strip and
+## it goes inert outside the editor. See runtime/beckett_autoload.gd for the full why.
+const RUNTIME_SCRIPT := "res://addons/beckett/runtime/beckett_autoload.gd"
+## What the autoload pointed at before the stub existed; projects set up then get re-pointed.
+const LEGACY_RUNTIME_SCRIPT := "res://addons/beckett/runtime/mcp_runtime.gd"
 
 var _server: MCPServerScript = null
 var _panel: Control = null   # the dock content (VBox of cards)
 var _dock: Control = null    # ScrollContainer wrapping _panel; the control actually docked
+var _export_filter: EditorExportPlugin = null  # strips the addon out of the user's exports
 
 
 func _enter_tree() -> void:
 	# Runtime helper autoload — runs only in the played game (non-@tool); drives the
 	# play→observe→fix loop. Harmless when the server is off (it just fails to dial).
-	if not ProjectSettings.has_setting("autoload/" + RUNTIME_AUTOLOAD):
-		add_autoload_singleton(RUNTIME_AUTOLOAD, RUNTIME_SCRIPT)
+	_install_runtime_autoload()
+
+	# The autoload is baked into project.godot, so Beckett rides into every export whether
+	# the user wants it or not. This strips the addon back out at export time, leaving only
+	# the inert stub. Registered before anything can fail below it, and paired with the
+	# remove_export_plugin in _exit_tree.
+	_export_filter = ExportFilterScript.new()
+	add_export_plugin(_export_filter)
 
 	_server = MCPServerScript.new()
 	_server.name = "GodotMCPServer"
@@ -108,8 +121,53 @@ func _exit_tree() -> void:
 		_server.stop_server()
 		_server.queue_free()
 	_server = null
+	if _export_filter != null:
+		remove_export_plugin(_export_filter)
+	_export_filter = null
 	if ProjectSettings.has_setting("autoload/" + RUNTIME_AUTOLOAD):
 		remove_autoload_singleton(RUNTIME_AUTOLOAD)
+
+
+## Register the runtime autoload, or re-point an older one at the stub.
+##
+## Projects set up before the stub existed have the autoload aimed straight at
+## mcp_runtime.gd. That file names Camera3D, MeshInstance3D, ShaderMaterial, GraphEdit and
+## friends at parse time, so on an engine built with a stripped class profile it fails to
+## parse and the player sees the errors at boot. Re-pointing is the whole upgrade.
+func _install_runtime_autoload() -> void:
+	var key := "autoload/" + RUNTIME_AUTOLOAD
+	if not ProjectSettings.has_setting(key):
+		add_autoload_singleton(RUNTIME_AUTOLOAD, RUNTIME_SCRIPT)
+		return
+	if _autoload_target(str(ProjectSettings.get_setting(key, ""))) != LEGACY_RUNTIME_SCRIPT:
+		return
+	remove_autoload_singleton(RUNTIME_AUTOLOAD)
+	add_autoload_singleton(RUNTIME_AUTOLOAD, RUNTIME_SCRIPT)
+	# add/remove_autoload_singleton only touch ProjectSettings in memory; the editor happens
+	# to flush that on a fresh add but not on this re-point, which would leave project.godot
+	# still naming mcp_runtime.gd forever (correct at runtime, wrong in the file the user and
+	# their CI actually read). Persist it once, here, since we know we just changed it.
+	var err := ProjectSettings.save()
+	if err != OK:
+		push_warning("[beckett] could not save project.godot after re-pointing the runtime autoload: %s" % error_string(err))
+		return
+	print("[beckett] runtime autoload re-pointed at the export-safe stub (%s)" % RUNTIME_SCRIPT)
+
+
+## Resolve an [autoload] entry's value to a res:// path.
+##
+## Two things make a plain string compare wrong: the value carries a leading "*" when the
+## autoload is exposed as a singleton, and since 4.4 the editor writes the target as a
+## uid:// reference rather than a path, so the stored value for mcp_runtime.gd can read
+## "*uid://dspgi2nxto4e8" with the path nowhere in sight.
+static func _autoload_target(value: String) -> String:
+	var p := value.trim_prefix("*")
+	if not p.begins_with("uid://"):
+		return p
+	var id := ResourceUID.text_to_id(p)
+	if id == ResourceUID.INVALID_ID or not ResourceUID.has_id(id):
+		return p
+	return ResourceUID.get_id_path(id)
 
 
 ## The port we ask for at boot. Shared with the dock (MCPClientConfig.configured_port) so a
