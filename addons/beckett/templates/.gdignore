@@ -1,0 +1,4 @@
+Bundled templates are files that apply_template copies into res://, not resources of this
+project. Their scenes point at res://main.gd and friends, which only exist after that copy,
+so the editor must never scan or export this folder. apply_template reads it with
+DirAccess/FileAccess, which do not honor .gdignore. Godot only checks that this file exists.

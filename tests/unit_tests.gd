@@ -89,8 +89,10 @@ func _init() -> void:
 	_t_output_schema()
 	_t_captures()
 	_t_deliver_modes()
+	_t_screenshot_save_with_link()
 	_t_ci_matrix()
 	_t_export_safety()
+	_t_bundled_templates()
 	print("")
 	if _fail > 0:
 		print("[unit] FAIL: %d failed, %d passed" % [_fail, _pass])
@@ -477,6 +479,64 @@ func _t_deliver_modes() -> void:
 	for o in [out4, out5]:
 		for rl in (o as Dictionary).get("resource_links", []):
 			DirAccess.remove_absolute(Captures.DIR + "/" + str((rl as Dictionary)["uri"]).substr(10))
+
+
+# ------------------------------------------------- save_to survives deliver=link (v1.15.2)
+
+## The smallest stubs _screenshot needs to run without a game: a bridge that answers one
+## canned frame, and a server that says the client can read a resource_link.
+class _CaptureBridgeStub extends RefCounted:
+	var b64 := ""
+	func send_command(_cmd: Dictionary, _timeout_ms: int = 4000) -> Dictionary:
+		return {"ok": true, "data": b64, "mime": "image/png", "w": 8, "h": 8, "full_w": 8, "full_h": 8}
+
+
+class _CaptureServerStub extends RefCounted:
+	var bridge
+	func supports_resource_link() -> bool:
+		return true
+
+
+## Field report against 1.15.0: screenshot(save_to=..., deliver="link") wrote no file and
+## still came back isError:false. _apply_delivery ERASES image_base64 from the out dict for
+## deliver=link, and the save a few lines later read that same erased key — which in GDScript
+## is not a null, it is a hard runtime error that abandons the rest of the handler. So the
+## file never appeared, the resource_link never shipped either, and the caller was told
+## nothing was wrong. The save now reads a local the delivery step cannot reach.
+func _t_screenshot_save_with_link() -> void:
+	print("[unit] screenshot save_to survives deliver=link")
+	var mod = load("res://addons/beckett/tools/runtime_observe_tools.gd").new()
+	var payload := "beckett-capture-bytes".to_utf8_buffer()
+	var bridge := _CaptureBridgeStub.new()
+	bridge.b64 = Marshalls.raw_to_base64(payload)
+	var srv := _CaptureServerStub.new()
+	srv.bridge = bridge
+	mod.server = srv
+
+	var path := "user://beckett_unit_capture.png"
+	DirAccess.remove_absolute(path)
+	var out: Variant = mod._screenshot({"save_to": path, "deliver": "link"})
+	# Before the fix the handler aborted mid-way, so this came back empty.
+	_ok(typeof(out) == TYPE_DICTIONARY and not (out as Dictionary).is_empty(), "the handler returns a result instead of abandoning the call")
+	var od: Dictionary = out if typeof(out) == TYPE_DICTIONARY else {}
+	_ok(FileAccess.file_exists(path), "save_to wrote the file even though deliver=link dropped the inline copy")
+	if FileAccess.file_exists(path):
+		var f := FileAccess.open(path, FileAccess.READ)
+		_ok(f.get_buffer(f.get_length()) == payload, "...and it holds the real frame, not a 0-byte stub")
+		f.close()
+	_ok(str(od.get("text", "")).contains("saved %s" % path), "the line says it saved, and the file backs that up")
+	_ok(od.has("resource_links"), "the capture:// link still ships alongside the save")
+	_ok(not od.has("image_base64"), "deliver=link still keeps the base64 out of the transcript")
+	DirAccess.remove_absolute(path)
+	for rl in od.get("resource_links", []):
+		DirAccess.remove_absolute(Captures.DIR + "/" + str((rl as Dictionary)["uri"]).substr(10))
+
+	# The neighbouring silent success: an empty frame used to mint a 0-byte PNG and report
+	# "→ saved", which is exactly the thing a baseline must never be.
+	var empty_path := "user://beckett_unit_empty.png"
+	DirAccess.remove_absolute(empty_path)
+	_ok(not mod._save_capture("", empty_path).is_empty(), "saving an empty capture fails out loud")
+	_ok(not FileAccess.file_exists(empty_path), "...and leaves no 0-byte file behind")
 
 
 # ---------------------------------------------------------------- idempotency cache bounds (v1.13 S3)
@@ -1570,12 +1630,23 @@ func _t_ci_matrix() -> void:
 	_ok(not yml.contains("$ver-stable_linux"),
 			"asset names interpolate the derived tag, not a hardcoded -stable")
 
-	# The two count-site anchors release.ps1 pins on (Get-CountSites). Adding matrix
+	# The count-site anchors release.ps1 pins on (Get-CountSites). Adding matrix
 	# rows must never disturb them, or -FixCounts reports a missing site.
 	_ok(RegEx.create_from_string("the full \\d+-tool Lite").search(yml) != null,
 			"count-site anchor 'the full N-tool Lite' intact")
-	_ok(RegEx.create_from_string("-ExpectedTools \\d+").search(yml) != null,
-			"count-site anchor '-ExpectedTools N' intact")
+	_ok(RegEx.create_from_string("-Edition Lite -ExpectedTools \\d+").search(yml) != null,
+			"count-site anchor '-Edition Lite -ExpectedTools N' intact")
+	_ok(RegEx.create_from_string("-Edition Full -ExpectedTools \\d+").search(yml) != null,
+			"count-site anchor '-Edition Full -ExpectedTools N' intact")
+	# Only those two probes may carry a literal count: a third one would be a count no
+	# doctor site owns, free to drift.
+	var probes := RegEx.create_from_string("-ExpectedTools \\d+").search_all(yml).size()
+	_ok(probes == 2, "exactly two probe counts, one per edition (got %d)" % probes)
+	# The edition under test comes from the repository, not the checkout. Keyed on the
+	# sentinel module, a Full tree staged into the public repo would be probed as Full
+	# and pass; keyed on visibility it is held to the Lite count and fails.
+	_ok(yml.contains("github.event.repository.private"),
+			"the probe edition is keyed on repository visibility, not on files on disk")
 
 
 # ---------------------------------------------------------------- resolver suggestions (v1.13 S17)
@@ -1680,6 +1751,25 @@ func _t_export_safety() -> void:
 		"export safety: _autoload_target strips the singleton marker")
 	_ok(Plugin._autoload_target("*uid://definitely-not-a-real-uid").begins_with("uid://"),
 		"export safety: _autoload_target passes an unresolvable uid through instead of erroring")
+
+
+## Bundled templates are files to copy, not resources of the user's project.
+##
+## Their scenes point at res://main.gd and friends, paths that only exist once apply_template
+## has copied them. While the editor scanned templates/, every export that kept the addon
+## (beckett/strip_from_exports = false, or the plugin disabled) loaded those scenes and logged
+## "File not found" for each script. The .gdignore is the fix; the copy filter is what stops
+## that .gdignore from ever reaching res://, where it would hide the whole project.
+func _t_bundled_templates() -> void:
+	_ok(FileAccess.file_exists("res://addons/beckett/templates/.gdignore"),
+		"templates: the bundled templates folder carries a .gdignore")
+	var Templates := load("res://addons/beckett/tools/template_tools.gd")
+	_ok(not Templates._copyable(".gdignore"),
+		"templates: apply_template never copies a .gdignore into res://")
+	_ok(Templates._copyable("main.gd") and Templates._copyable("main.tscn"),
+		"templates: apply_template still copies scripts and scenes")
+	_ok(not Templates._copyable("main.gd.uid") and not Templates._copyable("template.json"),
+		"templates: apply_template leaves editor sidecars and the manifest behind")
 
 
 ## Source with comments and string literals removed, so a word inside prose or a path

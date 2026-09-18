@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Cross-platform CI smoke probe for the Beckett (MCP for Godot) Lite addon.
+    Cross-platform CI smoke probe for the Beckett (MCP for Godot) addon, Lite or Full.
 
 .DESCRIPTION
     One code path shared by GitHub Actions (all three runners, shell: pwsh) and a
@@ -11,8 +11,8 @@
          BECKETT_AUTO_CONFIG=0 so a CI boot never rewrites the repo's .mcp.json),
       2. waits for the embedded HTTP/JSON-RPC server to answer,
       3. POSTs initialize to http://127.0.0.1:<port>/mcp and asserts the response
-         carries protocolVersion + serverInfo,
-      4. POSTs tools/list and asserts EXACTLY the expected Lite tool count, and
+         carries protocolVersion + serverInfo, titled as the -Edition under test,
+      4. POSTs tools/list and asserts EXACTLY the expected tool count, and
       5. ALWAYS kills the editor process on the way out (finally block).
 
     Compatible with BOTH Windows PowerShell 5.1 (local dev) and PowerShell 7
@@ -36,8 +36,15 @@
     project.godot enabling res://addons/beckett/plugin.cfg). Defaults to the repo
     root two levels up from this script.
 
+.PARAMETER Edition
+    The edition the checkout must serve: Lite (default) or Full. The public repo, its
+    forks and any local Lite check run Lite; only the private authoring monorepo runs
+    Full. ci.yml picks it from the repository (owner + visibility), never from the files
+    on disk, so a Full tree that lands in the public repo is still probed as Lite.
+
 .PARAMETER ExpectedTools
-    Expected tool count from tools/list. Default 51 (the Lite surface since v1.9's doctor).
+    Expected tool count from tools/list. The default is the Lite surface, so -Edition
+    Full must pass its own count.
 
 .PARAMETER BootTimeoutSec
     How long to wait for the server to start answering before failing. Default 120
@@ -46,6 +53,7 @@
 .EXAMPLE
     pwsh tests/ci-smoke.ps1 -GodotExe /opt/godot/godot -Port 8790 -ProjectPath .
     powershell -File tests\ci-smoke.ps1 -GodotExe 'E:\Godot_v4.6.2-stable_win64\Godot_v4.6.2-stable_win64_console.exe' -Port 8791 -ProjectPath C:\path\to\stage
+    powershell -File tests\ci-smoke.ps1 -GodotExe <console exe> -Port 8792 -ProjectPath <monorepo root> -Edition Full -ExpectedTools <Full count>
 #>
 [CmdletBinding()]
 param(
@@ -56,9 +64,12 @@ param(
 
     [string]$ProjectPath,
 
-    # The Lite (L1-L4) tool count — bump together with tests/smoke.ps1's "advertises
-    # exactly N" check, dev/glama-dump-tools.ps1's note, and the -ExpectedTools arg
-    # in .github/workflows/ci.yml whenever the Lite surface changes.
+    [ValidateSet('Lite', 'Full')]
+    [string]$Edition = 'Lite',
+
+    # The Lite (L1-L4) tool count. Like tests/smoke.ps1's "advertises exactly N" check,
+    # dev/glama-dump-tools.ps1's note and both probe counts in .github/workflows/ci.yml,
+    # it is a release.ps1 count site: heal a changed surface with -FixCounts.
     [int]$ExpectedTools = 55,
 
     [int]$BootTimeoutSec = 120
@@ -66,6 +77,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# The default count is Lite's, so a Full probe that leaned on it would fail for a reason
+# that has nothing to do with the build under test.
+if ($Edition -eq 'Full' -and -not $PSBoundParameters.ContainsKey('ExpectedTools')) {
+    throw "-Edition Full needs an explicit -ExpectedTools (the default, $ExpectedTools, is the Lite count)"
+}
 
 if (-not $ProjectPath -or $ProjectPath -eq '') {
     # Default: repo root (this file lives in <root>/tests/).
@@ -116,7 +133,7 @@ function Stop-ProcessTree([int]$RootId) {
 Write-Host "[ci-smoke] boot + probe Beckett on $Endpoint" -ForegroundColor Cyan
 Write-Host "  godot   : $GodotExe"
 Write-Host "  project : $ProjectPath"
-Write-Host "  expect  : $ExpectedTools tools (Lite surface)"
+Write-Host "  expect  : $ExpectedTools tools ($Edition surface)"
 
 # Isolated, deterministic boot: enable the server, pin both ports, and never let the
 # boot rewrite the repo's client config. These are read by plugin.gd / mcp_server.gd.
@@ -173,8 +190,13 @@ try {
         "serverInfo carries a name ($($init.serverInfo.name))"
     Check ($init.serverInfo.title -like 'Beckett*') `
         "serverInfo.title identifies Beckett ($($init.serverInfo.title))"
+    # The server decides its own edition from the sentinel module on disk and marks Lite in
+    # the title, so this proves the server agrees with the edition the count below is for.
+    $titleSaysLite = "$($init.serverInfo.title)" -like '*Lite*'
+    Check ($titleSaysLite -eq ($Edition -eq 'Lite')) `
+        "serverInfo.title names the $Edition edition ($($init.serverInfo.title))"
 
-    # 3. tools/list: EXACTLY the Lite surface.
+    # 3. tools/list: EXACTLY the surface of the edition under test.
     $tools = (Invoke-Rpc @{ jsonrpc = '2.0'; id = 3; method = 'tools/list'; params = @{} }).result.tools
     $count = @($tools).Count
     Check ($count -eq $ExpectedTools) "tools/list advertises exactly $ExpectedTools tools (got $count)"
@@ -186,7 +208,8 @@ try {
         Write-Host "  [diag] addons/beckett/tools/*.gd on disk:" -ForegroundColor DarkYellow
         Get-ChildItem -Path (Join-Path $ProjectPath 'addons/beckett/tools') -Filter '*.gd' -Name -ErrorAction SilentlyContinue |
             ForEach-Object { Write-Host "    $_" -ForegroundColor DarkYellow }
-        foreach ($setting in @('beckett/effort', 'beckett/effort_schema')) {
+        # disabled_tools: the dock's per-tool off switches also drop tools from the list.
+        foreach ($setting in @('beckett/effort', 'beckett/effort_schema', 'beckett/disabled_tools')) {
             try {
                 $v = (Invoke-Rpc @{
                         jsonrpc = '2.0'; id = 9; method = 'tools/call'

@@ -6,7 +6,7 @@ extends EditorExportPlugin
 ## Beckett is an editor tool, but two things pull it into exports anyway: the
 ## plugin registers a project autoload (baked into project.godot, and therefore
 ## into every preset), and Godot's default export filter is "all resources in the
-## project", which sweeps up all of addons/. Left alone that ships ~480 KB of
+## project", which sweeps up all of addons/. Left alone that ships ~475 KB of
 ## compiled editor-only GDScript (the dock panel, the MCP server, every tool
 ## module) that a game can never load.
 ##

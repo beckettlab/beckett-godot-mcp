@@ -21,11 +21,11 @@
 # job name: the badge must not be able to stay green silently while the engine people
 # are actually upgrading to is broken. Read the job list, not just the badge.
 #
-# "The job list" means the PUBLIC repo's. This file is also committed to the private
-# authoring monorepo, where the LAST step ("Boot + probe MCP endpoint") asserts the Lite
-# tool count against a Full checkout and so always fails. Only THAT step is expected to be
-# red there - the parse-check and unit-suite steps above it are real signals on the
-# monorepo too, so read which step failed instead of writing the whole run off.
+# The same file also runs in the private authoring monorepo, whose checkout is the Full
+# edition. The probe step asserts the edition the REPOSITORY must serve, never whatever
+# happens to be on disk: beckettlab's private repo is probed as Full, every other copy (the
+# public repo, forks, mirrors) as Lite. Both probe counts are release.ps1 count sites, so
+# -FixCounts heals them together when the tool surface changes.
 name: ci
 
 on:
@@ -59,7 +59,7 @@ jobs:
         #   4.6.2    previous stable, all three OSes
         #   4.7.2    current stable, all three OSes - what the editor's own updater
         #            is pushing people onto, so it is the lane that must be honest
-        #   4.8-dev4 next-engine snapshot, Linux only, WARN-ONLY (see continue-on-error)
+        #   4.8-dev5 next-engine snapshot, Linux only, WARN-ONLY (see continue-on-error)
         # Measured billable minutes are 0 on BOTH repos this file lands in (public Lite
         # and the private monorepo; actions/runs/<id>/timing reports 0 for every OS on
         # each), and the jobs run in parallel under a ceiling of 20, so dropping mac/win
@@ -82,7 +82,7 @@ jobs:
           - os: windows-latest
             godot: '4.7.2'
           - os: ubuntu-latest
-            godot: '4.8-dev4'
+            godot: '4.8-dev5'
             experimental: true
 
     env:
@@ -114,7 +114,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $ver = $env:GODOT_VERSION
           # Two channels, one asset-naming rule. Pre-releases (dev/beta/rc) are published
-          # to godotengine/godot-builds and their tag IS the version ("4.8-dev4"); stable
+          # to godotengine/godot-builds and their tag IS the version ("4.8-dev5"); stable
           # releases live in godotengine/godot under "<ver>-stable". Either way the asset
           # names carry the tag verbatim, so derive the tag once and interpolate it.
           if ($ver -match '-(dev|beta|rc)\d*$') {
@@ -281,11 +281,26 @@ jobs:
       # Boot headless + probe the live MCP endpoint (initialize + tools/list).
       # ci-smoke.ps1 owns the boot, the wait, the assertions, and ALWAYS kills the
       # editor in its finally block. One code path for CI and local runs.
+      #
+      # The edition comes from the repository, not the checkout: only a private repo
+      # owned by beckettlab (the authoring monorepo) is probed as Full. Reading it off
+      # the sentinel module instead would fail open, because a Full tree staged into the
+      # public repo by mistake (pack.ps1 -StageDir without -Lite) would then be counted
+      # as Full and pass. Keyed on the repository, that tree is still held to the Lite
+      # count. Anything unexpected (no repository payload, a new owner) lands on Lite,
+      # the strict side.
       - name: Boot + probe MCP endpoint
         shell: pwsh
+        env:
+          BECKETT_CI_EDITION: ${{ github.repository_owner == 'beckettlab' && github.event.repository.private && 'Full' || 'Lite' }}
         run: |
           & "$env:GODOT_BIN" --headless --version | Out-Null
-          ./tests/ci-smoke.ps1 -GodotExe "$env:GODOT_BIN" -Port ([int]$env:BECKETT_CI_PORT) -ProjectPath . -ExpectedTools 55
+          $probe = @{ GodotExe = "$env:GODOT_BIN"; Port = [int]$env:BECKETT_CI_PORT; ProjectPath = '.' }
+          if ($env:BECKETT_CI_EDITION -eq 'Full') {
+            ./tests/ci-smoke.ps1 @probe -Edition Full -ExpectedTools 91
+          } else {
+            ./tests/ci-smoke.ps1 @probe -Edition Lite -ExpectedTools 55
+          }
 
       # Belt-and-suspenders: guarantee no Godot process outlives the job even if a
       # step above died before ci-smoke.ps1's finally ran.

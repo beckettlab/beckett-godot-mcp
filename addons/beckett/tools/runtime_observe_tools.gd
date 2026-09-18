@@ -196,13 +196,19 @@ func _screenshot(args: Dictionary) -> Dictionary:
 		desc += " (from %dx%d)" % [int(r.get("full_w", 0)), int(r.get("full_h", 0))]
 	if r.has("note"):
 		desc += " — " + str(r.get("note", ""))
-	var out := {"image_base64": str(r.get("data", r.get("png", ""))), "image_mime": str(r.get("mime", "image/png"))}
+	var b64 := str(r.get("data", r.get("png", "")))
+	var out := {"image_base64": b64, "image_mime": str(r.get("mime", "image/png"))}
+	# Hold the bytes in a LOCAL across delivery. deliver=link erases image_base64 from `out`,
+	# and reading an erased key is a hard GDScript error that aborts the whole handler — so
+	# save_to + deliver=link wrote no file, returned no picture and no link, and still came
+	# back isError:false. The editor path below has always saved from its own local; so does
+	# this one now. Anything that needs the frame after _apply_delivery reads b64, not `out`.
 	desc = _apply_delivery(args, out, desc)
 	if args.has("save_to"):
 		# The bytes are already here — saving them server-side costs nothing and removes the
 		# only reason an agent ever had to edit the GAME (adding a capture() helper to the
 		# deliverable) just to look at it. It also gives compare_screenshots a baseline.
-		var saved := _save_capture(str(out["image_base64"]), str(args["save_to"]))
+		var saved := _save_capture(b64, str(args["save_to"]))
 		if saved.is_empty():
 			desc += " → saved %s" % str(args["save_to"])
 		else:
@@ -293,6 +299,11 @@ func _apply_delivery(args: Dictionary, out: Dictionary, desc: String, mime_hint:
 func _save_capture(b64: String, path: String) -> String:
 	if path.is_empty():
 		return "empty path"
+	# Refuse to mint a 0-byte PNG and call it a baseline. An empty frame reaches here when
+	# the runtime answered with no data at all, and the whole point of this function is that
+	# "→ saved" means a file worth diffing against exists.
+	if b64.is_empty():
+		return "no image data to save"
 	var dir := path.get_base_dir()
 	if not dir.is_empty() and not DirAccess.dir_exists_absolute(dir):
 		var derr := DirAccess.make_dir_recursive_absolute(dir)

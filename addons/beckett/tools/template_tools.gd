@@ -11,6 +11,10 @@ class_name BeckettTemplateTools
 ##   { "description": "...", "main_scene": "res://main.tscn", "open": true }
 ## Bundled templates ship under addons/beckett/templates/; a project can add or override its
 ## own under res://.beckett/templates/ (same bundled+project pattern as skills).
+##
+## The bundled folder sits behind a .gdignore. Template scenes point at res:// paths that only
+## exist after the copy, so the editor must not scan them: an export that kept the addon used
+## to load them and log "File not found" for every script. DirAccess/FileAccess ignore it.
 
 var server
 
@@ -39,13 +43,10 @@ func _apply_template(args: Dictionary) -> Dictionary:
 		return {"error": "No template '%s'." % tpl, "json": {"available": _list_templates()}}
 
 	var dir := DirAccess.open(src)
-	# Copy source files only — skip editor sidecars and the manifest itself.
 	var files: Array = []
 	for f in dir.get_files():
-		var fn := str(f)
-		if fn.ends_with(".uid") or fn.ends_with(".import") or fn == "template.json":
-			continue
-		files.append(fn)
+		if _copyable(str(f)):
+			files.append(str(f))
 	if files.is_empty():
 		return {"error": "Template '%s' has no files." % tpl}
 	var force := bool(args.get("force", false))
@@ -106,6 +107,13 @@ func _apply_template(args: Dictionary) -> Dictionary:
 	if not editor_notes.is_empty():
 		out["editor_notes"] = editor_notes
 	return {"json": out}
+
+
+## Source files only: editor sidecars and the manifest stay behind, and so does every dotfile.
+## A .gdignore copied to res:// would hide the user's whole project from the editor.
+static func _copyable(file_name: String) -> bool:
+	return not (file_name.begins_with(".") or file_name.ends_with(".uid")
+		or file_name.ends_with(".import") or file_name == "template.json")
 
 
 func _template_dir(name: String) -> String:

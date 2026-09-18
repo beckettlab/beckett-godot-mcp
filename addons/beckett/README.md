@@ -1,9 +1,14 @@
-﻿# Beckett - MCP for Godot (Lite)
+# Beckett - MCP for Godot (Lite)
 
 Zero-sidecar Model Context Protocol server embedded in the Godot 4 editor.
-No Node.js, no Python, no second process. Enable the plugin in Project
-Settings > Plugins; it auto-starts and writes .mcp.json so Claude / Cursor /
-VS Code connect over local HTTP. Try "get_scene_tree".
+No Node.js, no Python, no second process.
+
+Install: the Asset Store and the Asset Library put this folder at
+res://addons/beckett/ for you. From a zip, extract it into your project root
+so this folder ends up at res://addons/beckett/. Then enable the plugin in
+Project Settings > Plugins; it auto-starts and writes .mcp.json so Claude /
+Cursor / VS Code connect over local HTTP. Try "get_scene_tree". Setup for
+other clients, docs and issues: https://github.com/beckettlab/beckett-godot-mcp
 
 This free Lite edition does the whole basic loop AND lets the AI SEE your
 running game: it inspects any node via reflection, authors scenes/scripts/
