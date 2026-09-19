@@ -91,7 +91,7 @@ var _resources
 var _prompts
 var _runtime_port: int = 8771
 
-var _session_id: String = ""
+var _session_id: String = ""  # minted at initialize, echoed by clients, never checked (see handle_http)
 # The revision `initialize` actually agreed on. Computed since forever, PERSISTED since
 # v1.14: the resource_link serializer branch has to know whether the peer can read one
 # (resource_link is 2025-06-18+, and we still serve 2025-03-26 clients). Defaults to our
@@ -385,13 +385,20 @@ func handle_http(req: Dictionary) -> Dictionary:
 		_client_ua = ua
 
 	if not _check_origin(headers):
-		return _http(403, {}, "forbidden origin")
+		return _refuse(403, "forbidden origin")
 	if not _check_host(headers):
-		return _http(403, {}, "forbidden host (this server only answers to a loopback Host)")
+		return _refuse(403, "forbidden host (this server only answers to a loopback Host)")
 	if not _check_token(headers, str(req.get("path", ""))):
-		return _http(401, {}, "unauthorized")
-	if not _check_session(headers):
-		return _http(404, {}, "unknown session")
+		return _refuse(401, "unauthorized")
+	# Deliberately NO session gate. Through v1.15.1 a _check_session() here answered 404 to any
+	# Mcp-Session-Id other than the one minted at initialize. That id names no server-side
+	# state (every client shares it, DELETE tears nothing down, a restart forgets it), so all
+	# the 404 could do was punish a client for an editor restart: A keeps its old id, B
+	# initializes and mints a new one, A's next request is refused. Live-tested 2026-09-19:
+	# Claude Code 2.1.275 echoes the id on every request and retries its event stream with
+	# the stale one; the 404 left that stream dead until a manual reconnect, and a client
+	# that treats one 404 as fatal (Claude Code #94273) drops the server outright. A 404 is
+	# only owed for a session the server TERMINATED, and this server never terminates one.
 
 	match method:
 		"GET":
@@ -1048,17 +1055,6 @@ func set_auth_disabled() -> void:
 		DirAccess.remove_absolute(AUTH_TOKEN_FILE)
 
 
-## Validate the session header ONLY when the client actually sends one. The spec lets
-## the server assign an id at initialize and have the client echo it back; we reject a
-## *mismatched* id (404 -> the client re-initializes) but never REQUIRE its presence,
-## so clients that omit it (e.g. Claude Code) keep working unchanged.
-func _check_session(headers: Dictionary) -> bool:
-	var sid := str(headers.get("mcp-session-id", ""))
-	if sid.is_empty() or _session_id.is_empty():
-		return true
-	return sid == _session_id
-
-
 # ---------------------------------------------------------------- small utils
 
 func get_undo_redo() -> EditorUndoRedoManager:
@@ -1071,6 +1067,17 @@ func _http(status: int, headers: Dictionary, body: String) -> Dictionary:
 
 func _body(json_string: String) -> Dictionary:
 	return {"status": 200, "headers": {}, "body": json_string}
+
+
+## A refusal from the gates at the top of handle_http: the reason in plain words, sent as the
+## text/plain it is. Those gates run before the body is parsed, so there is no request id a
+## JSON-RPC error could answer and the reason stays a bare sentence. It has to carry its own
+## Content-Type because http_server stamps the JSON default on any unlabeled body: through
+## v1.15.1 these went out as application/json over a body like `unauthorized`, and a client
+## that picks its parser from that header reported a JSON parse error instead of the 401/403
+## it was actually given.
+func _refuse(status: int, reason: String) -> Dictionary:
+	return _http(status, {"Content-Type": "text/plain; charset=utf-8"}, reason)
 
 
 static func _env_flag(key: String) -> bool:

@@ -54,7 +54,9 @@ func _init() -> void:
 	_t_idempotency_bounds()
 	_t_instructions_skill_count()
 	_t_http_content_type()
+	_t_session_never_404()
 	_t_secure_equals()
+	_t_refusal_content_type()
 	_t_validate_args()
 	_t_call_args()
 	_t_error_echo()
@@ -596,6 +598,64 @@ func _t_secure_equals() -> void:
 	_ok(not MCPServer._secure_equals("abc123", "abc124"), "one differing byte rejects")
 	_ok(not MCPServer._secure_equals("abc", "abc1"), "length mismatch rejects")
 	_ok(MCPServer._secure_equals("", ""), "empty == empty")
+
+
+# ---------------------------------------------------------------- gate refusals (401/403 Content-Type)
+
+## True when a handle_http answer's Content-Type tells the truth about its body. The label is
+## resolved the way http_server._respond resolves it: the handler's own header when it set
+## one, else the JSON default that any other non-empty body is stamped with.
+func _label_matches_body(resp: Dictionary) -> bool:
+	var body := str(resp.get("body", ""))
+	if body.is_empty():
+		return true  # nothing to describe: _respond sends no Content-Type with an empty body
+	var label := str((resp.get("headers", {}) as Dictionary).get("Content-Type", HttpServer._JSON_CONTENT_TYPE)).to_lower()
+	# JSON.new().parse(), not JSON.parse_string(): the static one push_error()s on every
+	# miss, and a plain-text body is the expected case here, not a failure.
+	var parser := JSON.new()
+	var is_json := parser.parse(body) == OK and (parser.data is Dictionary or parser.data is Array)
+	if label.begins_with("application/json"):
+		return is_json
+	return label.begins_with("text/plain") and not is_json
+
+
+## The gates in front of dispatch refuse in plain words ("unauthorized", "forbidden host ..."),
+## and through v1.15.1 those words went out labeled application/json: handle_http set no
+## Content-Type and http_server stamps its JSON default on any body (seen on the wire
+## 2026-09-19). A client that picks its parser from the header then reports a JSON parse
+## error on top of the real 401/403, the last thing a client probing a legacy server with
+## server/discover needs. The status codes are pinned too: relabeling must not move them.
+func _t_refusal_content_type() -> void:
+	print("[unit] gate refusals are labeled as what their body is")
+	var s = MCPServer.new()
+	var ping := JSON.stringify({"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}})
+	var init := JSON.stringify({"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "unit", "version": "0"}}})
+
+	# The DNS-rebinding shape: no Origin, a Host that is not a loopback literal.
+	var spoof: Dictionary = s.handle_http({"method": "POST", "path": "/mcp", "headers": {"host": "evil.example.com"}, "body": ping})
+	_ok(int(spoof["status"]) == 403, "a spoofed Host answers 403")
+	_ok(not str(spoof["body"]).is_empty(), "...and still says why")
+	_ok(_label_matches_body(spoof), "...under a Content-Type that fits the body ('%s' over '%s')" % [(spoof["headers"] as Dictionary).get("Content-Type", "<the JSON default>"), spoof["body"]])
+
+	var cross: Dictionary = s.handle_http({"method": "POST", "path": "/mcp", "headers": {"origin": "https://evil.example.com"}, "body": ping})
+	_ok(int(cross["status"]) == 403 and _label_matches_body(cross), "a cross-origin request answers 403, labeled to fit ('%s')" % cross["body"])
+
+	# Whatever a mismatched Mcp-Session-Id is answered with, its label has to fit too. The
+	# initialize mints the real id, so the second request genuinely mismatches.
+	s.handle_http({"method": "POST", "path": "/mcp", "headers": {}, "body": init})
+	var stale: Dictionary = s.handle_http({"method": "POST", "path": "/mcp", "headers": {"mcp-session-id": "not-the-minted-one"}, "body": ping})
+	_ok(_label_matches_body(stale), "a mismatched session id is answered under a fitting label too (status %d)" % int(stale["status"]))
+
+	s._token = "unit-token"
+	var anon: Dictionary = s.handle_http({"method": "POST", "path": "/mcp", "headers": {}, "body": ping})
+	_ok(int(anon["status"]) == 401 and _label_matches_body(anon), "a request without the token answers 401, labeled to fit ('%s')" % anon["body"])
+
+	# The other direction, or the helper above proves nothing: a served JSON-RPC answer sets
+	# no Content-Type of its own, so _respond keeps stamping the charset-declaring JSON default.
+	var served: Dictionary = s.handle_http({"method": "POST", "path": "/mcp", "headers": {"authorization": "Bearer unit-token"}, "body": ping})
+	_ok(int(served["status"]) == 200 and not (served["headers"] as Dictionary).has("Content-Type"), "a served JSON-RPC answer leaves the Content-Type to the JSON default")
+	_ok(_label_matches_body(served), "...and that default fits its body")
+	s.free()
 
 
 # ---------------------------------------------------------------- input validation gate
@@ -1408,6 +1468,71 @@ func _t_http_content_type() -> void:
 	var ct: String = HttpServer._JSON_CONTENT_TYPE
 	_ok(ct.begins_with("application/json"), "default Content-Type is still JSON")
 	_ok(ct.to_lower().contains("charset=utf-8"), "default Content-Type declares charset=utf-8")
+
+
+# ---------------------------------------------------------------- session id + the 2026-07-28 probe
+
+## One request through the real gate stack (handle_http), the way http_server hands it over:
+## header keys arrive lowercased.
+func _http_req(s, verb: String, headers: Dictionary, payload: Dictionary = {}) -> Dictionary:
+	return s.handle_http({"method": verb, "path": "/mcp", "headers": headers, "body": JSON.stringify(payload) if not payload.is_empty() else ""})
+
+
+## A stale or unknown Mcp-Session-Id must never answer 404. Live-found 2026-09-19 against
+## Claude Code 2.1.275: it echoes the id on EVERY request after initialize, so the old
+## _check_session gate was reachable - editor restarts, a second client initializes and
+## mints a new id, and the first client's next call was refused on every verb, `initialize`
+## included. A client that treats one 404 as fatal (Claude Code #94273) never comes back.
+## The id names no server-side state, so there is nothing for a mismatch to protect.
+func _t_session_never_404() -> void:
+	print("[unit] a stale Mcp-Session-Id is served, never 404ed")
+	var s = MCPServer.new()
+	var stale := {"mcp-session-id": "held-since-before-the-editor-restarted"}
+	var ping := {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {}}
+	var init := {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "unit", "version": "0"}}}
+
+	# The freshly restarted editor: no id minted yet, a client still holding its old one.
+	_ok(int(_http_req(s, "POST", stale, ping)["status"]) == 200, "fresh server serves a client holding a pre-restart id")
+
+	# A second client initializes. This is the moment the old gate started refusing the first.
+	var ri := _http_req(s, "POST", {}, init)
+	var minted := str((ri["headers"] as Dictionary).get("Mcp-Session-Id", ""))
+	_ok(int(ri["status"]) == 200 and minted.length() == 32, "initialize still mints an Mcp-Session-Id for clients that expect one")
+	_ok(minted != str(stale["mcp-session-id"]), "...and it differs from the stale id, so the requests below really mismatch")
+
+	var rp := _http_req(s, "POST", stale, ping)
+	var rp_body: Variant = JSON.parse_string(str(rp["body"]))
+	_ok(int(rp["status"]) == 200 and rp_body is Dictionary and (rp_body as Dictionary).has("result"), "POST with a mismatched id gets its JSON-RPC result")
+	_ok(int(_http_req(s, "POST", stale, init)["status"]) == 200, "initialize carrying a stale id is served (a client re-initializing the lazy way)")
+	_ok(int(_http_req(s, "POST", stale, {"jsonrpc": "2.0", "method": "notifications/initialized"})["status"]) == 202, "a notification with a stale id still gets its 202")
+	_ok(int(_http_req(s, "DELETE", stale)["status"]) == 200, "DELETE with a stale id stays the stateless no-op")
+	var sse_headers := stale.duplicate()
+	sse_headers["accept"] = "text/event-stream"
+	_ok(bool(_http_req(s, "GET", sse_headers).get("sse", false)), "GET with a stale id still opens the event stream")
+	_ok(int(_http_req(s, "POST", {"mcp-session-id": minted}, ping)["status"]) == 200, "the current id keeps working")
+	_ok(int(_http_req(s, "POST", {}, ping)["status"]) == 200, "no id at all keeps working")
+
+	# The gate stack in front of it is untouched: a session id is not a way around it.
+	var spoofed := stale.duplicate()
+	spoofed["host"] = "evil.example.com"
+	_ok(int(_http_req(s, "POST", spoofed, ping)["status"]) == 403, "a stale id does not soften the Host gate")
+
+	# The 2026-07-28 discovery probe, replayed as Claude Code 2.1.275 sends it (wire capture
+	# 2026-09-19): no session id, a STRING request id, the new headers. Until the server is
+	# dual-era, the client's fallback to `initialize` hangs on this exact answer: a clean
+	# -32601 over HTTP 200 with the id echoed unchanged. A 4xx/5xx here is what breaks it.
+	var probe := {"jsonrpc": "2.0", "id": "server-discover-probe-1", "method": "server/discover", "params": {"_meta": {
+		"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+		"io.modelcontextprotocol/clientInfo": {"name": "claude-code", "version": "2.1.275"},
+		"io.modelcontextprotocol/clientCapabilities": {"roots": {"listChanged": true}, "elicitation": {}}}}}
+	var rd := _http_req(s, "POST", {"mcp-method": "server/discover", "mcp-protocol-version": "2026-07-28"}, probe)
+	var rd_body: Variant = JSON.parse_string(str(rd["body"]))
+	_ok(int(rd["status"]) == 200 and rd_body is Dictionary, "server/discover answers HTTP 200 with a JSON-RPC body")
+	if rd_body is Dictionary:
+		var rd_err: Dictionary = (rd_body as Dictionary).get("error", {})
+		_ok(int(rd_err.get("code", 0)) == JsonRpc.METHOD_NOT_FOUND, "...carrying -32601, the signal a 2026-07-28 client falls back on")
+		_ok(typeof((rd_body as Dictionary).get("id")) == TYPE_STRING and str((rd_body as Dictionary).get("id")) == "server-discover-probe-1", "...with the string request id echoed unchanged")
+	s.free()
 
 
 # ---------------------------------------------------------------- game view + Suspend (v1.13 S11/S12)
