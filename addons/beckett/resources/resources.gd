@@ -8,6 +8,7 @@ class_name BeckettResources
 
 const Reflect := preload("res://addons/beckett/core/reflection.gd")
 const Captures := preload("res://addons/beckett/core/captures.gd")
+const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # the asset walk does not follow a link out of the project
 
 var server
 
@@ -51,7 +52,10 @@ func read(uri: String) -> Dictionary:
 		"project://settings":
 			return _json(_project_settings())
 		"assets://list":
-			return _json({"files": _list_assets()})
+			var skipped: Array = []
+			var listing := {"files": _list_assets(500, skipped)}
+			listing.merge(PathGuard.skipped_note(skipped))
+			return _json(listing)
 		"log://output":
 			return _log_tail()
 		"audit://recent":
@@ -120,13 +124,13 @@ func _connection_status() -> Dictionary:
 	}
 
 
-func _list_assets(limit: int = 500) -> Array:
+func _list_assets(limit: int = 500, skipped: Array = []) -> Array:
 	var out: Array = []
-	_walk("res://", out, limit)
+	_walk("res://", out, limit, skipped, {})
 	return out
 
 
-func _walk(path: String, out: Array, limit: int) -> void:
+func _walk(path: String, out: Array, limit: int, skipped: Array, memo: Dictionary) -> void:
 	if out.size() >= limit:
 		return
 	var dir := DirAccess.open(path)
@@ -141,7 +145,10 @@ func _walk(path: String, out: Array, limit: int) -> void:
 		var full := path.path_join(entry)
 		if dir.current_is_dir():
 			if entry != ".godot":
-				_walk(full, out, limit)
+				if PathGuard.walk_skip(full, memo):
+					skipped.append(full)
+				else:
+					_walk(full, out, limit, skipped, memo)
 		else:
 			if not entry.ends_with(".import") and not entry.ends_with(".uid"):
 				out.append(full)

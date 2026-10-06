@@ -17,6 +17,7 @@ extends RefCounted
 ## 4.2+ floor: only 4.0-era APIs (get_global_rect, mouse_filter, clip_contents,
 ## gui_get_focus_owner, Window.position/size/exclusive, String.md5_text).
 
+const CallArgs := preload("res://addons/beckett/core/callargs.gd")  # the two flags below can arrive as text
 const TEXT_CAP := 160  # per-node text cap - dialogue Labels can be huge
 # 150 entries comfortably fits any menu screen while keeping a world-HUD sweep from
 # ballooning the payload (a real RPG's full Control set measured ~14k tokens at 400) -
@@ -38,8 +39,8 @@ static func snapshot(vp: Viewport, tree_root: Node, scene_root: Node, scope: Nod
 		"vp": vp,
 		"tree_root": tree_root,
 		"scene_root": scene_root,
-		"interactive_only": bool(msg.get("interactive_only", false)),
-		"occlusion": bool(msg.get("occlusion", true)),
+		"interactive_only": CallArgs.flag(msg, "interactive_only"),
+		"occlusion": CallArgs.flag(msg, "occlusion", true),
 		"max": maxi(1, int(msg.get("max_nodes", DEFAULT_MAX_NODES))),
 		"controls": [],
 		"windows": [],

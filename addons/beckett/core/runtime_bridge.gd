@@ -18,6 +18,10 @@ var port: int = 8771
 ## Empty = handshake not required (BECKETT_AUTH=0 / legacy runtimes).
 var expected_token: String = ""
 
+## The editor's break watch (core/break_watch.gd), set by plugin.gd; null outside an editor (the unit suite, a
+## headless child), where nothing can be asked and the bridge behaves exactly as it did before 1.16.
+var break_watch: Object = null
+
 var _tcp := TCPServer.new()
 var _peer: StreamPeerTCP = null
 var _pending: StreamPeerTCP = null      # connected, hello not yet verified
@@ -360,6 +364,13 @@ static func _game_view(mode: String, placement: String, source: String) -> Dicti
 ## mis-returning it and leaving every subsequent call to read one stale line behind (the
 ## desync that used to wedge the channel until stop_scene).
 func send_command(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
+	# A game parked in the editor's debugger cannot answer until someone presses Continue: say so now. Waiting out
+	# the timeout teaches nothing, and the command would sit unread in the socket and run, late, the moment the
+	# game resumes (a click or a property write nobody is waiting for any more). A game that broke before its
+	# runtime could say hello is not connected at all, and "game not running" would send the agent to restart it.
+	var paused := break_text()
+	if not paused.is_empty():
+		return {"ok": false, "error": paused}
 	if not is_game_connected():
 		return {"ok": false, "error": "game not running (no runtime connection). Call play_scene first, then wait_until condition=game_connected."}
 	_seq += 1
@@ -399,7 +410,77 @@ func send_command(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
 						return parsed
 					# stale reply (old id) or malformed line → drop and keep reading
 		OS.delay_msec(4)
+	# A break can begin while this call waits. The editor itself only learns of it a frame after it happens and
+	# this call has held the main thread the whole time, so this read is usually still "no" and the NEXT call is
+	# the one that answers at once; it costs nothing, and it is right whenever the state did move.
+	paused = break_text()
+	if not paused.is_empty():
+		return {"ok": false, "error": paused}
 	return {"ok": false, "error": _timeout_error(timeout_ms)}
+
+
+# --- The game is parked in the editor's debugger (v1.16) ---------------------------------------
+# A script error in an editor-launched game breaks into the debugger; the game's main thread then waits there
+# for Continue, so nothing on this channel is answered. See core/break_watch.gd for how it is detected.
+
+## The phrase every "game is parked in the debugger" answer (break_message) contains and no other answer does,
+## the timeout one included. playtest_tools.gd looks for it in a command's error: a break is a run that could
+## not be judged, never a failed assert, and a batch that hits one stops instead of retrying.
+const BREAK_MARK := "paused in the editor's debugger"
+
+## Logger-based capture (game_logs, the error and its backtrace) and the --ignore-error-breaks launch flag are
+## 4.5+. Engine.get_version_info()["hex"] of 4.5.0.
+const LOGGER_SINCE_HEX := 0x040500
+
+
+## The debugger's break state as the break watch reports it: {} when no game session is paused (or there is no
+## watch at all), else {broken, sessions, broken_sessions, can_debug} (break_watch.gd state_of).
+func debugger_break() -> Dictionary:
+	if break_watch == null or not is_instance_valid(break_watch) or not break_watch.has_method("break_state"):
+		return {}
+	var state: Variant = break_watch.call("break_state")
+	return state if state is Dictionary else {}
+
+
+## "" when the game is not paused in the debugger, else break_message for the editor this runs in (its Game
+## workspace mode and its engine version read here). What send_command answers with, and get_play_state shows.
+func break_text() -> String:
+	var brk := debugger_break()
+	if brk.is_empty():
+		return ""
+	return break_message(brk, game_view_state(), int(Engine.get_version_info().get("hex", 0)), is_game_connected())
+
+
+## The sentence an agent reads when the game is paused in the debugger. The customer who reported this bug had
+## an agent that, after each bare timeout, abandoned the runtime tools and redid the work by running the game
+## headless outside the editor, where no debugger is attached and the error just scrolls past. So it says what
+## is going on, that Beckett is still connected, what NOT to do, and the ways forward: Continue and read the
+## log (4.5+ captured the error before the break, so game_logs has it once the game resumes), or stop, fix and
+## play again. Pure, so the unit suite can pin it for every case: a script error vs a breakpoint, 4.5+ vs
+## older, embedded vs windowed, connected or not. `brk` is break_state()'s dictionary, `gv` game_view_state()'s.
+## `connected` false is a game that broke before its runtime said hello (an error in the main scene's _ready):
+## with the handshake on, the editor drops a peer that stays silent, so the game never shows as connected at all.
+static func break_message(brk: Dictionary, gv: Dictionary, version_hex: int, connected: bool = true) -> String:
+	var at_error := not bool(brk.get("can_debug", false))
+	var msg := "game %s at %s: " % [BREAK_MARK, "a script error" if at_error else "a breakpoint (or the debugger's Pause button)"]
+	if connected:
+		msg += "Beckett is still connected, but the game is parked inside the debugger, so it cannot answer runtime calls until it resumes."
+	else:
+		msg += "it stopped before it could connect to Beckett and is parked inside the debugger, so it cannot connect until it resumes."
+	msg += " Do not re-run the game outside the editor to get around this."
+	var sessions := int(brk.get("sessions", 1))
+	if sessions > 1:
+		msg += " %d of %d running game instances are paused." % [int(brk.get("broken_sessions", 1)), sessions]
+	var then_read := "then read game_logs" if connected else "then wait_until condition=game_connected and read game_logs"
+	if at_error and version_hex >= LOGGER_SINCE_HEX:
+		msg += " Next step: ask the user to press Continue (F12) in the editor's Debugger panel, %s (this Godot version already captured the error and its backtrace); or call stop_scene, fix the script and play_scene again." % then_read
+	elif at_error:
+		msg += " Next step: ask the user to read the error in the editor's Debugger panel (this Godot version does not log it while the debugger is attached, so game_logs cannot show it) and press Continue (F12) there; or call stop_scene, fix the script and play_scene again."
+	else:
+		msg += " Next step: ask the user to press Continue (F12) in the editor's Debugger panel, or call stop_scene to end the run."
+	if str(gv.get("mode", "")) == "embedded":
+		msg += " Continue is on the Debugger panel's toolbar in the bottom panel; the Game workspace's Suspend button is a different thing and does not resume this."
+	return msg
 
 
 ## v1.13 S12: an embedded game has one failure mode that looks exactly like a dead channel.
@@ -411,15 +492,21 @@ static func _timeout_error(timeout_ms: int) -> String:
 	return _timeout_message(timeout_ms, game_view_state())
 
 
+## The timeout answer when the game is NOT known to be paused in the debugger (a known pause is break_message's).
 ## Split from the probe so the unit suite can pin the sentence the agent actually reads:
 ## the embedded branch only fires in a real editor with a real Game workspace, which no
-## headless check can stage.
+## headless check can stage. The debugger comes first because it is the likelier cause, and because it is the one
+## that sent an agent off to the wrong fix (the Suspend button) before 1.16: a break that begins while a call
+## waits is only visible to the editor a frame later, so this first timeout cannot name it, but get_play_state can.
 static func _timeout_message(timeout_ms: int, gv: Dictionary) -> String:
-	var msg := "runtime timeout after %d ms" % timeout_ms
+	var msg := ("runtime timeout after %d ms - the game stopped answering. If it just hit a script error or a breakpoint it is stopped in the editor's debugger,"
+		+ " which Beckett learns of a frame after it happens: call get_play_state (it reports debugger_break and the next step).") % timeout_ms
 	if str(gv.get("mode", "")) == "embedded":
-		msg += (" - the game is running EMBEDDED in the editor's Game workspace (placement: %s),"
+		msg += (" If that says false: the game is running EMBEDDED in the editor's Game workspace (placement: %s),"
 			+ " so the likeliest cause is its Suspend button: suspending stops the entire SceneTree,"
 			+ " this channel included, and every runtime call then times out with no other symptom."
 			+ " Press Suspend again (or Next Frame) and retry. This is NOT time_control op=freeze,"
 			+ " which pauses the game and leaves the channel answering.") % str(gv.get("placement", "?"))
+	else:
+		msg += " If that says false, the game is busy or hung."
 	return msg

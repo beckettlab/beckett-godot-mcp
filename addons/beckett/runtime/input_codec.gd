@@ -19,6 +19,8 @@ extends RefCounted
 ##   {type:"touch", index, position:[x,y], pressed}
 ##   {type:"touch_drag", index, position:[x,y], relative:[x,y]}
 
+const CallArgs := preload("res://addons/beckett/core/callargs.gd")  # "pressed" can arrive as text from a lenient client
+
 
 ## Godot 4.7 gave synthesized keyboard/mouse events a real device id; before that, an
 ## injected event carried device 0 and code that filters on the device could not tell it
@@ -62,7 +64,7 @@ static func build_event(e: Dictionary) -> InputEvent:
 			var kc: int = OS.find_keycode_from_string(str(e.get("keycode", "")))
 			k.keycode = kc
 			k.physical_keycode = kc
-			k.pressed = bool(e.get("pressed", true))
+			k.pressed = CallArgs.flag(e, "pressed", true)
 			var uni: Variant = e.get("unicode", 0)
 			if uni is String and (uni as String).length() > 0:
 				k.unicode = (uni as String).unicode_at(0)
@@ -74,13 +76,13 @@ static func build_event(e: Dictionary) -> InputEvent:
 		"action":
 			var a := InputEventAction.new()
 			a.action = StringName(str(e.get("action", "")))
-			a.pressed = bool(e.get("pressed", true))
-			a.strength = float(e.get("strength", 1.0)) if e.get("pressed", true) else 0.0
+			a.pressed = CallArgs.flag(e, "pressed", true)
+			a.strength = float(e.get("strength", 1.0)) if a.pressed else 0.0
 			return a
 		"mouse_button":
 			var mb := InputEventMouseButton.new()
 			mb.button_index = int(e.get("button", 1))
-			mb.pressed = bool(e.get("pressed", true))
+			mb.pressed = CallArgs.flag(e, "pressed", true)
 			mb.position = vec2(e.get("position", [0, 0]))
 			if _device_mouse >= 0:
 				mb.device = _device_mouse
@@ -95,7 +97,7 @@ static func build_event(e: Dictionary) -> InputEvent:
 		"joy_button":
 			var jb := InputEventJoypadButton.new()
 			jb.button_index = int(e.get("button", 0))
-			jb.pressed = bool(e.get("pressed", true))
+			jb.pressed = CallArgs.flag(e, "pressed", true)
 			jb.device = int(e.get("device", 0))
 			return jb
 		"joy_axis":
@@ -108,7 +110,7 @@ static func build_event(e: Dictionary) -> InputEvent:
 			var st := InputEventScreenTouch.new()
 			st.index = int(e.get("index", 0))
 			st.position = vec2(e.get("position", [0, 0]))
-			st.pressed = bool(e.get("pressed", true))
+			st.pressed = CallArgs.flag(e, "pressed", true)
 			return st
 		"touch_drag":
 			var sd := InputEventScreenDrag.new()
@@ -160,3 +162,65 @@ static func vec2(v: Variant) -> Vector2:
 	if v is Dictionary:
 		return Vector2(v.get("x", 0), v.get("y", 0))
 	return Vector2.ZERO
+
+
+# --- held-input bookkeeping (v1.16, playtest op=repeat) -------------------------------------------
+# A run that ends with a key still down would hand the NEXT run a game that already believes the key
+# is held, and the second run would read as flaky for a reason that has nothing to do with the game.
+# mcp_runtime remembers what its injected events pressed (track), so a scene restart can let go.
+
+## What an event presses, as a stable key: "" for an event that holds nothing (motion, drag).
+static func held_signature(e: InputEvent) -> String:
+	if e is InputEventKey:
+		return "key:%d:%d" % [(e as InputEventKey).keycode, (e as InputEventKey).physical_keycode]
+	if e is InputEventMouseButton:
+		return "mouse:%d" % (e as InputEventMouseButton).button_index
+	if e is InputEventJoypadButton:
+		return "joy:%d:%d" % [(e as InputEventJoypadButton).device, (e as InputEventJoypadButton).button_index]
+	if e is InputEventJoypadMotion:
+		return "axis:%d:%d" % [(e as InputEventJoypadMotion).device, (e as InputEventJoypadMotion).axis]
+	if e is InputEventScreenTouch:
+		return "touch:%d" % (e as InputEventScreenTouch).index
+	if e is InputEventAction:
+		return "action:%s" % str((e as InputEventAction).action)
+	return ""
+
+
+## Is the event holding its input down (a press, a non-zero axis)?
+static func holds(e: InputEvent) -> bool:
+	if e is InputEventJoypadMotion:
+		return absf((e as InputEventJoypadMotion).axis_value) > 0.0
+	return e.is_pressed()
+
+
+## The event that lets go of what `e` pressed: a copy with pressed=false, the axis at 0, no strength.
+static func release_of(e: InputEvent) -> InputEvent:
+	var r := e.duplicate() as InputEvent
+	if r is InputEventJoypadMotion:
+		(r as InputEventJoypadMotion).axis_value = 0.0
+	elif r is InputEventAction:
+		(r as InputEventAction).pressed = false
+		(r as InputEventAction).strength = 0.0
+	elif "pressed" in r:
+		r.set("pressed", false)
+	return r
+
+
+## Update `held` (signature -> release event) after `e` was injected.
+static func track(held: Dictionary, e: InputEvent) -> void:
+	var sig := held_signature(e)
+	if sig.is_empty():
+		return
+	if holds(e):
+		held[sig] = release_of(e)
+	else:
+		held.erase(sig)
+
+
+## Let go of everything `held` remembers, and forget it. Returns how many inputs were released.
+static func release_all(held: Dictionary) -> int:
+	var n := held.size()
+	for sig in held:
+		Input.parse_input_event(held[sig])
+	held.clear()
+	return n

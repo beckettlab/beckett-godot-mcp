@@ -70,6 +70,8 @@ const _DELTA := {
 		"connect_signal", "disconnect_signal", "list_signals",
 		# files & project (write)
 		"write_file", "set_project_setting",
+		# catch the editor up with files written outside it (class_name registration, imports)
+		"rescan_filesystem",
 		# scaffold from a bundled/project template
 		"apply_template",
 		# batching authoring steps

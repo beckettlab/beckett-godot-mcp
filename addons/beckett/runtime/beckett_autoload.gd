@@ -20,7 +20,12 @@ extends Node
 ##      a game the editor itself launched (EditorInterface.play_main_scene), so
 ##      "am I running under an editor build" is the exact gate. In an export
 ##      template OS.has_feature("editor") is false and this node stays an empty,
-##      silent Node: no socket, no retry timer, no commands served.
+##      silent Node: no socket, no retry timer, no commands served. The gate also
+##      asks for "template" to be absent, because "editor" alone can be forged: a
+##      project's override.cfg line `_custom_features="editor"` makes the editor feature
+##      true inside an export template (measured in Breakpoint MCP v1.87.0, another
+##      Godot MCP addon, 2026-10-01), while "template" is a built-in feature that only
+##      a template build has and no custom feature can take away.
 ##
 ## Pair this with core/export_filter.gd, which strips every OTHER Beckett file out
 ## of the pack, so a shipped game carries this stub and nothing else.
@@ -34,7 +39,7 @@ const IMPL_NAME := "BeckettRuntimeImpl"
 func _ready() -> void:
 	# Rule 2. First statement in the file for a reason: everything below this line
 	# is editor-only, and an exported game must fall out here having done nothing.
-	if not OS.has_feature("editor"):
+	if not OS.has_feature("editor") or OS.has_feature("template"):
 		return
 
 	# Duplicate-autoload guard, twin case: a project upgraded across the

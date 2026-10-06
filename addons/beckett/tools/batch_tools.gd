@@ -10,6 +10,8 @@ class_name BeckettBatchTools
 ## NOT rolled back; the result says so. Sub-calls are re-gated, so read-only / allowlist /
 ## confirm-destructive rules still apply per step.
 
+const CallArgs := preload("res://addons/beckett/core/callargs.gd")
+
 var server  # mcp_server node (owns .registry and ._gate)
 
 
@@ -33,8 +35,8 @@ func _batch_execute(args: Dictionary) -> Dictionary:
 	var steps: Variant = args.get("steps", [])
 	if not (steps is Array) or (steps as Array).is_empty():
 		return {"error": "steps must be a non-empty array of {tool, args}."}
-	var stop := bool(args.get("stop_on_error", true))
-	var want_rollback := bool(args.get("rollback", true))
+	var stop := CallArgs.flag(args, "stop_on_error", true)
+	var want_rollback := CallArgs.flag(args, "rollback", true)
 	var registry = server.registry
 
 	var uredo := _scene_undo()
@@ -77,7 +79,7 @@ func _batch_execute(args: Dictionary) -> Dictionary:
 		var rd: Dictionary = raw if raw is Dictionary else {"text": str(raw)}
 		var step_echoes: Array = server.error_echo.echo_since(echo_mark) if server.error_echo != null else []
 		if rd.has("error"):
-			var fail_entry := {"step": i, "tool": tname, "ok": false, "error": str(rd["error"])}
+			var fail_entry := {"step": i, "tool": tname, "ok": false, "error": server.explain_error(str(rd["error"]))}
 			if not step_echoes.is_empty():
 				fail_entry["engine_errors"] = step_echoes
 			results.append(fail_entry)

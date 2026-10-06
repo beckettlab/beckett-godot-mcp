@@ -7,6 +7,8 @@ class_name BeckettResourceTools
 ## can wire a Texture2D onto a Sprite2D, a Shape2D onto a CollisionShape2D, etc.
 
 const Reflect := preload("res://addons/beckett/core/reflection.gd")
+const PersistGuard := preload("res://addons/beckett/core/persist_guard.gd")  # says when a save would drop the assignment
+const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # the write rule for a saved resource, the read rule for a loaded one
 
 
 var server
@@ -39,6 +41,8 @@ func _register(registry) -> void:
 
 func _create_resource(args: Dictionary) -> Dictionary:
 	var cls := str(args.get("class", ""))
+	# class_exists stays first: from Godot 4.8 (#123379) can_instantiate() on a script class_name
+	# prints an error instead of answering (see scene_tools._create_node).
 	if not ClassDB.class_exists(cls) or not ClassDB.can_instantiate(cls):
 		return {"error": "Cannot instantiate class: %s" % cls}
 	var obj: Variant = ClassDB.instantiate(cls)
@@ -52,6 +56,9 @@ func _create_resource(args: Dictionary) -> Dictionary:
 	var path := str(args.get("path", ""))
 	if not path.begins_with("res://"):
 		return {"error": "path must start with res://"}
+	var perr: String = PathGuard.write_path_error(path)  # no "..", no control characters, no link that leaves the project
+	if not perr.is_empty():
+		return {"error": "%s: %s" % [path, perr]}
 	var err := ResourceSaver.save(res, path)
 	if err != OK:
 		return {"error": "save failed: %s" % error_string(err)}
@@ -66,13 +73,18 @@ func _set_resource(args: Dictionary) -> Dictionary:
 		return {"error": "Could not resolve target: %s" % str(args.get("target", ""))}
 	var prop := str(args.get("property", ""))
 	var value: Resource = null
+	var guard: Dictionary = {}
 	if args.has("resource"):
 		var rp := str(args["resource"])
+		guard = PathGuard.check_read(rp)
+		if guard.has("error"):
+			return guard
 		if not ResourceLoader.exists(rp):
 			return {"error": "No resource at: %s" % rp}
 		value = ResourceLoader.load(rp)
 	elif args.has("class"):
 		var cls := str(args["class"])
+		# class_exists stays first, as in _create_resource.
 		if not ClassDB.class_exists(cls) or not ClassDB.can_instantiate(cls):
 			return {"error": "Cannot instantiate class: %s" % cls}
 		var inst: Variant = ClassDB.instantiate(cls)
@@ -89,4 +101,7 @@ func _set_resource(args: Dictionary) -> Dictionary:
 		ur.commit_action()
 	else:
 		obj.set(prop, value)
-	return {"text": "assigned %s to %s.%s" % [value.get_class(), str(args.get("target", "")), prop]}
+	var reply := {"text": "assigned %s to %s.%s" % [value.get_class(), str(args.get("target", "")), prop]}
+	if obj is Node:  # a resource has no place in the scene tree to judge
+		return PathGuard.noted(PersistGuard.attach(reply, PersistGuard.verdict(EditorInterface.get_edited_scene_root(), obj as Node, PersistGuard.SET)), guard)
+	return PathGuard.noted(reply, guard)

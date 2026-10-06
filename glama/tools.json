@@ -83,7 +83,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Compile-check a C#/.NET Godot project with `dotnet build`, returning structured diagnostics (errors/warnings with file:line:col + CS-code). Isolated build (scratch output) — never touches the editor\u0027s loaded assembly, so it\u0027s safe while the editor is open. Auto-detects the .csproj if omitted. Needs the .NET SDK (already installed for any C# Godot project). First build restores packages (slower); incremental ~1-3s. Use after editing .cs — the GDScript compile-gate (write_script) does NOT cover C#.",
+        "description":  "Compile-check a C#/.NET Godot project with `dotnet build`, returning structured diagnostics (errors/warnings with file:line:col + CS-code). Isolated build (scratch output) — never touches the editor\u0027s loaded assembly, so it\u0027s safe while the editor is open. Auto-detects the .csproj if omitted. Needs the .NET SDK, checked first (Godot 4.8 needs SDK 10): a missing or too-old one comes back as a plain error saying what to install, not as build noise. First build restores packages (slower); incremental ~1-3s. Use after editing .cs — the GDScript compile-gate (write_script) does NOT cover C#.",
         "inputSchema":  {
                             "properties":  {
                                                "configuration":  {
@@ -235,12 +235,15 @@
         "name":  "delete_node"
     },
     {
+        "_meta":  {
+                      "anthropic/maxResultSizeChars":  100000
+                  },
         "annotations":  {
                             "destructiveHint":  false,
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "List a class\u0027s properties and methods (with signatures) so you know exactly what to set_property / call_method. The discovery key for full domain coverage.",
+        "description":  "List a class\u0027s properties and methods (with signatures) so you know exactly what to set_property / call_method. The discovery key for full domain coverage. Also covers built-in Variant types (Vector3, Transform3D, Basis, Color, String...) and your class_name types.",
         "inputSchema":  {
                             "properties":  {
                                                "class":  {
@@ -316,7 +319,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Beckett self-diagnosis — one call answers \u0027why can\u0027t the agent see or do X?\u0027. Reports: edition (Lite/Full), the effort dial vs its ceiling AND where the cap comes from (a beckett/effort= line committed in project.godot silently trims every clone\u0027s tool list), advertised-vs-ceiling tool counts, dock-disabled tools, server/port/auth state, per-client config freshness (does each written config still carry the CURRENT endpoint URL?), runtime-bridge liveness, what this tool surface costs your context (exact tools/list bytes and approximate tokens for every effort tier, measured on THIS install, so you can price a tier before dialing to it), whether the game plays EMBEDDED in the editor\u0027s Game workspace or in its own window (embedded means the Suspend button freezes every runtime call and window-mode asserts can never pass), and whether the editor auto-reloads externally-changed scripts (off = every script this server writes waits behind a modal the human must click). Run this FIRST when tools seem missing, counts look wrong, or calls fail unexpectedly.",
+        "description":  "Beckett self-diagnosis — one call answers \u0027why can\u0027t the agent see or do X?\u0027. Reports: edition (Lite/Full), the effort dial vs its ceiling AND where the cap comes from (a beckett/effort= line committed in project.godot silently trims every clone\u0027s tool list), advertised-vs-ceiling tool counts, dock-disabled tools, server/port/auth state, per-client config freshness (does each written config still carry the CURRENT endpoint URL, and does a Claude Desktop bridge pin an exact mcp-remote version?), runtime-bridge liveness, what this tool surface costs your context (exact tools/list bytes and approximate tokens for every effort tier, measured on THIS install, so you can price a tier before dialing to it; plus what Claude Code\u0027s tool search holds upfront, the always_load tools), whether the game plays EMBEDDED in the editor\u0027s Game workspace or in its own window (embedded means the Suspend button freezes every runtime call and window-mode asserts can never pass), and whether the editor auto-reloads externally-changed scripts (off = every script this server writes waits behind a modal the human must click), for C# projects whether an installed .NET SDK satisfies this engine (4.8 needs SDK 10), and the known Godot bugs for this exact version (known_issues, never part of ok). Run this FIRST when tools seem missing, counts look wrong, or calls fail unexpectedly.",
         "inputSchema":  {
                             "properties":  {
 
@@ -335,6 +338,9 @@
                                                 "context":  {
                                                                 "type":  "object"
                                                             },
+                                                "dotnet":  {
+                                                               "type":  "object"
+                                                           },
                                                 "edition":  {
                                                                 "type":  "string"
                                                             },
@@ -353,6 +359,9 @@
                                                 "godot_version":  {
                                                                       "type":  "string"
                                                                   },
+                                                "known_issues":  {
+                                                                     "type":  "array"
+                                                                 },
                                                 "ok":  {
                                                            "type":  "boolean"
                                                        },
@@ -411,7 +420,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Search classes by name substring — engine classes AND your project\u0027s own types (GDScript class_name + C# [GlobalClass]). Optional \u0027base\u0027 restricts to subclasses (e.g. base=Node2D). The discovery entry point — pair with describe_class.",
+        "description":  "Search classes by name substring — engine classes, built-in Variant types (Vector3, Transform3D, Color...) AND your project\u0027s own types (GDScript class_name + C# [GlobalClass]). Optional \u0027base\u0027 restricts to subclasses (e.g. base=Node2D). The discovery entry point — pair with describe_class.",
         "inputSchema":  {
                             "properties":  {
                                                "base":  {
@@ -437,7 +446,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Search methods by name substring, optionally restricted to a class (incl. inherited). Any result is invokable via call_method.",
+        "description":  "Search methods by name substring, optionally restricted to a class (incl. inherited). Covers engine classes, built-in Variant types (Vector3, Transform3D, Color...) and your class_name types. Object methods are invokable via call_method; kind=builtin results are called on values in GDScript. An unknown class is an error, never a silent search of everything.",
         "inputSchema":  {
                             "properties":  {
                                                "class":  {
@@ -514,6 +523,9 @@
         "name":  "game_logs"
     },
     {
+        "_meta":  {
+                      "anthropic/alwaysLoad":  true
+                  },
         "annotations":  {
                             "destructiveHint":  false,
                             "openWorldHint":  false,
@@ -593,7 +605,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Report whether a scene is playing and whether the runtime channel to the game is connected.",
+        "description":  "Report whether a scene is playing, whether the runtime channel to the game is connected, and debugger_break (the game is paused in the editor\u0027s debugger).",
         "inputSchema":  {
                             "properties":  {
 
@@ -643,7 +655,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Dump the live scene tree of the RUNNING game (runtime counterpart of get_scene_tree). SCOPE IT to stay under token limits — a full game tree blows the budget. path=subtree root (name, relative, or absolute /root/...); depth=levels (-1=all); max_nodes (default 250); max_children per node (default 50); collapse=true groups runs of identical leaf siblings (e.g. \u00278x CPUParticles2D\u0027). Returns {tree, node_count, truncated?}.",
+        "description":  "Dump the live scene tree of the RUNNING game (runtime counterpart of get_scene_tree). SCOPE IT to stay under token limits — a full game tree blows the budget. path=subtree root (name, relative, or absolute /root/...); depth=levels (-1=all); max_nodes (default 250); max_children per node (default 50); collapse=true groups runs of identical leaf siblings (e.g. \u00278x CPUParticles2D\u0027); state=true adds game-owned state (help(tool=\"get_remote_tree\")). Returns {tree, node_count, truncated?}.",
         "inputSchema":  {
                             "properties":  {
                                                "collapse":  {
@@ -660,13 +672,19 @@
                                                              },
                                                "path":  {
                                                             "type":  "string"
-                                                        }
+                                                        },
+                                               "state":  {
+                                                             "type":  "boolean"
+                                                         }
                                            },
                             "type":  "object"
                         },
         "name":  "get_remote_tree"
     },
     {
+        "_meta":  {
+                      "anthropic/alwaysLoad":  true
+                  },
         "annotations":  {
                             "destructiveHint":  false,
                             "openWorldHint":  false,
@@ -682,6 +700,9 @@
         "name":  "get_scene_tree"
     },
     {
+        "_meta":  {
+                      "anthropic/alwaysLoad":  true
+                  },
         "annotations":  {
                             "destructiveHint":  false,
                             "idempotentHint":  true,
@@ -869,12 +890,15 @@
         "name":  "open_scene"
     },
     {
+        "_meta":  {
+                      "anthropic/alwaysLoad":  true
+                  },
         "annotations":  {
                             "destructiveHint":  false,
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Play a scene in the editor. \u0027scene\u0027 (res://) plays a specific scene; current=true plays the open scene; otherwise the project\u0027s main scene. Then wait_until condition=play_started, and logs_read for errors. on_ready queues runtime property writes applied the moment the new game connects — the restart boundary batch_execute cannot cross. on_ready shape and its retry behaviour: help(tool=\"play_scene\").",
+        "description":  "Play a scene in the editor. \u0027scene\u0027 (res://) plays a specific scene; current=true plays the open scene; otherwise the project\u0027s main scene. Then wait_until condition=play_started, and logs_read for errors. on_ready queues runtime property writes applied the moment the new game connects — the restart boundary batch_execute cannot cross. quiet=true plays muted and off-screen so the person keeps working. Script errors do not pause the game (4.5+): game_logs has them. on_ready shape, retries, what quiet does per run mode: help(tool=\"play_scene\").",
         "inputSchema":  {
                             "properties":  {
                                                "current":  {
@@ -884,6 +908,10 @@
                                                                 "description":  "property writes applied once the game connects (shape in help)",
                                                                 "type":  "array"
                                                             },
+                                               "quiet":  {
+                                                             "description":  "mute the game and park its window off-screen without focus, so the person keeps working",
+                                                             "type":  "boolean"
+                                                         },
                                                "scene":  {
                                                              "description":  "res:// path; omit for main/current",
                                                              "type":  "string"
@@ -894,6 +922,9 @@
         "name":  "play_scene"
     },
     {
+        "_meta":  {
+                      "anthropic/maxResultSizeChars":  200000
+                  },
         "annotations":  {
                             "destructiveHint":  false,
                             "openWorldHint":  false,
@@ -914,6 +945,9 @@
         "name":  "read_file"
     },
     {
+        "_meta":  {
+                      "anthropic/maxResultSizeChars":  200000
+                  },
         "annotations":  {
                             "destructiveHint":  false,
                             "openWorldHint":  false,
@@ -1014,6 +1048,28 @@
     {
         "annotations":  {
                             "destructiveHint":  false,
+                            "idempotentHint":  true,
+                            "openWorldHint":  false,
+                            "readOnlyHint":  false
+                        },
+        "description":  "Make the editor see files written OUTSIDE it (your own file tools, git, a generator). Scripts sync at once, so a new class_name resolves right away for validate_script / write_script; new assets import in a background scan (the result says while it is still scanning). Pass \u0027paths\u0027 to sync just those files. write_file, write_script and script_patch already do this for what they write.",
+        "inputSchema":  {
+                            "properties":  {
+                                               "paths":  {
+                                                             "description":  "res:// files to sync now. Default: every script with an unregistered class_name or a stale loaded copy",
+                                                             "items":  {
+                                                                           "type":  "string"
+                                                                       },
+                                                             "type":  "array"
+                                                         }
+                                           },
+                            "type":  "object"
+                        },
+        "name":  "rescan_filesystem"
+    },
+    {
+        "annotations":  {
+                            "destructiveHint":  false,
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
@@ -1067,6 +1123,9 @@
         "name":  "save_scene"
     },
     {
+        "_meta":  {
+                      "anthropic/alwaysLoad":  true
+                  },
         "annotations":  {
                             "destructiveHint":  false,
                             "openWorldHint":  false,
@@ -1126,7 +1185,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Surgically edit an existing res:// file without rewriting it whole. edits = an ordered array; each item is {find, replace[, all]} (find must match EXACTLY once unless all:true), {append: text}, or {prepend: text}. Atomic + safe: nothing is written if any anchor is missing/ambiguous or (for .gd) the result fails to compile. Prefer this over write_script for small changes.",
+        "description":  "Surgically edit an existing res:// file without rewriting it whole. edits = an ordered array; each item is {find, replace[, all]} (find must match EXACTLY once unless all:true), {append: text}, or {prepend: text}. Atomic + safe: nothing is written if any anchor is missing/ambiguous or (for .gd) the result fails to compile. Reads the file back (disk_verified). Prefer this over write_script for small changes.",
         "inputSchema":  {
                             "properties":  {
                                                "edits":  {
@@ -1210,7 +1269,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Set a ProjectSettings value and persist project.godot. The property path goes in \u0027setting\u0027 (\u0027name\u0027 is also accepted); e.g. set application/run/main_scene to res://main.tscn.",
+        "description":  "Set a ProjectSettings value and persist project.godot. The property path goes in \u0027setting\u0027 (\u0027name\u0027 is also accepted); e.g. set application/run/main_scene to res://main.tscn. A setting that already holds a typed value keeps its type: colors take \"#rrggbb\" or [r,g,b,a], vectors [x,y]. A value that cannot convert is refused, not stored.",
         "inputSchema":  {
                             "properties":  {
                                                "name":  {
@@ -1345,7 +1404,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Parse/compile GDScript WITHOUT writing it. Pass \u0027content\u0027 (source) or \u0027path\u0027 (res://). Returns whether it compiles — use before write_script to catch hallucinated APIs. Scripts whose class_name is already registered validate correctly (v1.9; the old false \u0027hides a global class\u0027 error is fixed); when validating \u0027content\u0027 destined for an existing file, ALSO pass its \u0027path\u0027 so a real cross-file class_name duplicate is still reported as the error it is.",
+        "description":  "Parse/compile GDScript WITHOUT writing it. Pass \u0027content\u0027 (source) or \u0027path\u0027 (res://). Returns whether it compiles, plus the GDScript warnings the editor would show (unused variables, shadowing, integer division...). Use before write_script to catch hallucinated APIs. A class_name from a file written outside the editor is registered first. When validating \u0027content\u0027 destined for an existing file, ALSO pass its \u0027path\u0027 so a real cross-file class_name duplicate is still reported.",
         "inputSchema":  {
                             "properties":  {
                                                "content":  {
@@ -1354,7 +1413,11 @@
                                                "path":  {
                                                             "description":  "res:// path — the file to validate, or (with content) the file the content is destined for",
                                                             "type":  "string"
-                                                        }
+                                                        },
+                                               "warnings":  {
+                                                                "description":  "also report GDScript warnings (default true; runs a ~0.3 s headless check)",
+                                                                "type":  "boolean"
+                                                            }
                                            },
                             "type":  "object"
                         },
@@ -1412,7 +1475,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Write a text file under res:// (or user://), path-traversal guarded. Refreshes the editor filesystem. If the file is a .tscn the editor currently has OPEN, the result says so: Godot prompts the human to reload it and until they do the editor still holds the old version (scripts have no such problem, the editor auto-reloads them). Set beckett/auto_reload_scenes=true to reload open scenes automatically. Prefer the scene tools (create_node / set_property / save_scene) over writing .tscn text at all - editor-side edits never go stale.",
+        "description":  "Write a text file under res:// (or user://), path-traversal guarded. Reads it back (disk_verified). Refreshes the editor filesystem. If the file is a .tscn the editor currently has OPEN, the result says so: Godot prompts the human to reload it and until they do the editor still holds the old version (scripts have no such problem, the editor auto-reloads them). Set beckett/auto_reload_scenes=true to reload open scenes automatically. Prefer the scene tools (create_node / set_property / save_scene) over writing .tscn text at all - editor-side edits never go stale.",
         "inputSchema":  {
                             "properties":  {
                                                "content":  {
@@ -1436,7 +1499,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Write a GDScript (or other text, e.g. .cs) file under res://. GDScript is validated first by default — refuses code that doesn\u0027t compile; non-.gd files (C#, config…) are written as-is (use build_csharp to compile-check C#). Set validate=false to force.",
+        "description":  "Write a GDScript (or other text, e.g. .cs) file under res://. GDScript is validated first by default — refuses code that doesn\u0027t compile; non-.gd files (C#, config…) are written as-is (use build_csharp to compile-check C#). Set validate=false to force. Reads the file back (disk_verified).",
         "inputSchema":  {
                             "properties":  {
                                                "content":  {

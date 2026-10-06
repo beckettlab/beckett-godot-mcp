@@ -18,16 +18,19 @@ class_name BeckettCSharpTools
 ##    C# types — that needs Godot's own Build (hammer) or simply happens on play (Godot builds
 ##    before running). Kept isolated on purpose.
 ##  * `--tl:off` is REQUIRED: .NET 8+ Terminal Logger reformats output and breaks the parser.
+##  * The .NET SDK is checked BEFORE the build (core/dotnet_check.gd, shared with doctor): Godot
+##    4.8 needs the .NET 10 SDK, and a missing one used to surface as raw NETSDK1045 lines.
+
+const DotnetCheck := preload("res://addons/beckett/core/dotnet_check.gd")
+const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # the read rule for a .csproj the caller names (dotnet build runs whatever that project says)
 
 var server  # mcp_server node
-
-var _dotnet := ""  # cached resolved dotnet path (probe once)
 
 
 func _register(registry) -> void:
 	registry.register({
 		"name": "build_csharp",
-		"description": "Compile-check a C#/.NET Godot project with `dotnet build`, returning structured diagnostics (errors/warnings with file:line:col + CS-code). Isolated build (scratch output) — never touches the editor's loaded assembly, so it's safe while the editor is open. Auto-detects the .csproj if omitted. Needs the .NET SDK (already installed for any C# Godot project). First build restores packages (slower); incremental ~1-3s. Use after editing .cs — the GDScript compile-gate (write_script) does NOT cover C#.",
+		"description": "Compile-check a C#/.NET Godot project with `dotnet build`, returning structured diagnostics (errors/warnings with file:line:col + CS-code). Isolated build (scratch output) — never touches the editor's loaded assembly, so it's safe while the editor is open. Auto-detects the .csproj if omitted. Needs the .NET SDK, checked first (Godot 4.8 needs SDK 10): a missing or too-old one comes back as a plain error saying what to install, not as build noise. First build restores packages (slower); incremental ~1-3s. Use after editing .cs — the GDScript compile-gate (write_script) does NOT cover C#.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"csproj": {"type": "string", "description": "res:// or absolute path to the .csproj; auto-detected from the project if omitted"},
@@ -40,11 +43,17 @@ func _register(registry) -> void:
 # ---------------------------------------------------------------- handler
 
 func _build_csharp(args: Dictionary) -> Dictionary:
+	# First, before anything is looked up or run: a project's own .csproj is auto-detected, and one the
+	# caller names stays inside the project (dotnet build runs whatever that project says).
+	var csproj_arg := str(args.get("csproj", ""))
+	var guard: Dictionary = PathGuard.check_read(csproj_arg)
+	if guard.has("error"):
+		return guard
 	var dotnet := _find_dotnet()
 	if dotnet.is_empty():
 		return {"error": "Could not find the .NET SDK (`dotnet`). It's required for C# in Godot — install from https://dotnet.microsoft.com or put dotnet on PATH.",
 			"suggestion": "If it's installed, set DOTNET_ROOT or add its folder to PATH, then retry."}
-	var csproj := _resolve_csproj(str(args.get("csproj", "")))
+	var csproj := _resolve_csproj(csproj_arg)
 	if csproj.is_empty():
 		return _csproj_error()
 	# Godot's FileAccess and dotnet both take forward slashes; a caller may pass a native
@@ -55,6 +64,13 @@ func _build_csharp(args: Dictionary) -> Dictionary:
 	var config := str(args.get("configuration", "Debug"))
 	if config != "Debug" and config != "Release":
 		config = "Debug"
+	# Preflight: does an installed SDK satisfy this project and this engine? A build that cannot
+	# work is not started; the answer is a plain error naming what to install.
+	var engine := Engine.get_version_info()
+	var insp := DotnetCheck.inspect(csproj, engine)
+	var verdict: Dictionary = insp["check"]
+	if not bool(verdict["ok"]):
+		return _problem_error("C# build not started", verdict["problems"])
 	# Build to a scratch dir so we never fight the editor for the loaded DLL.
 	var build_args := ["build", csproj, "-c", config, "-o", _scratch_dir(),
 		"--tl:off", "-clp:NoSummary", "-v:m", "-nologo"]
@@ -74,9 +90,16 @@ func _build_csharp(args: Dictionary) -> Dictionary:
 		else:
 			warns += 1
 	var ok := code == 0
+	# The preflight cannot see everything (a csproj that builds its target framework from a
+	# property, say), so a build that still dies on an SDK-cannot-target code gets the same
+	# plain words instead of the raw MSBuild line.
+	if not ok:
+		var mapped := DotnetCheck.problem_from_diagnostics(diags, engine, insp["sdks"], insp["proj"])
+		if not mapped.is_empty():
+			return _problem_error("C# build failed", [mapped])
 	# NOTE: return ONLY "json" — the server's result serializer is if/elif, so a top-level
 	# "text" key would shadow the "json" branch and drop structuredContent. Summary goes inside.
-	return {"json": {
+	return PathGuard.noted({"json": {
 		"ok": ok,
 		"summary": ("C# build OK — compiles (%d warning(s))." % warns) if ok \
 			else ("C# build FAILED — %d error(s), %d warning(s)." % [errs, warns]),
@@ -86,66 +109,34 @@ func _build_csharp(args: Dictionary) -> Dictionary:
 		"errors": errs,
 		"warnings": warns,
 		"diagnostics": diags,
-	}}
+	}}, guard)
 
 
 # ---------------------------------------------------------------- helpers
 
-## Locate the dotnet executable: PATH first, then DOTNET_ROOT / well-known install dirs.
-## Validated with a bounded `--version` probe; the result is cached for the session.
+## The dotnet probing, .csproj lookup and SDK rules live in core/dotnet_check.gd (doctor needs
+## them too); these three are the names this file has always used.
 func _find_dotnet() -> String:
-	if not _dotnet.is_empty():
-		return _dotnet
-	var cands: Array = ["dotnet"]
-	if OS.has_environment("DOTNET_ROOT"):
-		cands.append(OS.get_environment("DOTNET_ROOT").path_join("dotnet"))
-	if OS.get_name() == "Windows":
-		var pf := OS.get_environment("ProgramFiles")
-		cands.append((pf if not pf.is_empty() else "C:/Program Files").path_join("dotnet/dotnet.exe"))
-	else:
-		# macOS installer, Linux apt/official, Homebrew-Intel, Homebrew-AppleSilicon, Linux snap.
-		# These matter when the editor is GUI-launched (minimal PATH) so a bare `dotnet` misses.
-		cands.append_array(["/usr/local/share/dotnet/dotnet", "/usr/bin/dotnet", "/usr/local/bin/dotnet",
-			"/opt/homebrew/bin/dotnet", "/snap/bin/dotnet"])
-		if OS.has_environment("HOME"):
-			cands.append(OS.get_environment("HOME").path_join(".dotnet/dotnet"))
-	for c in cands:
-		var o: Array = []
-		if OS.execute(c, ["--version"], o, false) == 0:
-			_dotnet = c
-			return c
-	return ""
+	return DotnetCheck.find_dotnet()
 
 
-## Resolve the project's .csproj: explicit arg -> the dotnet/project setting -> a lone
-## .csproj at res://. Empty string means "not found / ambiguous" (see _csproj_error).
 func _resolve_csproj(arg: String) -> String:
-	if not arg.is_empty():
-		return ProjectSettings.globalize_path(arg) if arg.begins_with("res://") else arg
-	if ProjectSettings.has_setting("dotnet/project/assembly_name"):
-		var nm := str(ProjectSettings.get_setting("dotnet/project/assembly_name"))
-		if not nm.is_empty():
-			var p := ProjectSettings.globalize_path("res://%s.csproj" % nm)
-			if FileAccess.file_exists(p):
-				return p
-	var found := _list_csproj()
-	return found[0] if found.size() == 1 else ""
+	return DotnetCheck.resolve_csproj(arg)
 
 
 func _list_csproj() -> Array:
-	var root := ProjectSettings.globalize_path("res://")
-	var out: Array = []
-	var d := DirAccess.open(root)
-	if d == null:
-		return out
-	d.list_dir_begin()
-	var f := d.get_next()
-	while f != "":
-		if not d.current_is_dir() and f.get_extension() == "csproj":
-			out.append(root.path_join(f))
-		f = d.get_next()
-	d.list_dir_end()
-	return out
+	return DotnetCheck.list_csproj()
+
+
+## The preflight's (or the mapped build failure's) problems as one tool error: what is wrong, in
+## plain words, and the next step.
+func _problem_error(lead: String, problems: Array) -> Dictionary:
+	var what := PackedStringArray()
+	var next := PackedStringArray()
+	for p in problems:
+		what.append(str((p as Dictionary).get("message", "")))
+		next.append(str((p as Dictionary).get("suggestion", "")))
+	return {"error": "%s: %s" % [lead, " ".join(what)], "suggestion": " ".join(next)}
 
 
 func _csproj_error() -> Dictionary:
@@ -175,10 +166,13 @@ func _to_res(abs_path: String) -> String:
 
 ## Parse MSBuild/Roslyn console diagnostics. Canonical line (with --tl:off):
 ##   <file>(<line>,<col>): <error|warning> <CODE>: <message> [<project>]
+## Restore and project-level errors (NU1202, MSB4025, ...) carry no position and often no
+## trailing [project]: `Game.csproj : error NU1202: ...`; they parse with line/column 0, so a
+## build that failed before compiling never reads as "FAILED, 0 errors".
 ## Matched per-line with numbered groups; deduped (MSBuild can repeat a diagnostic).
 func _parse_diagnostics(text: String) -> Array:
 	var rx := RegEx.new()
-	rx.compile("^(.+?)\\((\\d+),(\\d+)\\):\\s+(error|warning)\\s+([A-Za-z]{2,}[0-9]+):\\s+(.+?)\\s+\\[[^\\]]+\\]\\s*$")
+	rx.compile("^(.+?)(?:\\((\\d+),(\\d+)\\))?\\s*:\\s+(error|warning)\\s+([A-Za-z]{2,}[0-9]+):\\s+(.+?)(?:\\s+\\[[^\\]]+\\])?\\s*$")
 	var seen := {}
 	var out: Array = []
 	for raw in text.split("\n", false):

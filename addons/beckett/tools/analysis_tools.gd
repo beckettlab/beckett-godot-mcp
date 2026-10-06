@@ -8,6 +8,8 @@ class_name BeckettAnalysisTools
 
 var server
 
+const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # the walk does not follow a link out of the project
+
 const _SKIP_DIRS := [".godot", ".git", ".import"]
 const _MAX_FILES := 6000
 
@@ -25,7 +27,8 @@ func _register(registry) -> void:
 # ---------------------------------------------------------------- statistics
 
 func _statistics(_args: Dictionary) -> Dictionary:
-	var files := _all_files([])
+	var skipped: Array = []  # links that lead out of the project: not followed (see PathGuard.walk_skip)
+	var files := _all_files([], skipped)
 	var by_ext: Dictionary = {}
 	var gd_lines := 0
 	var scripts := 0
@@ -50,7 +53,7 @@ func _statistics(_args: Dictionary) -> Dictionary:
 			autoloads.append(n.substr(9))
 		elif n.begins_with("input/"):
 			input_actions += 1
-	return {"json": {
+	var stats := {
 		"godot_version": Engine.get_version_info().get("string", ""),
 		"total_files": files.size(),
 		"scripts": scripts,
@@ -62,18 +65,23 @@ func _statistics(_args: Dictionary) -> Dictionary:
 		"main_scene": ProjectSettings.get_setting("application/run/main_scene", ""),
 		"input_actions": input_actions,
 		"capped": files.size() >= _MAX_FILES,
-	}}
+	}
+	stats.merge(PathGuard.skipped_note(skipped))
+	return {"json": stats}
 
 
 # ---------------------------------------------------------------- file walk
 
-func _all_files(exts: Array) -> Array:
+## `skipped` collects what the walk left out because it is a link that leads outside the project. Only
+## the .gd files are opened here (for their line count), so only they are checked as files; a folder
+## is checked either way, because that is where a whole outside tree would come in.
+func _all_files(exts: Array, skipped: Array = []) -> Array:
 	var out: Array = []
-	_walk("res://", exts, out)
+	_walk("res://", exts, out, skipped, {})
 	return out
 
 
-func _walk(path: String, exts: Array, out: Array) -> void:
+func _walk(path: String, exts: Array, out: Array, skipped: Array, memo: Dictionary) -> void:
 	if out.size() >= _MAX_FILES:
 		return
 	var dir := DirAccess.open(path)
@@ -88,9 +96,15 @@ func _walk(path: String, exts: Array, out: Array) -> void:
 		var full := path.path_join(e)
 		if dir.current_is_dir():
 			if not _SKIP_DIRS.has(e):
-				_walk(full, exts, out)
+				if PathGuard.walk_skip(full, memo):
+					skipped.append(full)
+				else:
+					_walk(full, exts, out, skipped, memo)
 		elif exts.is_empty() or exts.has(e.get_extension().to_lower()):
-			out.append(full)
+			if e.get_extension().to_lower() == "gd" and PathGuard.walk_skip(full, memo):
+				skipped.append(full)
+			else:
+				out.append(full)
 		if out.size() >= _MAX_FILES:
 			break
 		e = dir.get_next()

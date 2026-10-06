@@ -18,6 +18,9 @@ var server  # mcp_server node (exposes .bridge)
 
 const MCPJobsScript := preload("res://addons/beckett/core/jobs.gd")  # poll_until (B2)
 const CapturesScript := preload("res://addons/beckett/core/captures.gd")  # deliver=link (v1.14)
+const CallArgs := preload("res://addons/beckett/core/callargs.gd")  # flags arrive as text from lenient clients
+const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # save_to: no write through a link that leaves the project
+const GameState := preload("res://addons/beckett/runtime/game_state.gd")  # state_fields: the caps a game's state answer is held to again
 
 ## Long-edge cap applied to a screenshot call that asked for no framing of its own (1.13).
 ## A bare capture of a 1440p game moved 5.5 MB of base64 for a picture the model reads just
@@ -31,6 +34,10 @@ func _register(registry) -> void:
 		"description": "Capture an image the agent can see. target=game (default) captures the RUNNING game; target=editor captures the 2D editor viewport (PNG only). A bare call caps the long edge at max_dim=1280 — pass scale, region, max_dim=0, format or save_to to opt out. annotate=ui draws numbered Set-of-Mark boxes and returns the legend. For pure functional state ui_snapshot is cheaper. Token dials + delivery: help(tool=\"screenshot\").",
 		"help": "Token-cost dials (game target):\n  scale=0.5        quarters the pixels\n  max_dim=N        caps the LONG EDGE in px. A call passing NO framing argument defaults to max_dim=1280, because a bare 1440p capture was measured at 5,583,634 bytes of result body for a picture the model reads just as well smaller. Opt out with scale, region, max_dim=0, format or save_to — any of those means you already decided what you wanted back.\n  format=jpeg|webp with quality (default 0.8) compresses far below PNG on a game frame\n  region=[x, y, w, h]  crops, clamped to the frame\n\nannotate=ui draws numbered Set-of-Mark boxes over every visible interactive control AND returns the legend as structured {marks:[{i, path, rect, text?}]}. One glance answers both \"does it look right\" and \"what can I click where\"; follow up with click_control path=<the legend path>. The 1280 cap is folded into the same factor that draws the boxes, so an annotated capture stays pixel-accurate at any size.\n\ndeliver (1.14) chooses the CHANNEL, not the framing:\n  inline (default)  the image rides in the result, as it always has\n  link              the frame is parked in the capture store and you get a capture:// resource_link plus the absolute path — no base64 in the transcript at all\n  both              link and image\nA client older than MCP 2025-06-18 cannot read a resource_link, so deliver=link degrades to both rather than returning a picture nobody can see.\n\nsave_to also writes the frame to a path of your choosing (res://, user:// or absolute) so later captures can be diffed against it. That is how a baseline is minted, which is why it opts out of the size cap.",
 		"readonly": true,
+		# Bootstrap set (tool_registry.gd) and the heaviest member of it (~1.6 KB, most of it the
+		# argument list): it is the half of run-and-see that no other tool can stand in for, and the
+		# product's headline. L4, so it only rides when the dial is at See or above.
+		"always_load": true,
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string", "description": "game | editor"},
 			"region": {"type": "array", "description": "[x,y,w,h] pixel crop"},
@@ -47,7 +54,8 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "get_remote_tree",
-		"description": "Dump the live scene tree of the RUNNING game (runtime counterpart of get_scene_tree). SCOPE IT to stay under token limits — a full game tree blows the budget. path=subtree root (name, relative, or absolute /root/...); depth=levels (-1=all); max_nodes (default 250); max_children per node (default 50); collapse=true groups runs of identical leaf siblings (e.g. '8x CPUParticles2D'). Returns {tree, node_count, truncated?}.",
+		"description": "Dump the live scene tree of the RUNNING game (runtime counterpart of get_scene_tree). SCOPE IT to stay under token limits — a full game tree blows the budget. path=subtree root (name, relative, or absolute /root/...); depth=levels (-1=all); max_nodes (default 250); max_children per node (default 50); collapse=true groups runs of identical leaf siblings (e.g. '8x CPUParticles2D'); state=true adds game-owned state (help(tool=\"get_remote_tree\")). Returns {tree, node_count, truncated?}.",
+		"help": "state=true (1.16) returns the game-owned state beside the tree: {state: {<node path>: {...}}, state_nodes: N}.\n\nThe convention: a node that knows what its game means by \"state\" says so. Put it in the group \"beckett_state\" and give its script\n  func _beckett_state() -> Dictionary:\n      return {\"hp\": hp, \"inventory\": items, \"phase\": \"boss\"}\nThe same convention under the other name some tools use works unchanged: the group \"mcp_state\" with _mcp_state() (leftos/godot-mcp and wgt19861219/godot-mcp-enhanced). A node that has both is read through _beckett_state. Beckett calls the method on every read (and a playtest state step on every poll), so keep it a plain read of live fields with no side effects.\n\nWhat comes back: every such node of the WHOLE game, autoloads included (not only the subtree path= scopes the tree to), keyed by its path: relative to the scene root, or /root/... for an autoload. Values are plain JSON: numbers, strings, bools, lists and dictionaries; a Vector2, a Color or a node comes back as its text. The reply is capped (40 nodes, 6,000 characters per node, 12,000 in all, 64 entries per list or dictionary, depth 6, 120 characters per string) and says when it cut: state_truncated:true plus state_truncated_nodes, the nodes that lost something. A node that is in the group but cannot answer (no method, or the method did not return a Dictionary) is listed in state_errors with the reason, so a missing key never looks like a game that has no state. With no such node at all, state is {} and state_hint says how to add one.\n\ndepth=0 with state=true is the cheap way to read just the state.\n\nTo ASSERT on it (Full), use a playtest state step: {state: {node: \"Player\", path: \"inventory.0\", op: \"eq\", value: \"sword\"}}, ops eq ne lt le gt ge contains exists. See the playtest skill.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"path": {"type": "string"},
@@ -55,6 +63,7 @@ func _register(registry) -> void:
 			"max_nodes": {"type": "integer"},
 			"max_children": {"type": "integer"},
 			"collapse": {"type": "boolean"},
+			"state": {"type": "boolean"},
 		}},
 		"handler": Callable(self, "_get_remote_tree"),
 	})
@@ -304,6 +313,12 @@ func _save_capture(b64: String, path: String) -> String:
 	# "→ saved" means a file worth diffing against exists.
 	if b64.is_empty():
 		return "no image data to save"
+	# save_to takes an absolute path on purpose, so it is not held to the write_file rule. A res:// or
+	# user:// path is the project's own space though, and it must not go through a link that leaves it.
+	if path.begins_with("res://") or path.begins_with("user://"):
+		var lerr: String = PathGuard.link_escape_error(path)
+		if not lerr.is_empty():
+			return lerr
 	var dir := path.get_base_dir()
 	if not dir.is_empty() and not DirAccess.dir_exists_absolute(dir):
 		var derr := DirAccess.make_dir_recursive_absolute(dir)
@@ -345,7 +360,83 @@ func _get_remote_tree(args: Dictionary) -> Dictionary:
 	if bool(r.get("truncated", false)):
 		out["truncated"] = true
 		out["hint"] = str(r.get("hint", ""))
+	if CallArgs.flag(args, "state"):
+		var sr: Dictionary = server.bridge.send_command({"cmd": "game_state"})
+		if not bool(sr.get("ok", false)):
+			# The agent asked for state and did not get it: that is an error it can act on, not a tree with a
+			# silent hole. The usual cause is a game that started before Beckett was updated (its runtime
+			# does not know the command).
+			return {"error": "state=true: the running game could not collect its state (%s). If the game started before Beckett was updated, restart it (stop_scene, then play_scene). Call again without state=true for the tree alone." % str(sr.get("error", "no answer")).left(160)}
+		out.merge(state_fields(sr))
 	return {"json": out}
+
+
+## The `state` part of a get_remote_tree reply, from the game's `game_state` answer: the states themselves, how
+## many nodes answered, what was cut, which nodes could not answer, and a hint when nothing exposes state at
+## all. What a game sent is held to the caps again here (recap_states): it ends up in a reply a model reads, and
+## the game is another program, so the size it kept to on its side is not taken on trust.
+static func state_fields(sr: Dictionary) -> Dictionary:
+	var out := {}
+	var recapped := recap_states(sr.get("states", {}))
+	out["state"] = recapped["states"]
+	out["state_nodes"] = _whole(sr.get("count", 0))
+	if bool(sr.get("truncated", false)) or bool(recapped["truncated"]):
+		out["state_truncated"] = true
+		var cut: Array = []
+		var theirs: Variant = sr.get("truncated_nodes", [])
+		if theirs is Array:
+			cut.append_array((theirs as Array).slice(0, 10))
+		cut.append_array((recapped["cut"] as Array).slice(0, 10))
+		out["state_truncated_nodes"] = _capped_list(cut, 10, 200)
+	var errs: Variant = sr.get("errors", [])
+	if errs is Array and not (errs as Array).is_empty():
+		var shown: Array = []
+		for e in (errs as Array).slice(0, 10):
+			if e is Dictionary:
+				shown.append({"node": str((e as Dictionary).get("node", "")).left(200), "error": str((e as Dictionary).get("error", "")).left(160)})
+		out["state_errors"] = shown
+	if _whole(sr.get("nodes_total", 0)) == 0:
+		out["state_hint"] = "no node is in the group beckett_state (or mcp_state): add the group to a node and give its script func _beckett_state() -> Dictionary, then restart the scene. help(tool=\"get_remote_tree\")"
+	return out
+
+
+## The game's collection of states ({node path: data}) held to the caps game_state.gd collected it under: at most
+## MAX_NODES_HARD nodes, MAX_CHARS of data in all and MAX_CHARS_NODE of them for one node, every string, key, list
+## and depth cut the same way. The game applies them itself, and an honest answer comes back unchanged; one that
+## did not (a game that answers the bridge on its own) is cut here instead of reaching a model whole.
+## {states, truncated, cut}: `cut` names the nodes this left out or shortened.
+static func recap_states(v: Variant) -> Dictionary:
+	var states := {}
+	var cut: Array = []
+	var truncated := false
+	if v is Dictionary:
+		var spent := 0
+		for k in (v as Dictionary):
+			var key := str(k).left(GameState.MAX_PATH)
+			if states.size() >= GameState.MAX_NODES_HARD or spent >= GameState.MAX_CHARS or states.has(key):
+				cut.append(key)
+				truncated = true
+				continue
+			var budget := {"chars": 0, "max": mini(GameState.MAX_CHARS_NODE, GameState.MAX_CHARS - spent), "truncated": false}
+			states[key] = GameState.json_safe((v as Dictionary)[k], budget, 0)
+			spent += int(budget["chars"])
+			if bool(budget["truncated"]):
+				cut.append(key)
+				truncated = true
+	return {"states": states, "truncated": truncated, "cut": cut}
+
+
+## A whole number from an answer that may hold anything: 0 for what is not a number.
+static func _whole(v: Variant) -> int:
+	return int(v) if (v is int or v is float) else 0
+
+
+static func _capped_list(v: Variant, count: int, each: int) -> Array:
+	var out: Array = []
+	if v is Array:
+		for e in (v as Array).slice(0, count):
+			out.append(str(e).left(each))
+	return out
 
 
 func _find_nodes(args: Dictionary) -> Dictionary:
@@ -448,7 +539,7 @@ func _get_perf(args: Dictionary) -> Dictionary:
 	if duration_s > 0.0:
 		if not use_game:
 			return {"error": "duration_s sampling needs target=game with a play session connected — a tool call blocks the editor's own loop, so an over-time editor sample would only measure a stalled editor. Use single snapshots for the editor."}
-		return _sample_perf(duration_s, clampi(int(args.get("interval_ms", 100)), 30, 2000), bool(args.get("series", false)))
+		return _sample_perf(duration_s, clampi(int(args.get("interval_ms", 100)), 30, 2000), CallArgs.flag(args, "series"))
 	if use_game:
 		var r: Dictionary = server.bridge.send_command({"cmd": "perf"})
 		if not bool(r.get("ok", false)):

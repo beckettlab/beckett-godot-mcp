@@ -74,10 +74,28 @@ const UiInspect := preload("res://addons/beckett/runtime/ui_inspect.gd")
 # game-side across frames. The machine lives in ui_do.gd; _process ticks it.
 const UiDo := preload("res://addons/beckett/runtime/ui_do.gd")
 var _ui_do := UiDo.new()
+# Per-physics-frame invariants (v1.16 playtest depth): rules checked on EVERY frame of the replay
+# window and of a ui_do window. The checker lives in invariants.gd; this file only arms and ticks it.
+const Invariants := preload("res://addons/beckett/runtime/invariants.gd")
+var _inv := Invariants.new()
+var _inv_base_frame := 0          # physics frame a ui_do window opened on: its invariant frame numbers count from here
+# Input this autoload injected and nobody released, so a scene restart can let go of it (input_codec.gd).
+var _held: Dictionary = {}
+# Instance id of the scene the last scene_reload replaced, until scene_state has seen the new one come up.
+var _reload_old_id := 0
 # Call-arg coercion shared VERBATIM with the editor's call_method (v1.10.2), so the
 # two sides can't drift. core/callargs.gd is dependency-free on purpose: it parses in
 # the game process and in export-template builds (no editor classes).
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")
+# Game-owned state (v1.16): nodes in the group beckett_state / mcp_state answer _beckett_state() /
+# _mcp_state(). The `game_state` command collects them (get_remote_tree state=true); the ui_do `state`
+# step asserts on one of them. Logic and the why live in game_state.gd.
+const GameState := preload("res://addons/beckett/runtime/game_state.gd")
+# Quiet play (v1.16 M5d): play_scene quiet=true launches the game with BECKETT_QUIET in its environment, and this
+# mutes it and (for a separate window) parks the window off-screen without focus, as the first thing it does.
+# The why and the per-mode rules live in quiet.gd; the `quiet_state` command reports what is in force.
+const Quiet := preload("res://addons/beckett/runtime/quiet.gd")
+var _quiet := Quiet.new()
 
 # Per-frame typing window (v1.11): type_text per_frame=true queues its chars here and
 # _process injects ONE per frame, so per-char handlers (text_changed each keystroke,
@@ -128,6 +146,8 @@ func _ready() -> void:
 	# menus and game-over screens are exactly when the agent needs to look at the
 	# game and click buttons; an INHERIT-mode autoload would freeze the channel.
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# Before anything else the game does: a quiet play moves its window off-screen and mutes it right away.
+	_quiet.apply(OS.get_environment(Quiet.ENV))
 	var p := OS.get_environment("BECKETT_RUNTIME_PORT")
 	if p != "" and p.is_valid_int():
 		_port = p.to_int()
@@ -160,6 +180,7 @@ func _dial() -> void:
 
 
 func _process(delta: float) -> void:
+	_quiet.tick(delta)  # a no-op unless this play was asked to be quiet
 	_peer.poll()
 	var st := _peer.get_status()
 	if st == StreamPeerTCP.STATUS_CONNECTED:
@@ -214,6 +235,12 @@ func _physics_process(_delta: float) -> void:
 		if rtree != null and not rtree.paused:
 			_replay_step_tick()
 		return
+	# A ui_do window runs UNPAUSED in real time: its invariants are checked on every physics frame it
+	# is open (a paused game is not simulating, so there is nothing to judge).
+	if _inv.active and _ui_do.active:
+		var utree := get_tree()
+		if utree != null and not utree.paused:
+			_inv.check(_root(), Engine.get_physics_frames() - _inv_base_frame)
 	if not _stepping:
 		return
 	var tree := get_tree()
@@ -270,7 +297,7 @@ func _inject_step_inputs(i: int) -> void:
 			continue
 		var ie: InputEvent = InputCodec.build_event(e)
 		if ie != null:
-			Input.parse_input_event(ie)
+			_inject(ie)
 			_step_injected += 1
 
 
@@ -288,7 +315,7 @@ func _eval_step_condition() -> bool:
 		_step_cond_value = "error: " + _step_expr.get_error_text()
 		return false
 	_step_cond_value = _safe(v)
-	return bool(v)
+	return CallArgs.to_bool(v)
 
 
 ## Open a deterministic replay window: sort events by frame stamp, unpause, and let
@@ -302,6 +329,11 @@ func _replay_open(msg: Dictionary) -> Dictionary:
 	var evs: Array = msg.get("events", []) if msg.get("events", []) is Array else []
 	var ordered := evs.duplicate()
 	ordered.sort_custom(func(a, b): return int(a.get("f", 0)) < int(b.get("f", 0)))
+	# Arm the suite's invariants BEFORE anything else changes: a rule set that does not load refuses
+	# the whole run with the reason, rather than replaying with the rules silently absent.
+	var inv_err := _arm_invariants(msg)
+	if not inv_err.is_empty():
+		return {"ok": false, "error": inv_err}
 	_replay_events = ordered
 	_replay_i = 0
 	_replay_tick = 0
@@ -323,13 +355,17 @@ func _replay_open(msg: Dictionary) -> Dictionary:
 ## have fired and the settle margin has elapsed.
 func _replay_step_tick() -> void:
 	_replay_perf.tick()
+	# Invariants first, so frame N is judged on the state frame N-1 left (and frame 0 on the state the
+	# window opened with); the replay's own frame numbering, the same as an event's `f`.
+	if _inv.active:
+		_inv.check(_root(), _replay_tick)
 	while _replay_i < _replay_events.size():
 		var ev: Dictionary = _replay_events[_replay_i]
 		if int(ev.get("f", 0)) > _replay_tick:
 			break
 		var ie: InputEvent = InputCodec.build_event(ev)
 		if ie != null:
-			Input.parse_input_event(ie)
+			_inject(ie)
 			_replay_injected += 1
 		_replay_i += 1
 	_replay_tick += 1
@@ -338,6 +374,105 @@ func _replay_step_tick() -> void:
 		var tree := get_tree()
 		if tree != null:
 			tree.paused = true
+
+
+## Load the suite's `invariants` (msg.invariants) into the checker, replacing any previous set; "" on
+## success (including "none given"), else why the rules cannot be loaded.
+func _arm_invariants(msg: Dictionary) -> String:
+	_inv.close()
+	var list: Variant = msg.get("invariants", null)
+	if not (list is Array) or (list as Array).is_empty():
+		return ""
+	var o: Dictionary = _inv.open(list)
+	return "" if bool(o.get("ok", false)) else str(o.get("error", "invariants did not load"))
+
+
+# ---------------------------------------------------------------- scene restart (playtest op=repeat)
+
+## Start the current scene over from its file, FROZEN, for playtest op=repeat: every run of a batch has
+## to begin from the same fresh scene or the second run would measure what the first left behind. A
+## handler cannot relaunch the game (that needs the editor's own frames), but it can reload the scene.
+## The scene's resources are reloaded too (see _change_scene_afresh): without that the engine's cache would
+## hand the next run the shape, the shared .tres and the sub-resource the last one changed.
+## What this does NOT reset is anything outside the scene's own files: autoloads, saved files, engine
+## singletons, a variable a script holds that is not saved in a resource, and a resource that only an
+## autoload or a script loads. Any open stepping / replay / ui_do / typing window is dropped, and input the
+## last run left held is released. The change itself is deferred by the engine, so the editor polls
+## scene_state until the new scene is up.
+##
+## With `scene` (op=run_all and op=mutate: each suite names the scene it plays) the game is switched to
+## THAT scene instead, when it is not the current one; the same freeze, release and poll apply, and a
+## game that has lost its scene (a run that ended on a broken one) can be brought back this way too.
+func _scene_reload(msg: Dictionary = {}) -> Dictionary:
+	var tree := get_tree()
+	if tree == null:
+		return {"ok": false, "error": "no scene tree"}
+	var target := str(msg.get("scene", "")).strip_edges()
+	if not target.is_empty():
+		# A suite file can come from a cloned repository: the project's own scenes only.
+		if not (target.begins_with("res://") or target.begins_with("user://")) or target.contains("..") or not ResourceLoader.exists(target):
+			return {"ok": false, "error": "scene '%s' is not a scene of this project (res:// or user://, no '..', and the file must exist)" % target.left(160)}
+	var cur: Node = tree.current_scene
+	if cur == null:
+		# Between the swap and the new scene's arrival there is no current scene: a HEAVY scene spends seconds
+		# there. If the last restart has not been seen come up, this is that window, not a game without a scene.
+		if _reload_old_id != 0:
+			return {"ok": false, "pending": true, "error": "a scene restart is still loading (the previous scene_reload has not come up yet)"}
+		if target.is_empty():
+			return {"ok": false, "error": "the game has no current scene to restart (the scene was set up some other way than as the main or a changed-to scene)"}
+	var path := str(cur.scene_file_path) if cur != null else ""
+	if target.is_empty() and path.is_empty():
+		return {"ok": false, "error": "the current scene (%s) was built in code and has no scene file, so it cannot be restarted from one" % cur.name}
+	_stepping = false
+	_step_expr = null
+	_replaying = false
+	_ui_do.abort()
+	_inv.close()
+	_typing_done = true
+	_typing_ctrl = null
+	var released := InputCodec.release_all(_held)
+	tree.paused = true  # the fresh scene must not run a frame before the next run says so
+	var old_id := cur.get_instance_id() if cur != null else 0
+	var switching := not target.is_empty() and target != path
+	var err := _change_scene_afresh(tree, target if switching else path)
+	if err != OK:
+		return {"ok": false, "error": "%s failed (%s)" % ["change_scene_to_file" if switching else "reload_current_scene", error_string(err)]}
+	_reload_old_id = old_id
+	var out := {"ok": true, "scene": target if switching else path, "old_id": old_id, "released_inputs": released}
+	if switching:
+		out["changed"] = true
+	return out
+
+
+## Change the scene to the one in `path`, with its resources read from disk again. reload_current_scene() and
+## change_scene_to_file() take the scene and everything it uses from the engine's cache, which still holds what the
+## last run did to them (a shape's size, a shared .tres a script wrote to): a second run of a deterministic game then
+## starts from the first one's leftovers. CACHE_MODE_REPLACE_DEEP re-reads the scene and the resources it names INTO
+## the objects already in the cache, so everything that holds one (an autoload, a preloaded constant) sees the fresh
+## values and keeps pointing at the same object; scripts are not part of it, so their static variables carry on like
+## the autoloads' state (probed on 4.4.1, 4.6.2 and 4.7). A scene that will not load that way is left to the engine's own
+## change_scene_to_file, which says why. The cost is reading the scene's resources again: a heavy 3D scene takes longer to
+## come back, which the editor's restart wait allows for.
+func _change_scene_afresh(tree: SceneTree, path: String) -> Error:
+	var fresh := ResourceLoader.load(path, "PackedScene", ResourceLoader.CACHE_MODE_REPLACE_DEEP) as PackedScene
+	if fresh != null:
+		return tree.change_scene_to_packed(fresh)
+	return tree.change_scene_to_file(path)
+
+
+## Is the restarted scene up? `id` is the live scene's instance id: it differs from scene_reload's
+## old_id once the engine has swapped it in. (A heavy scene blocks this process for seconds while it
+## loads, so a caller polling this can see a timeout before it sees the answer.)
+func _scene_state() -> Dictionary:
+	var tree := get_tree()
+	var cur: Node = tree.current_scene if tree != null else null
+	var id := cur.get_instance_id() if cur != null else 0
+	var up := cur != null and cur.is_node_ready()
+	if up and _reload_old_id != 0 and id != _reload_old_id:
+		_reload_old_id = 0  # the restart has come up: nothing is pending any more
+	# `scene` is the file the live scene came from ("" when it was built in code): a batch that plays several scenes
+	# puts the game back on the one it found.
+	return {"ok": true, "id": id, "ready": up, "paused": tree != null and tree.paused, "scene": str(cur.scene_file_path) if cur != null else ""}
 
 
 func _handle(line: String) -> void:
@@ -356,8 +491,12 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 	match str(msg.get("cmd", "")):
 		"ping":
 			return {"ok": true, "scene": _scene_name()}
+		"quiet_state":
+			return _quiet.report()
 		"tree":
 			return _tree_cmd(msg)
+		"game_state":
+			return _game_state_cmd(msg)
 		"screenshot":
 			return _screenshot(msg)
 		"input":
@@ -409,9 +548,22 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 		"ui_do_open":
 			if _stepping or _replaying:
 				return {"ok": false, "error": "a time_control/replay window is open — close it before ui_do"}
-			return _ui_do.open(self, msg)
+			if _ui_do.active:
+				return _ui_do.open(self, msg)  # refuses with "already open"; the running window keeps its own rules
+			var uido_inv_err := _arm_invariants(msg)
+			if not uido_inv_err.is_empty():
+				return {"ok": false, "error": uido_inv_err}
+			_inv_base_frame = Engine.get_physics_frames()
+			var uido_open: Dictionary = _ui_do.open(self, msg)
+			if not bool(uido_open.get("ok", false)):
+				_inv.close()
+			return uido_open
 		"ui_do_status":
-			return _ui_do.status()
+			var uido_st: Dictionary = _ui_do.status()
+			# A suite's invariants ride the SAME poll that reports the flow finished (once, not every poll).
+			if _inv.active and not bool(uido_st.get("active", false)):
+				uido_st["invariants"] = _inv.results()
+			return uido_st
 		"ui_do_abort":
 			return _ui_do.abort()
 		"click_node3d":
@@ -424,6 +576,10 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 			return _drag_cmd(msg)
 		"perf":
 			return {"ok": true, "monitors": _perf_monitors()}
+		"fingerprint":
+			return _fingerprint()
+		"physics_overlap":
+			return _physics_overlap(msg)
 		"logs":
 			return _log_sink.snapshot(msg)
 		"record_start":
@@ -444,13 +600,28 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 			var eval_v: Variant = eex.execute([], eb, true)
 			if eex.has_execute_failed():
 				return {"ok": false, "error": "expr exec error: %s" % eex.get_error_text()}
-			return {"ok": true, "value": _safe(eval_v)}
+			var eval_out := {"ok": true, "value": _safe(eval_v)}
+			# A condition that came back false also says what it read, so a failed expr assert reports the
+			# value that broke it (and two runs of a flaky suite can be told apart), not just "false".
+			if not CallArgs.to_bool(eval_v):
+				var eval_reads := Invariants.reads_of(str(msg.get("expr", "")).strip_edges(), eb)
+				if not eval_reads.is_empty():
+					eval_out["reads"] = eval_reads
+			return eval_out
 		"replay_open":
 			if _ui_do.active:
 				return {"ok": false, "error": "a ui_do window is open — let it finish (ui_do_status) or ui_do_abort first"}
 			return _replay_open(msg)
 		"replay_status":
-			return {"ok": true, "replaying": _replaying, "injected": _replay_injected, "frames": _replay_tick, "total_events": _replay_events.size(), "remaining": _replay_events.size() - _replay_i, "paused": (get_tree() != null and get_tree().paused), "perf": _replay_perf.summary()}
+			var rs := {"ok": true, "replaying": _replaying, "injected": _replay_injected, "frames": _replay_tick, "total_events": _replay_events.size(), "remaining": _replay_events.size() - _replay_i, "paused": (get_tree() != null and get_tree().paused), "perf": _replay_perf.summary()}
+			# The rule results ride the poll that reports the window closed, not every poll before it.
+			if _inv.active and not _replaying:
+				rs["invariants"] = _inv.results()
+			return rs
+		"scene_reload":
+			return _scene_reload(msg)
+		"scene_state":
+			return _scene_state()
 		"tc_freeze":
 			return _tc_freeze()
 		"tc_unfreeze":
@@ -1039,12 +1210,25 @@ func _tree_cmd(msg: Dictionary) -> Dictionary:
 	if max_children <= 0:
 		max_children = 1 << 30
 	var ctx := {"count": 0, "max": max_nodes, "max_children": max_children,
-		"collapse": bool(msg.get("collapse", true)), "truncated": false}
+		"collapse": CallArgs.flag(msg, "collapse", true), "truncated": false}
 	var tree := _tree2(start, root, depth, ctx)
 	var out := {"ok": true, "tree": tree, "node_count": int(ctx["count"])}
 	if bool(ctx["truncated"]):
 		out["truncated"] = true
 		out["hint"] = "output capped — narrow with path=, lower depth=, or raise max_nodes="
+	return out
+
+
+## Collect the game-owned state (v1.16): every node of the whole SceneTree, autoloads included, that is in
+## the group beckett_state / mcp_state and answers _beckett_state() / _mcp_state(). Whole tree on purpose:
+## the node that holds a game's score or inventory is as often an autoload as a node of the scene. The
+## reply is capped and says when it cut (game_state.gd).
+func _game_state_cmd(msg: Dictionary) -> Dictionary:
+	var tree := get_tree()
+	if tree == null:
+		return {"ok": false, "error": "no scene tree"}
+	var out: Dictionary = GameState.collect(tree, _root(), int(msg.get("max_nodes", GameState.MAX_NODES)))
+	out["ok"] = true
 	return out
 
 
@@ -1221,9 +1405,16 @@ func _run_input(events: Array) -> Dictionary:
 			continue
 		var ev: InputEvent = InputCodec.build_event(e)
 		if ev != null:
-			Input.parse_input_event(ev)
+			_inject(ev)
 			count += 1
 	return {"ok": true, "dispatched": count}
+
+
+## Every synthetic event this autoload feeds the game goes through here, so what it pressed and nobody
+## released is remembered (see _release_held, the scene restart).
+func _inject(ie: InputEvent) -> void:
+	Input.parse_input_event(ie)
+	InputCodec.track(_held, ie)
 
 
 # ---------------------------------------------------------------- find (live nodes)
@@ -1241,7 +1432,7 @@ func _find(msg: Dictionary) -> Dictionary:
 	var cls := str(msg.get("class", ""))
 	var text_q := str(msg.get("text", ""))
 	var name_q := str(msg.get("name", ""))
-	var recursive := bool(msg.get("recursive", true))
+	var recursive := CallArgs.flag(msg, "recursive", true)
 	var maxn := int(msg.get("max", 100))
 	var out: Array = []
 	for c in scope.get_children():
@@ -1315,7 +1506,7 @@ func _click_text(msg: Dictionary) -> Dictionary:
 	if matches.is_empty():
 		var where := (" under %s" % str(msg.get("under", ""))) if str(msg.get("under", "")) != "" else ""
 		return {"ok": false, "error": "no button with text containing '%s'%s" % [text, where]}
-	if bool(msg.get("all", false)):
+	if CallArgs.flag(msg, "all"):
 		var list: Array = []
 		for b in matches:
 			list.append({"path": str(root.get_path_to(b)), "text": _node_text(b), "class": b.get_class()})
@@ -1541,7 +1732,8 @@ func _type_text(msg: Dictionary) -> Dictionary:
 	if vp.gui_get_focus_owner() != ctrl:
 		return {"ok": false, "error": "could not focus %s — another control refuses to release focus" % path}
 	var text := str(msg.get("text", ""))
-	if bool(msg.get("clear", true)):
+	var submit := CallArgs.flag(msg, "submit")
+	if CallArgs.flag(msg, "clear", true):
 		if ctrl.has_method("select_all"):
 			ctrl.call("select_all")
 			if text.is_empty():
@@ -1550,15 +1742,15 @@ func _type_text(msg: Dictionary) -> Dictionary:
 			ctrl.set("text", "")
 	# v1.11 per_frame: queue the chars and let _process inject ONE per frame, so
 	# per-char handlers see real typing. The editor tool polls cmd=type_status.
-	if bool(msg.get("per_frame", false)):
+	if CallArgs.flag(msg, "per_frame"):
 		_typing_ctrl = ctrl
 		_typing_text = text
 		_typing_i = 0
-		_typing_submit = bool(msg.get("submit", false))
+		_typing_submit = submit
 		_typing_done = text.is_empty() and not _typing_submit
 		_typing_error = ""
 		return {"ok": true, "per_frame": true, "path": path,
-			"queued": text.length() + (1 if bool(msg.get("submit", false)) else 0)}
+			"queued": text.length() + (1 if submit else 0)}
 	var typed := 0
 	for i in text.length():
 		var code := text.unicode_at(i)
@@ -1567,9 +1759,9 @@ func _type_text(msg: Dictionary) -> Dictionary:
 		else:
 			_push_key(vp, 0, code)
 		typed += 1
-	if bool(msg.get("submit", false)):
+	if submit:
 		_push_key(vp, KEY_ENTER, 0)
-	var out := {"ok": true, "typed": typed, "path": path, "submitted": bool(msg.get("submit", false))}
+	var out := {"ok": true, "typed": typed, "path": path, "submitted": submit}
 	# Read the text back so the agent sees what the field ACCEPTED (max_length,
 	# filters, and text_changed handlers included) without a second call.
 	if "text" in ctrl:
@@ -2242,6 +2434,45 @@ func _perf_monitors() -> Dictionary:
 	for p in pairs:
 		out[p[0]] = Performance.get_monitor(p[1])
 	return out
+
+
+## What a perf number was measured ON, asked of the process that measured it. The editor cannot
+## say: a headless editor has no GPU adapter at all and still launches a windowed game. Read-only;
+## playtest op=run stamps these into a perf baseline and compares them on later runs. (The `eval`
+## command cannot do this: an Expression sees no engine singletons, only the scene root's members.)
+func _fingerprint() -> Dictionary:
+	var out := {
+		"ok": true,
+		"gpu": RenderingServer.get_video_adapter_name(),
+		"gpu_vendor": RenderingServer.get_video_adapter_vendor(),
+		"display": DisplayServer.get_name(),
+		"build": "debug" if OS.is_debug_build() else "release",
+	}
+	# The driver actually in use (vulkan, d3d12, opengl3...). Newer than the oldest engine this
+	# autoload has to parse on, so it is reached by name and simply left out where it is missing.
+	if RenderingServer.has_method("get_current_rendering_driver_name"):
+		out["rendering_driver"] = str(RenderingServer.call("get_current_rendering_driver_name"))
+	return out
+
+
+# ---------------------------------------------------------------- physics overlap oracle (playtest assert no_overlap)
+
+## The physics bodies of the running game that penetrate each other, and how deep (what is judged, and why the
+## defaults are what they are: runtime/physics_overlap.gd). Loaded when asked, not preloaded: it is a Full-edition
+## module that pack.ps1 trims from Lite, and a build without it says so instead of failing to parse.
+const PHYSICS_OVERLAP_PATH := "res://addons/beckett/runtime/physics_overlap.gd"
+
+
+func _physics_overlap(msg: Dictionary) -> Dictionary:
+	if not ResourceLoader.exists(PHYSICS_OVERLAP_PATH):
+		return {"ok": false, "error": "the physics overlap oracle is a Full-edition feature (runtime/physics_overlap.gd is not part of this build)"}
+	var impl = load(PHYSICS_OVERLAP_PATH)
+	if impl == null:
+		return {"ok": false, "error": "runtime/physics_overlap.gd failed to load (the engine's own error above says why)"}
+	var root := _root()
+	if root == null:
+		return {"ok": false, "error": "no current scene"}
+	return impl.run(get_tree(), root, msg, Callable(self, "_resolve"))
 
 
 # ---------------------------------------------------------------- log capture

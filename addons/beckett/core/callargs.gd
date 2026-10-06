@@ -179,6 +179,41 @@ static func coerce(raw: Variant, want: int) -> Dictionary:
 	return _err("expected %s, got %s" % [type_string(want), _show(raw)])
 
 
+## A JSON-decoded flag as a bool: the safe spelling of bool(args.get("x", false)).
+##
+## GDScript 4 has no bool(String). bool("true") is a runtime error ("Nonexistent 'bool'
+## constructor", measured on 4.4.1 and 4.7; null, Array, Dictionary and Object fail the same
+## way) that aborts the whole handler, and the call comes back as a null result. The argument
+## validator lets "true", "false", "1", "0", "yes" and "no" through for a boolean parameter, so
+## a lenient client that sends a flag as text used to land exactly there. Accepted: a bool; an
+## int or float (nonzero is true, which is all bool(number) ever did); those six strings in any
+## case with the space around them ignored. null, "", any other string and every other type give
+## `default`: a flag is never an error here, because the validator has already refused a
+## top-level value that cannot be a boolean and a nested one (a playtest step, an input event)
+## has nobody left to refuse it.
+static func to_bool(raw: Variant, default: bool = false) -> bool:
+	match typeof(raw):
+		TYPE_BOOL:
+			return raw
+		TYPE_INT, TYPE_FLOAT:
+			return raw != 0
+		TYPE_STRING, TYPE_STRING_NAME:
+			match str(raw).strip_edges().to_lower():
+				"true", "1", "yes":
+					return true
+				"false", "0", "no":
+					return false
+	return default
+
+
+## to_bool straight off a dictionary: CallArgs.flag(args, "loop"), CallArgs.flag(args, "validate", true).
+## The default is stated once and covers both an absent key and an explicit null, which
+## to_bool(args.get("x", true)) would get wrong (a null in a present key skips get()'s default and
+## falls to to_bool's own false).
+static func flag(d: Dictionary, key: String, default: bool = false) -> bool:
+	return to_bool(d.get(key), default)
+
+
 ## Human-readable "name(Type arg, ...)" for a get_method_list entry. (Kept local so
 ## this file stays dependency-free - reflection.gd is editor-only.)
 static func signature(meta: Dictionary) -> String:

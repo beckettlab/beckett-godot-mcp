@@ -70,7 +70,7 @@ param(
     # The Lite (L1-L4) tool count. Like tests/smoke.ps1's "advertises exactly N" check,
     # dev/glama-dump-tools.ps1's note and both probe counts in .github/workflows/ci.yml,
     # it is a release.ps1 count site: heal a changed surface with -FixCounts.
-    [int]$ExpectedTools = 55,
+    [int]$ExpectedTools = 56,
 
     [int]$BootTimeoutSec = 120
 )
@@ -195,6 +195,14 @@ try {
     $titleSaysLite = "$($init.serverInfo.title)" -like '*Lite*'
     Check ($titleSaysLite -eq ($Edition -eq 'Lite')) `
         "serverInfo.title names the $Edition edition ($($init.serverInfo.title))"
+    # The version a client sees is the one the addon on disk declares: plugin.cfg, the file release.ps1 -Bump stamps.
+    # Through v1.15.2 initialize said 1.0.0 for every release, because nothing compared the two.
+    $cfgText = Get-Content -LiteralPath (Join-Path $ProjectPath 'addons/beckett/plugin.cfg') -Raw
+    $cfgVersion = [regex]::Match($cfgText, '(?m)^\s*version\s*=\s*"([^"]+)"').Groups[1].Value
+    $reportedVersion = ''
+    if ($null -ne $init.serverInfo.PSObject.Properties['version']) { $reportedVersion = "$($init.serverInfo.version)" }
+    Check ($cfgVersion -ne '' -and $reportedVersion -eq $cfgVersion) `
+        "serverInfo.version is the plugin.cfg version ($cfgVersion; got '$reportedVersion')"
 
     # 3. tools/list: EXACTLY the surface of the edition under test.
     $tools = (Invoke-Rpc @{ jsonrpc = '2.0'; id = 3; method = 'tools/list'; params = @{} }).result.tools

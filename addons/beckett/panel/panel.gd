@@ -13,11 +13,18 @@ extends VBoxContainer
 const MCPClientConfig := preload("res://addons/beckett/core/client_config.gd")
 const MCPEffortScript := preload("res://addons/beckett/core/effort.gd")
 const MCPReflectScript := preload("res://addons/beckett/core/reflection.gd")  # node-path resolver, shared with the tools
+const MCPVersionScript := preload("res://addons/beckett/core/version.gd")  # the release number in the tagline
 
 var server   # mcp_server node
 var plugin   # EditorPlugin
 
 const ACTIVITY_ROWS := 6
+## The one client that does not follow a dial change live: Claude Code inside the Claude desktop
+## app does not rebuild its deferred tool pool on notifications/tools/list_changed
+## (anthropics/claude-code#88483, open), so the change shows on a new session or an app restart.
+## Said on every dial change and in the bar's tooltip; no client detection needed. doctor says the
+## same in its effort block (project_tools.gd EFFORT_DESKTOP_NOTE).
+const EFFORT_DESKTOP_HINT := "In the Claude desktop app, start a new session (or restart it) to see the change."
 # TODO(W5.1): point at the live store page before the Lite listing ships.
 const UPGRADE_URL := "https://beckettlabs.itch.io/beckett-godot-mcp"
 
@@ -393,7 +400,7 @@ func _build_effort_card() -> void:
 	_effort_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_effort_bar.focus_mode = Control.FOCUS_ALL
 	_effort_bar.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-	_effort_bar.tooltip_text = "Caps the tools the MCP client sees. Lower = cheaper model context, fewer capabilities. Applies live to clients that support tools/list_changed; others pick it up on reconnect."
+	_effort_bar.tooltip_text = "Caps the tools the MCP client sees. Lower = cheaper model context, fewer capabilities. Applies live to clients that support tools/list_changed; others pick it up on reconnect.\n" + EFFORT_DESKTOP_HINT
 	_effort_bar.draw.connect(_draw_effort_bar)
 	_effort_bar.gui_input.connect(_on_effort_bar_input)
 	_effort_bar.resized.connect(_on_effort_bar_resized)
@@ -1342,9 +1349,8 @@ func _auth_enable() -> void:
 		_flash("Could not write the token file (see editor log)", false)
 		_refresh_auth_row()
 		return
-	MCPClientConfig.ensure_all(_port(), tok)
 	_clients_accum = 999.0  # re-detect on the next tick
-	_flash("Token auth enabled · client configs updated ✓")
+	_report_token_change("Token auth enabled", MCPClientConfig.ensure_all(_port(), tok), true)
 	_refresh()
 
 
@@ -1356,9 +1362,8 @@ func _on_auth_rotate() -> void:
 	if tok == "":
 		_flash("Could not write the token file (see editor log)", false)
 		return
-	MCPClientConfig.ensure_all(_port(), tok)
 	_clients_accum = 999.0
-	_flash("Token rotated · client configs updated ✓")
+	_report_token_change("Token rotated", MCPClientConfig.ensure_all(_port(), tok), true)
 	_refresh()
 
 
@@ -1368,11 +1373,41 @@ func _auth_disable() -> void:
 		_refresh_auth_row()
 		return
 	server.set_auth_disabled()
-	MCPClientConfig.ensure_all(_port(), "")
 	_clients_accum = 999.0
-	_flash("Token auth disabled")
+	_report_token_change("Token auth disabled", MCPClientConfig.ensure_all(_port(), ""), false)
 	_refresh()
-	_refresh()
+
+
+## Toast and log for a token change that re-wrote the client configs (enable, rotate, disable).
+func _report_token_change(head: String, results: Array, token_set: bool) -> void:
+	var summary := _token_summary(head, results, token_set)
+	for line in summary["log"]:
+		push_warning(str(line))
+	_flash(str(summary["text"]), bool(summary["ok"]))
+
+
+## What a token change tells the user, from the writers' results. The server switches to the new token
+## the moment it is minted, so a client whose config could NOT be rewritten (a symlinked file, a
+## read-only one, one held open) keeps the old URL, and from then on gets a 401 it never explains. The
+## old toast said "client configs updated" whatever the writers answered: this one names each client
+## that did not take the change, with the writer's own plain reason, and is an error toast. With the
+## token switched OFF the same failure is milder (the old URL still works, since nothing checks the
+## token any more) but it leaves a dead secret sitting in that file, so it is named too. Its own
+## function so the unit suite can read it.
+func _token_summary(head: String, results: Array, token_set: bool) -> Dictionary:
+	var failed: Array = []
+	var log_lines: Array = []
+	for r in results:
+		if bool(r.get("ok", false)):
+			continue
+		var who := str(r.get("name", "?"))
+		var why := str(r.get("error", "see the editor log"))
+		failed.append("%s (%s)" % [who, why])
+		log_lines.append("[beckett] %s config not updated after the token change: %s" % [who, why])
+	if failed.is_empty():
+		return {"text": "%s · client configs updated ✓" % head, "ok": true, "log": []}
+	var effect := "still carry the OLD token and will get a 401 until fixed" if token_set else "still carry the old token in their URL (it is switched off, so they keep working, but remove it)"
+	return {"text": "%s, but %d client config(s) %s: %s" % [head, failed.size(), effect, " · ".join(failed)], "ok": false, "log": log_lines}
 
 
 ## Toggle the activity feed between the recent few and the whole ring (forces a rebuild).
@@ -1413,14 +1448,37 @@ func _on_connect_clients() -> void:
 	if results.is_empty():
 		_flash("No MCP clients detected on this machine", false)
 		return
+	var summary := _connect_summary(results)
+	for line in summary["log"]:
+		push_warning(str(line))
+	_clients_accum = 999.0  # re-detect on the next tick
+	_flash(str(summary["text"]), bool(summary["ok"]))
+
+
+## The toast for a Connect press, from the writers' results, and the lines worth keeping in the
+## editor log. Its own function so the unit suite can read it. A refused or failed write says why, in
+## the plain words the writer chose (a symlinked config, a file held open): a bare FAILED leaves the
+## user nothing to act on. A config the writer could not read was moved aside before the rewrite
+## (JSON, never TOML), and the toast says where it went, because the file the client now reads has
+## only our entry in it. The toast is gone in a few seconds, so both also go to the log (the same
+## line the plugin writes at start-up).
+func _connect_summary(results: Array) -> Dictionary:
 	var parts: Array = []
+	var log_lines: Array = []
 	var all_ok := true
 	for r in results:
 		var ok := bool(r.get("ok", false))
 		all_ok = all_ok and ok
-		parts.append("%s %s" % [str(r.get("name", "?")), str(r.get("action", "")) if ok else "FAILED"])
-	_clients_accum = 999.0  # re-detect on the next tick
-	_flash(" · ".join(parts) + (" ✓" if all_ok else ""), all_ok)
+		var who := str(r.get("name", "?"))
+		var shown := str(r.get("action", ""))
+		if not ok:
+			shown = "FAILED: " + str(r.get("error", "see the editor log"))
+			log_lines.append("[beckett] %s config not written: %s" % [who, str(r.get("error", "unknown error"))])
+		elif r.has("warning"):
+			shown += " (the old file is kept as %s)" % str(r.get("backup", "")).get_file()
+			log_lines.append("[beckett] %s config: %s" % [who, str(r["warning"])])
+		parts.append("%s %s" % [who, shown])
+	return {"text": " · ".join(parts) + (" ✓" if all_ok else ""), "ok": all_ok, "log": log_lines}
 
 
 # ---------------------------------------------------------------- effort
@@ -1462,10 +1520,16 @@ func _set_effort_level(lvl: int) -> void:
 	_animate_effort_name(going_up)
 	if _effort_bar != null:
 		_effort_bar.queue_redraw()
+	_flash(_effort_flash_text(lvl, notified))
+
+
+## The toast after a dial change: what happened, then the one-line caveat for the client that
+## will not show it (EFFORT_DESKTOP_HINT). Its own function so the unit suite can read it.
+func _effort_flash_text(lvl: int, notified: int) -> String:
+	var head := "Effort set to %s - clients pick it up on next connect" % _level_name(lvl)
 	if notified > 0:
-		_flash("Effort set to %s — applied live (%d client stream%s notified)" % [_level_name(lvl), notified, "s" if notified > 1 else ""])
-	else:
-		_flash("Effort set to %s — clients pick it up on next connect" % _level_name(lvl))
+		head = "Effort set to %s - applied live (%d client stream%s notified)" % [_level_name(lvl), notified, "s" if notified > 1 else ""]
+	return head + "\n" + EFFORT_DESKTOP_HINT
 
 
 ## Fade + slide the tier name on a level change: it rises into place when stepping up and
@@ -1859,11 +1923,10 @@ func _fmt_k(n: int) -> String:
 	return ("%.1fk" % (n / 1000.0)) if n >= 1000 else str(n)
 
 
+## The release number for the tagline, or "" (no "v..." shown) when plugin.cfg cannot be read.
 func _plugin_version() -> String:
-	var cf := ConfigFile.new()
-	if cf.load("res://addons/beckett/plugin.cfg") == OK:
-		return str(cf.get_value("plugin", "version", ""))
-	return ""
+	var v: String = MCPVersionScript.current()
+	return "" if v == MCPVersionScript.UNKNOWN else v
 
 
 ## Running: the port actually BOUND (start_server may have walked past a busy one). Stopped:

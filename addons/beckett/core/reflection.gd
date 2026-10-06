@@ -7,15 +7,22 @@ class_name BeckettReflect
 ## resources, enums). This is what lets a handful of generic tools drive any class.
 
 
+const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # a resource loaded by path is a read like any other
+
+
 ## Resolve a string target to a live Object.
 ##   "res://path.tscn"/"uid://..."   -> loaded Resource
 ##   "."/root name                    -> the edited scene root
 ##   node path or node name           -> a node in the edited scene
-## Returns null if nothing matched (callers may then treat it as a class name).
+## Returns null if nothing matched (callers may then treat it as a class name). A resource path the
+## read rule refuses (outside the project, or through a link that leaves it) matches nothing, and a
+## tool that wants to say why asks PathGuard.check_read for the same path.
 static func resolve(target: String) -> Object:
 	if target == null or target.is_empty():
 		return null
 	if target.begins_with("res://") or target.begins_with("uid://"):
+		if PathGuard.check_read(target).has("error"):
+			return null
 		return ResourceLoader.load(target)
 	var root := EditorInterface.get_edited_scene_root()
 	if root != null:

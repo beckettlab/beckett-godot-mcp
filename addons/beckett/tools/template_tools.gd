@@ -18,6 +18,8 @@ class_name BeckettTemplateTools
 
 var server
 
+const CallArgs := preload("res://addons/beckett/core/callargs.gd")
+const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # the read rule for a template folder, the write rule for what it is copied to
 const BUNDLED_DIR := "res://addons/beckett/templates"
 const PROJECT_DIR := "res://.beckett/templates"
 
@@ -38,9 +40,16 @@ func _apply_template(args: Dictionary) -> Dictionary:
 	var tpl := str(args.get("template", ""))
 	if tpl.is_empty():
 		return {"json": {"error": "apply_template requires 'template'.", "available": _list_templates()}}
-	var src := _template_dir(tpl)
+	# A template is a folder NAME. A separator, a colon or ".." in it would point at any folder on the
+	# machine and copy its files into the project, where read_file would hand them back.
+	var src := "" if (tpl.contains("/") or tpl.contains("\\") or tpl.contains(":") or tpl.contains("..")) else _template_dir(tpl)
 	if src.is_empty():
 		return {"error": "No template '%s'." % tpl, "json": {"available": _list_templates()}}
+	# A project template folder can be a link out of the project; the bundled ones are Beckett's own files
+	# (and the addon itself may be linked in from a dev checkout), so only the project's are held to it.
+	var guard: Dictionary = PathGuard.check_read(src) if src.begins_with(PROJECT_DIR) else {}
+	if guard.has("error"):
+		return guard
 
 	var dir := DirAccess.open(src)
 	var files: Array = []
@@ -49,7 +58,24 @@ func _apply_template(args: Dictionary) -> Dictionary:
 			files.append(str(f))
 	if files.is_empty():
 		return {"error": "Template '%s' has no files." % tpl}
-	var force := bool(args.get("force", false))
+	if src.begins_with(PROJECT_DIR):
+		# Every file is opened and copied into the project, where read_file hands it back, so a file of a
+		# project template that is a link leading outside is refused too (the folder being fine is not enough).
+		var read_memo := {}
+		for f in files:
+			var fg: Dictionary = PathGuard.check_read(src.path_join(str(f)), read_memo)
+			if fg.has("error"):
+				return fg
+			if fg.has("note"):
+				guard = fg
+	var force := CallArgs.flag(args, "force")
+	# Every file lands under res://, so each target is checked before the first one is written: a link in
+	# the project that leaves it (res://scripts as a junction, say) must not take a template's files out.
+	var memo := {}
+	for f in files:
+		var perr: String = PathGuard.write_path_error("res://" + str(f), memo)
+		if not perr.is_empty():
+			return {"error": "res://%s: %s. Nothing was written." % [str(f), perr]}
 
 	if not force:
 		var clash: Array = []
@@ -81,6 +107,10 @@ func _apply_template(args: Dictionary) -> Dictionary:
 				"json": {"wrote": wrote}}
 		out.store_string(text)
 		out.close()
+		var bad := BeckettProjectTools.verify_write(to, text)
+		if not bad.is_empty():
+			bad["json"] = {"wrote": wrote}
+			return bad
 		var note := BeckettProjectTools.sync_written_file(to)
 		if not note.is_empty():
 			editor_notes.append(to + ":" + note)
@@ -89,6 +119,14 @@ func _apply_template(args: Dictionary) -> Dictionary:
 	# The template — not apply_template — decides whether it owns the main scene.
 	var manifest := _manifest(src)
 	var main_scene := str(manifest.get("main_scene", ""))
+	var main_skipped := ""
+	if not main_scene.is_empty() and src.begins_with(PROJECT_DIR):
+		# The manifest is a file the project supplies: the scene it names is opened by the editor, so it is
+		# read under the same rule (a bundled template names a res:// scene of its own).
+		var mg: Dictionary = PathGuard.check_read(main_scene)
+		if mg.has("error"):
+			main_skipped = str(mg["error"])
+			main_scene = ""
 	if not main_scene.is_empty() and FileAccess.file_exists(main_scene):
 		ProjectSettings.set_setting("application/run/main_scene", main_scene)
 		ProjectSettings.save()
@@ -101,12 +139,15 @@ func _apply_template(args: Dictionary) -> Dictionary:
 		"template": tpl,
 		"description": str(manifest.get("description", "")),
 		"wrote": wrote,
+		"disk_verified": true,
 		"main_scene": main_scene,
 		"next": "Customize the copied files to your needs. Confirm structure with assert_scene before relying on it.",
 	}
 	if not editor_notes.is_empty():
 		out["editor_notes"] = editor_notes
-	return {"json": out}
+	if not main_skipped.is_empty():
+		out["main_scene_skipped"] = main_skipped
+	return PathGuard.noted({"json": out}, guard)
 
 
 ## Source files only: editor sidecars and the manifest stay behind, and so does every dotfile.

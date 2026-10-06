@@ -301,6 +301,7 @@ static func _reason(status: int) -> String:
 		404: return "Not Found"
 		405: return "Method Not Allowed"
 		413: return "Payload Too Large"
+		415: return "Unsupported Media Type"
 		431: return "Request Header Fields Too Large"
 		500: return "Internal Server Error"
 		503: return "Service Unavailable"

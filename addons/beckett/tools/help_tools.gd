@@ -35,6 +35,9 @@ func _register(registry) -> void:
 		"help": "help()            the index — every tool carrying an extended long form, with its effort tier and whether the current dial advertises it.\nhelp(tool=\"X\")    X's long form, plus its full argument list with types and which are required.\n\nWhy the long form is not in the tool description: a description ships on EVERY tools/list, to every client, at every tier, forever. A catalogue is read once, when you are about to use the thing. So the description names the CAPABILITY — enough for you to know the tool can do the job — and the syntax lives here. Ask before writing a call you are unsure of; it is one round trip and it costs nothing when you do not.\n\nA tool with no long form falls back to its own description, so this is never a dead end. An unknown name comes back as a normal tool result with a did-you-mean, never as a protocol error.\n\nIt answers for tools ABOVE the current effort tier too, and says so — that is how you find out what raising the dock's AI Effort dial would actually buy you.",
 		"readonly": true,
 		"idempotent": true,
+		# Bootstrap set for Claude Code's tool search (see always_load in tool_registry.gd): the
+		# one tool that teaches a model the rest of the surface cannot sit behind a search.
+		"always_load": true,
 		"input_schema": {"type": "object", "properties": {
 			"tool": {"type": "string", "description": "tool name; omit for the index"},
 		}},

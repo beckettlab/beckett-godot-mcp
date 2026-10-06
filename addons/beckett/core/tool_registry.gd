@@ -10,6 +10,10 @@ class_name BeckettToolRegistry
 # yet (fresh checkout, headless --check-only), and a cache miss would parse-fail us.
 const MCPEffortScript := preload("res://addons/beckett/core/effort.gd")
 
+## Claude Code's hard ceiling for `anthropic/maxResultSizeChars`. A larger declaration is
+## clamped here rather than shipped, so a typo cannot promise a size the client will not honor.
+const MAX_RESULT_CHARS_CEILING := 500000
+
 # name -> {name, description, input_schema, handler:Callable, destructive:bool, readonly:bool[, title, idempotent, open_world]}
 var _tools: Dictionary = {}
 
@@ -37,7 +41,13 @@ func register(spec: Dictionary) -> void:
 	#                   a tool whose EVERY success path returns a Dictionary under `json`;
 	#                   a text-only success would break the promise on first call (there is
 	#                   a unit guard that runs a representative result through _tool_result).
-	for opt in ["title", "idempotent", "open_world", "help", "output_schema"]:
+	# And two v1.16 keys, hints for Claude Code that ride in the tool's `_meta` (see _client_hints):
+	#   always_load      - bool. Claude Code defers every MCP tool schema behind tool search by
+	#                      default; true keeps this one in context from the first turn. Spend it on
+	#                      a few small bootstrap tools: each one is paid for in EVERY session.
+	#   max_result_chars - int. Claude Code spills any result over 50,000 characters to a file; a
+	#                      tool whose full output IS the answer raises its own line here.
+	for opt in ["title", "idempotent", "open_world", "help", "output_schema", "always_load", "max_result_chars"]:
 		if spec.has(opt):
 			t[opt] = spec[opt]
 	_tools[name] = t
@@ -58,7 +68,10 @@ func names() -> Array:
 ## MCP tools/list payload: [{name, description, inputSchema}].
 ## Only tools at or below `max_level` (the AI effort tier, 1..6) are advertised —
 ## a lower tier ships fewer tools, so the model pays less prompt context.
-func list_specs(max_level: int = -1) -> Array:
+## `with_meta` gates the per-tool `_meta` hints: Tool._meta exists from spec 2025-06-18, so the
+## server passes false for a peer that negotiated an older revision. It is applied AFTER the
+## effort filter, so a tool the dial hides carries no hint because it is not listed at all.
+func list_specs(max_level: int = -1, with_meta: bool = true) -> Array:
 	if max_level < 0:
 		max_level = MCPEffortScript.MAX_LEVEL
 	var out: Array = []
@@ -81,6 +94,10 @@ func list_specs(max_level: int = -1) -> Array:
 		# success. `help` is never emitted here — that is the context diet.
 		if t.has("output_schema"):
 			spec["outputSchema"] = t["output_schema"]
+		if with_meta:
+			var hints := _client_hints(t)
+			if not hints.is_empty():
+				spec["_meta"] = hints
 		out.append(spec)
 	return out
 
@@ -102,6 +119,20 @@ func documented_names() -> Array:
 			out.append(k)
 	out.sort()
 	return out
+
+
+## Claude Code's two per-tool hints, as the `_meta` the spec reserves for exactly this (the
+## reverse-DNS prefix keeps them out of the way of every other client). A key is emitted ONLY
+## for a tool that declared it, so an undeclared tool carries no `_meta` at all; any other
+## client ignores the whole object.
+func _client_hints(t: Dictionary) -> Dictionary:
+	var hints := {}
+	if t.has("always_load"):
+		hints["anthropic/alwaysLoad"] = bool(t["always_load"])
+	var cap := int(t.get("max_result_chars", 0))
+	if cap > 0:
+		hints["anthropic/maxResultSizeChars"] = mini(cap, MAX_RESULT_CHARS_CEILING)
+	return hints
 
 
 func _annotations(t: Dictionary) -> Dictionary:

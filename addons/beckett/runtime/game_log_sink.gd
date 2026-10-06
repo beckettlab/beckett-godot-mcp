@@ -13,6 +13,7 @@ extends RefCounted
 ## (the engine logs from workers too), hence the mutex around every ring touch.
 
 const CAP := 800
+const CallArgs := preload("res://addons/beckett/core/callargs.gd")  # `clear` can arrive as text from a lenient client
 
 var _ring: Array = []
 var _dropped := 0
@@ -110,7 +111,7 @@ func snapshot(msg: Dictionary) -> Dictionary:
 	_mutex.lock()
 	var snap: Array = _ring.duplicate()
 	var dropped := _dropped
-	if bool(msg.get("clear", false)):
+	if CallArgs.flag(msg, "clear"):
 		_ring.clear()
 		_dropped = 0
 	_mutex.unlock()
