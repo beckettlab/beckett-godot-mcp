@@ -19,9 +19,9 @@ func _register(registry) -> void:
 	registry.register({
 		"name": "batch_execute",
 		"description": "Run several tool calls in one request, in order. steps = [{tool, args}]. "
-			+ "Stops at the first failure (stop_on_error, default true). When a step fails, scene edits made by the batch are rolled back via the editor undo history (rollback, default true) — file/resource writes are not. "
+			+ "Stops at the first failure (stop_on_error, default true). When a step fails, scene edits made by the batch are rolled back via the editor undo history (rollback, default true); file/resource writes are not. "
 			+ "Use to collapse multi-step authoring (create node → set props → attach script) into one atomic call. "
-			+ "ok per step means the handler completed - verify EFFECTS with a trailing read-back step (assert_scene / assert_node_state / a get_*) before trusting a mutation batch.",
+			+ "ok per step means the handler completed - verify EFFECTS with a trailing read-back step (a get_* or describe_object call; assert_scene / assert_node_state in Full) before trusting a mutation batch.",
 		"input_schema": {"type": "object", "properties": {
 			"steps": {"type": "array", "description": "ordered [{tool: name, args: {...}}]", "items": {"type": "object"}},
 			"stop_on_error": {"type": "boolean", "description": "halt on first failure (default true)"},

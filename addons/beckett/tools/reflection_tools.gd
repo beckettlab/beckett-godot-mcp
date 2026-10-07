@@ -7,6 +7,7 @@ class_name BeckettReflectionTools
 ## These few tools reach any Node / Resource / Object without per-domain wrappers.
 
 const Reflect := preload("res://addons/beckett/core/reflection.gd")
+const Internals := preload("res://addons/beckett/core/internals.gd")  # which methods fan out to every node below the target
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")
 const BuiltinApi := preload("res://addons/beckett/core/builtin_api.gd")
 const PersistGuard := preload("res://addons/beckett/core/persist_guard.gd")
@@ -301,6 +302,11 @@ func _describe_object(args: Dictionary) -> Dictionary:
 		return guard
 	var obj := Reflect.resolve(target)
 	if obj == null:
+		# One of Beckett's own objects, or the editor around the open scene: say so, and do not ask the game
+		# about a path that names a node of the editor (the game has no such node, and "not found" would hide why).
+		var off := Reflect.refusal_for(target)
+		if not off.is_empty():
+			return {"error": off}
 		# The editor and the running game are two different scopes that share one path
 		# syntax, and nothing said so: runtime_get_property happily takes /root/Main/Player
 		# while describe_object on the same string said "could not resolve" and sent the
@@ -365,13 +371,19 @@ func _call_method(args: Dictionary) -> Dictionary:
 	var obj := Reflect.resolve(target)
 	if obj == null:
 		return _unresolved(target)
-	if not obj.has_method(method):
-		return {"error": "%s has no method '%s'" % [obj.get_class(), method],
-			"suggestion": "Call find_methods query=%s class=%s to discover callable methods." % [method, obj.get_class()]}
 	var call_args: Array = []
 	var incoming: Variant = args.get("args", [])
 	if incoming is Array:
 		call_args = incoming
+	# A method that runs something on every node below its target (propagate_call), or runs another method by
+	# name (call, callv, call_deferred, so call("propagate_call", ...) too), reaches Beckett's own objects from any
+	# node that has them below it, and the target itself being fine does not make that call fine.
+	var off := Internals.dispatch_refusal(obj, method, call_args)
+	if not off.is_empty():
+		return {"error": off}
+	if not obj.has_method(method):
+		return {"error": "%s has no method '%s'" % [obj.get_class(), method],
+			"suggestion": "Call find_methods query=%s class=%s to discover callable methods." % [method, obj.get_class()]}
 	# Coerce BEFORE callv: a mis-typed callv does NOT execute the method (the engine
 	# prints to the editor console and returns null), which this handler used to wrap
 	# as success - the silent-argument trap. Coercion failures now fail the call.
@@ -389,6 +401,12 @@ func _call_method(args: Dictionary) -> Dictionary:
 
 func _resolve_object_arg(spec: String) -> Object:
 	return Reflect.resolve(spec)
+
+
+## Why an object argument that did not resolve was refused (CallArgs.prepare asks): handing one of Beckett's
+## objects to add_child, reparent, connect or the like is a way to them as good as naming one as the target.
+func _object_arg_refusal(spec: String) -> String:
+	return Reflect.refusal_for(spec)
 
 
 ## call_method executes the LOADED script. A .gd changed outside write_script/
@@ -543,6 +561,9 @@ func _unresolved(target: String) -> Dictionary:
 	var guard := _target_guard(target)
 	if guard.has("error"):
 		return guard
+	var off := Reflect.refusal_for(target)  # one of Beckett's own objects, or a node outside the open scene
+	if not off.is_empty():
+		return {"error": off}
 	var out := {"error": "Could not resolve target: %s" % target}
 	var near := _did_you_mean_target(target, false)
 	if not near.is_empty():

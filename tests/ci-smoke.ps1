@@ -52,7 +52,7 @@
 
 .EXAMPLE
     pwsh tests/ci-smoke.ps1 -GodotExe /opt/godot/godot -Port 8790 -ProjectPath .
-    powershell -File tests\ci-smoke.ps1 -GodotExe 'E:\Godot_v4.6.2-stable_win64\Godot_v4.6.2-stable_win64_console.exe' -Port 8791 -ProjectPath C:\path\to\stage
+    powershell -File tests\ci-smoke.ps1 -GodotExe 'C:\path\to\Godot_console.exe' -Port 8791 -ProjectPath C:\path\to\stage
     powershell -File tests\ci-smoke.ps1 -GodotExe <console exe> -Port 8792 -ProjectPath <monorepo root> -Edition Full -ExpectedTools <Full count>
 #>
 [CmdletBinding()]

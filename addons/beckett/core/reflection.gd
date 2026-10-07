@@ -8,6 +8,20 @@ class_name BeckettReflect
 
 
 const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # a resource loaded by path is a read like any other
+const Internals := preload("res://addons/beckett/core/internals.gd")  # what a tool may never name: Beckett's own objects, and the editor around the open scene
+
+## The unit suite points this at a scene of its own: a plain engine run has no editor, so no edited scene.
+## Nothing else sets it.
+static var scene_root_override: Node = null
+
+
+## The root of the scene open in the editor, or null when there is none (and, outside an editor, null).
+static func scene_root() -> Node:
+	if scene_root_override != null and is_instance_valid(scene_root_override):
+		return scene_root_override
+	if not Engine.is_editor_hint():
+		return null
+	return EditorInterface.get_edited_scene_root()
 
 
 ## Resolve a string target to a live Object.
@@ -17,14 +31,74 @@ const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # a resou
 ## Returns null if nothing matched (callers may then treat it as a class name). A resource path the
 ## read rule refuses (outside the project, or through a link that leaves it) matches nothing, and a
 ## tool that wants to say why asks PathGuard.check_read for the same path.
+##
+## Never an object of Beckett's own, and never a node outside the open scene (the editor's panels, the
+## plugin nodes, the tree root): those match nothing either, so a tool that forgets to ask why still
+## fails closed, and refusal_for / miss say why (internals.gd has the reasons).
 static func resolve(target: String) -> Object:
+	var obj := _resolve_raw(target)
+	if obj != null and not refusal_of(obj).is_empty():
+		return null
+	return obj
+
+
+## The node a scene-editing tool means by `target`: "", "." and "/root" and the root's own name are the open
+## scene's root; anything else is a path from the root (or an absolute /root/... path to a node of this scene),
+## or the first node of that name below it. The same rule as resolve for a node, minus resources and
+## sub-resources, and the same answer for what is off limits: null.
+static func scene_node(target: String) -> Node:
+	var n := _scene_node_raw(target)
+	if n != null and not refusal_of(n).is_empty():
+		return null
+	return n
+
+
+## Why a tool may not touch `obj`, or "" when it may: one of Beckett's own objects, or a node in the tree that
+## is not part of the open scene.
+static func refusal_of(obj: Object, what: String = "") -> String:
+	return Internals.refusal(obj, scene_root(), what)
+
+
+## Why `target` is refused, or "" when it is not (it may still match nothing). Resolves again without the
+## refusal, which only a miss pays for: a resource path is never the editor's own, so it is not asked.
+static func refusal_for(target: String) -> String:
+	if target.is_empty() or target.begins_with("res://") or target.begins_with("uid://"):
+		return ""
+	var obj := _resolve_raw(target)
+	if obj == null:
+		return ""
+	return refusal_of(obj, target)
+
+
+## The error for a target that matched nothing: the off-limits sentence when it names something a tool may not
+## touch, else "Could not resolve <noun>: <target>".
+static func miss(target: String, noun: String = "target") -> String:
+	var why := refusal_for(target)
+	if not why.is_empty():
+		return why
+	return "Could not resolve %s: %s" % [noun, target]
+
+
+static func _scene_node_raw(target: String) -> Node:
+	var root := scene_root()
+	if root == null:
+		return null
+	if target.is_empty() or target == "." or target == "/root" or target == root.name:
+		return root
+	var n := root.get_node_or_null(NodePath(target))
+	if n == null:
+		n = root.find_child(target, true, false)
+	return n
+
+
+static func _resolve_raw(target: String) -> Object:
 	if target == null or target.is_empty():
 		return null
 	if target.begins_with("res://") or target.begins_with("uid://"):
 		if PathGuard.check_read(target).has("error"):
 			return null
 		return ResourceLoader.load(target)
-	var root := EditorInterface.get_edited_scene_root()
+	var root := scene_root()
 	if root != null:
 		if target == "." or target == "/root" or target == root.name:
 			return root
@@ -48,6 +122,11 @@ static func resolve(target: String) -> Object:
 ## Resolve "Node/prop/subprop..." by taking the longest leading node path, then following
 ## each remaining segment as an Object-valued property. Returns null if no node prefix
 ## matches or a segment is missing / not an Object (so callers still fail loudly).
+##
+## The walk stops at the first object a tool may not touch and returns THAT one, so the caller's refusal
+## names it. Without that, a prefix that reaches one of Beckett's nodes and a property that holds its socket
+## (".../BeckettRuntimeBridge/_peer") would hand back an object that carries no Beckett script of its own, and
+## put_data on it would write straight into the game's channel past everything send_command checks.
 static func _resolve_property_walk(root: Node, target: String) -> Object:
 	var parts := target.split("/", false)
 	if parts.size() < 2:
@@ -64,10 +143,14 @@ static func _resolve_property_walk(root: Node, target: String) -> Object:
 	if node == null:
 		return null
 	var cur: Object = node
+	if not refusal_of(cur).is_empty():
+		return cur
 	for i in range(consumed, parts.size()):
 		var v: Variant = cur.get(parts[i])
 		if v is Object:
 			cur = v
+			if not refusal_of(cur).is_empty():
+				return cur
 		else:
 			return null
 	return cur

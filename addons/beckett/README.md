@@ -14,6 +14,9 @@ This free Lite edition does the whole basic loop AND lets the AI SEE your
 running game: it inspects any node via reflection, authors scenes/scripts/
 resources (every script parse-checked before it touches disk), runs the game,
 and reads the screen + live scene tree + runtime state to tell you what is wrong.
+It sees the running game and does not drive it: the game-side runtime ships here as
+MIT source, but Lite's tools never send input or other drive commands, and its
+bridge refuses them.
 
 The Full edition makes the AI the playtester - it drives the game (presses the
 buttons, drives input, asserts the results) - and adds animation tools,

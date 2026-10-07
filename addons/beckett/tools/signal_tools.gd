@@ -42,10 +42,12 @@ func _register(registry) -> void:
 func _connect_signal(args: Dictionary) -> Dictionary:
 	var from := Reflect.resolve(str(args.get("from", ""))) as Node
 	var to := Reflect.resolve(str(args.get("to", ""))) as Node
+	# Miss answers say why when the node is one of Beckett's own (a signal wired to its send_command would run
+	# whatever the signal carries) or outside the open scene.
 	if from == null:
-		return {"error": "Could not resolve 'from' node: %s" % str(args.get("from", ""))}
+		return {"error": Reflect.miss(str(args.get("from", "")), "'from' node")}
 	if to == null:
-		return {"error": "Could not resolve 'to' node: %s" % str(args.get("to", ""))}
+		return {"error": Reflect.miss(str(args.get("to", "")), "'to' node")}
 	var sig := str(args.get("signal", ""))
 	var method := str(args.get("method", ""))
 	if not from.has_signal(sig):
@@ -67,6 +69,10 @@ func _disconnect_signal(args: Dictionary) -> Dictionary:
 	var from := Reflect.resolve(str(args.get("from", ""))) as Node
 	var to := Reflect.resolve(str(args.get("to", ""))) as Node
 	if from == null or to == null:
+		for spec in [str(args.get("from", "")), str(args.get("to", ""))]:
+			var off := Reflect.refusal_for(spec)
+			if not off.is_empty():
+				return {"error": off}
 		return {"error": "Could not resolve from/to node."}
 	var sig := str(args.get("signal", ""))
 	var cb := Callable(to, str(args.get("method", "")))
@@ -83,7 +89,7 @@ func _disconnect_signal(args: Dictionary) -> Dictionary:
 func _list_signals(args: Dictionary) -> Dictionary:
 	var node := Reflect.resolve(str(args.get("target", ""))) as Node
 	if node == null:
-		return {"error": "Could not resolve target: %s" % str(args.get("target", ""))}
+		return {"error": Reflect.miss(str(args.get("target", "")))}
 	var out: Array = []
 	for s in node.get_signal_list():
 		var name: String = str(s.get("name", ""))

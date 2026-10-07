@@ -23,6 +23,7 @@ class_name BeckettCSharpTools
 
 const DotnetCheck := preload("res://addons/beckett/core/dotnet_check.gd")
 const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # the read rule for a .csproj the caller names (dotnet build runs whatever that project says)
+const Subprocess := preload("res://addons/beckett/core/subprocess.gd")  # was dotnet started at all: -1 on Windows, 127 on Linux and macOS
 
 var server  # mcp_server node
 
@@ -76,11 +77,11 @@ func _build_csharp(args: Dictionary) -> Dictionary:
 		"--tl:off", "-clp:NoSummary", "-v:m", "-nologo"]
 	var output: Array = []
 	var code := OS.execute(dotnet, build_args, output, true)  # read_stderr=true
-	if code == -1:
-		return {"error": "Failed to launch `dotnet build` (%s). Is the .NET SDK healthy?" % dotnet}
 	var text := ""
 	for chunk in output:
 		text += str(chunk) + "\n"
+	if Subprocess.not_started(code, text, dotnet):
+		return {"error": "Failed to launch `dotnet build` (%s). Is the .NET SDK healthy?" % dotnet}
 	var diags := _parse_diagnostics(text)
 	var errs := 0
 	var warns := 0

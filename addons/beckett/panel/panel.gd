@@ -287,7 +287,7 @@ func _build_server_card() -> void:
 	_game_label.text = "● game runtime connected"
 	_game_label.add_theme_font_size_override("font_size", int(11 * _es))
 	_game_label.add_theme_color_override("font_color", _color("success_color", Color(0.3, 0.8, 0.4)))
-	_game_label.tooltip_text = "Live link to the running game — playtest tools use this"
+	_game_label.tooltip_text = "Live link to the running game: the tools that see it (and, in Full, drive it) use this"
 	_game_label.visible = false
 	box.add_child(_game_label)
 

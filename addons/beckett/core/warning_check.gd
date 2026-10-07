@@ -11,9 +11,19 @@ extends RefCounted
 ## reads. A warning arrives as
 ##   ["error", thread, [hr, min, sec, msec, file, func, line, code, message, is_warning, ...]]
 ## and that layout is identical on 4.4.1, 4.6.2 and 4.7 (checked 2026-09-30).
+##
+## The child ends the report itself: after the source's warnings it raises one more message (an error), whose text
+## is a token this side chose, and this side stops reading when it sees it (see warning_probe.gd
+## for why the child may not simply quit and be waited for). A child that is gone without having
+## said the token has not finished reporting, and that is an answer of its own ("could not be
+## checked"), never "no warnings".
+
+const Subprocess := preload("res://addons/beckett/core/subprocess.gd")
 
 const PROBE := "res://addons/beckett/core/warning_probe.gd"
 const WORK_DIR := "res://.godot/beckett"
+## The child's own log (it must not rotate the game's user://logs), and where to look when a check fails.
+const LOG_NAME := "validate_probe.log"
 const TIMEOUT_MS := 10000
 ## A static initializer that throws while the script loads puts the child into a debugger
 ## break. The warnings it had queued are flushed right behind the break message, so read on
@@ -23,11 +33,12 @@ const BREAK_GRACE_MS := 150
 
 ## Compile `content` as `target_path` in a child process and collect what the engine says.
 ## Returns {"ok": true, "warnings": [{line, code, message}], "errors": [{line, message}],
-## "ms": int} or {"ok": false, "reason": String}.
-static func collect(content: String, target_path: String) -> Dictionary:
+## "ms": int} or {"ok": false, "reason": String}. `probe` is the child script (the unit suite
+## aims it at one that misbehaves).
+static func collect(content: String, target_path: String, probe: String = PROBE) -> Dictionary:
 	var t0 := Time.get_ticks_msec()
-	if not ResourceLoader.exists(PROBE):
-		return {"ok": false, "reason": "the probe script is missing (%s)" % PROBE}
+	if not ResourceLoader.exists(probe):
+		return {"ok": false, "reason": "the probe script is missing (%s)" % probe}
 	var work := ProjectSettings.globalize_path(WORK_DIR)
 	if not DirAccess.dir_exists_absolute(work):
 		DirAccess.make_dir_recursive_absolute(work)
@@ -42,21 +53,25 @@ static func collect(content: String, target_path: String) -> Dictionary:
 	if lerr != OK:
 		DirAccess.remove_absolute(input)
 		return {"ok": false, "reason": "cannot open a loopback socket (%s)" % error_string(lerr)}
+	# A name nothing else says, so a script under check that raises its own warnings cannot end the read early.
+	var token := "beckett-probe-done-%d-%d" % [Time.get_ticks_usec(), randi()]
 	var args := PackedStringArray([
 		"--headless", "--quiet", "--no-header",
 		# The child is a game run of this project, so by default it would log to (and rotate)
 		# the game's own user://logs, pushing real play logs out. Keep its log in .godot.
-		"--log-file", work.path_join("validate_probe.log"),
+		"--log-file", work.path_join(LOG_NAME),
 		"--path", ProjectSettings.globalize_path("res://"),
 		"--remote-debug", "tcp://127.0.0.1:%d" % server.get_local_port(),
-		"--script", PROBE, "--", input, target_path,
+		# The path to compile as may be empty, so it goes last.
+		"--script", probe, "--", token, input, target_path,
 	])
-	var pid := OS.create_process(OS.get_executable_path(), args)
+	# Quiet: on Linux and macOS a plain create_process child writes into this process's own stdout and stderr.
+	var pid := Subprocess.spawn_quiet(OS.get_executable_path(), args)
 	if pid <= 0:
 		server.stop()
 		DirAccess.remove_absolute(input)
 		return {"ok": false, "reason": "could not start a check process from %s" % OS.get_executable_path()}
-	var got := _read(server, pid)
+	var got := _read(server, pid, token)
 	if OS.is_process_running(pid):
 		OS.kill(pid)
 	server.stop()
@@ -66,15 +81,17 @@ static func collect(content: String, target_path: String) -> Dictionary:
 		"timeout":
 			return {"ok": false, "reason": "the check process did not finish within %d s" % (TIMEOUT_MS / 1000.0)}
 		"no_connection":
-			return {"ok": false, "reason": "the check process exited without reporting (could it boot this project headless?)"}
+			return {"ok": false, "reason": "the check process exited without reporting (could it boot this project headless? its log: %s/%s)" % [WORK_DIR, LOG_NAME]}
+		"exited":
+			return {"ok": false, "reason": "the check process ended before it had reported everything (its log: %s/%s)" % [WORK_DIR, LOG_NAME]}
 	out["ok"] = true
 	out["ms"] = Time.get_ticks_msec() - t0
 	return out
 
 
-## Pump the socket until the child has said everything: it exits, or it breaks and the grace
-## window runs out, or the timeout hits.
-static func _read(server: TCPServer, pid: int) -> Dictionary:
+## Pump the socket until the child has said everything: it raises the token (nothing it reported
+## before is missing), or it breaks and the grace window runs out, or it exits, or the timeout hits.
+static func _read(server: TCPServer, pid: int, token: String) -> Dictionary:
 	var deadline := Time.get_ticks_msec() + TIMEOUT_MS
 	var peer: StreamPeerTCP = null
 	var msgs: Array = []
@@ -94,13 +111,28 @@ static func _read(server: TCPServer, pid: int) -> Dictionary:
 					var m: Variant = peer.get_var()
 					if not (m is Array) or (m as Array).size() < 3:
 						continue
+					if is_done(m, token):
+						return {"messages": msgs, "ended": "done"}
 					msgs.append(m)
 					if str(m[0]) == "debug_enter" and grace_until < 0:
 						grace_until = Time.get_ticks_msec() + BREAK_GRACE_MS
 			elif not OS.is_process_running(pid):
-				return {"messages": msgs, "ended": "exited"}
+				# A child that broke into the debugger and then went away has said all it will say.
+				return {"messages": msgs, "ended": "break" if grace_until > 0 else "exited"}
 		OS.delay_msec(5)
 	return {"messages": msgs, "ended": "timeout"}
+
+
+## Is this debugger message the child's "I have said everything" error? Its text is the token, in
+## the error slot or the description slot depending on how the engine fills them. Pure, so the unit
+## suite pins it.
+static func is_done(m: Variant, token: String) -> bool:
+	if token.is_empty() or not (m is Array) or (m as Array).size() < 3 or str(m[0]) != "error":
+		return false
+	var data: Variant = m[2]
+	if not (data is Array) or (data as Array).size() < 10:
+		return false
+	return str(data[7]) == token or str(data[8]) == token
 
 
 ## Debugger messages -> {warnings, errors} for ONE file. Scripts the target loads (preloads,

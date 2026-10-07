@@ -13,6 +13,8 @@ extends RefCounted
 ## (about 1 s, once per engine build), kept compact under .godot/beckett/, after which every
 ## call is a small file read that always matches the running engine version.
 
+const Subprocess := preload("res://addons/beckett/core/subprocess.gd")
+
 const WORK_DIR := "res://.godot/beckett"
 const TIMEOUT_MS := 30000
 
@@ -89,7 +91,9 @@ static func _dump() -> Dictionary:
 	var out_file := dir.path_join("extension_api.json")
 	if FileAccess.file_exists(out_file):
 		DirAccess.remove_absolute(out_file)
-	var pid := OS.create_process(OS.get_executable_path(),
+	# Quiet: the engine prints "Dumping Extension API" even under --quiet, and on Linux and macOS a plain
+	# create_process child would print it into this process's own stdout.
+	var pid := Subprocess.spawn_quiet(OS.get_executable_path(),
 		PackedStringArray(["--headless", "--quiet", "--no-header", "--path", dir, "--dump-extension-api"]))
 	if pid <= 0:
 		return {"error": "could not start %s" % OS.get_executable_path()}

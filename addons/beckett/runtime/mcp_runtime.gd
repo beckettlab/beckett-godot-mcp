@@ -87,6 +87,12 @@ var _reload_old_id := 0
 # two sides can't drift. core/callargs.gd is dependency-free on purpose: it parses in
 # the game process and in export-template builds (no editor classes).
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")
+# Beckett's own objects are off limits to every write and call the editor asks this autoload to make: the BeckettRuntime
+# autoload, this implementation node, anything below either, and any node whose script is one of Beckett's. The check is on
+# the node a command RESOLVED to, so it holds however the command named it (path, name, class, nth, under). Without it the
+# play_scene on_ready batch, which is a `set`, could write this node's own state (_recording, _step_inputs, _replaying ...)
+# and start the recorder, the input injector and the replay from the free edition. core/internals.gd has the why.
+const Internals := preload("res://addons/beckett/core/internals.gd")
 # Game-owned state (v1.16): nodes in the group beckett_state / mcp_state answer _beckett_state() /
 # _mcp_state(). The `game_state` command collects them (get_remote_tree state=true); the ui_do `state`
 # step asserts on one of them. Logic and the why live in game_state.gd.
@@ -770,10 +776,20 @@ func _get_cmd(n: Node, msg: Dictionary) -> Dictionary:
 ## invisible. Born from the 2026-07-27 "3D meadow" oneshot postmortem, where a silently
 ## dropped volumetric_fog_density write cost 10 minutes and two wrong conclusions.
 func _set_cmd(n: Node, msg: Dictionary) -> Dictionary:
+	# Before anything is read or resolved further: a write to Beckett's own runtime is refused, and the reply says
+	# so in words the on_ready retry does not take for "not there yet" (it retries only a target that has not appeared).
+	var off := Internals.runtime_refusal(n)
+	if not off.is_empty():
+		return {"ok": false, "error": off}
 	var prop := str(msg.get("prop", ""))
 	var res := _property_owner(n, prop)
 	if not bool(res.get("ok", false)):
 		return res
+	# The object that owns the leaf is not always the node: "environment:fog_density" ends on a sub-resource, and a
+	# hop can land on whatever an object property of the node holds, so the owner is held to the same rule.
+	off = Internals.runtime_refusal(res.get("owner"))
+	if not off.is_empty():
+		return {"ok": false, "error": off}
 	var before: Variant = _read_at(res)
 	var want: Variant = _coerce_to(before, msg.get("value"))
 	# Refuse a value we could not make fit. Godot's `set` accepts garbage for a typed
@@ -965,6 +981,9 @@ func _coerce_to(current: Variant, value: Variant) -> Variant:
 ## mis-typed args does NOT run the method - the engine pushes an error (visible in
 ## game_logs) and returns null, which this dispatch used to report as ok:true.
 func _call_cmd(n: Node, msg: Dictionary) -> Dictionary:
+	var off := Internals.runtime_refusal(n)
+	if not off.is_empty():
+		return {"ok": false, "error": off}
 	var method := str(msg.get("method", ""))
 	if not n.has_method(method):
 		return {"ok": false, "error": "%s has no method '%s'" % [n.get_class(), method]}
@@ -981,7 +1000,15 @@ func _call_cmd(n: Node, msg: Dictionary) -> Dictionary:
 
 
 func _resolve_object_arg(spec: String) -> Node:
-	return _resolve(spec)
+	var n := _resolve(spec)
+	if n != null and not Internals.runtime_refusal(n).is_empty():
+		return null  # an argument is a way to an object like any other: CallArgs asks _object_arg_refusal why
+	return n
+
+
+## Why an object argument that did not resolve was refused (CallArgs.prepare asks): "" when it is simply not there.
+func _object_arg_refusal(spec: String) -> String:
+	return Internals.runtime_refusal(_resolve(spec))
 
 
 ## The running game keeps whatever script version it loaded; a .gd edited on disk
@@ -1515,6 +1542,9 @@ func _click_text(msg: Dictionary) -> Dictionary:
 	if idx < 0 or idx >= matches.size():
 		return {"ok": false, "error": "nth %d out of range (%d match(es) for '%s')" % [idx, matches.size(), text]}
 	var btn: Node = matches[idx]
+	var off := Internals.runtime_refusal(btn)
+	if not off.is_empty():
+		return {"ok": false, "error": off}
 	# v1.10 accuracy: a disabled button never fires in the real UI — emitting its
 	# 'pressed' anyway would hand the agent a fabricated success.
 	if UiInspect.is_disabled(btn):
@@ -1543,6 +1573,9 @@ func _click_control(msg: Dictionary) -> Dictionary:
 	var n := _resolve_target(msg)
 	if n == null:
 		return {"ok": false, "error": _not_found(msg)}
+	var off := Internals.runtime_refusal(n)
+	if not off.is_empty():
+		return {"ok": false, "error": off}
 	if not (n is Control):
 		return {"ok": false, "error": "not a Control (%s) — use simulate_input for non-Control targets" % n.get_class()}
 	var vp := get_viewport()
@@ -1713,6 +1746,9 @@ func _type_text(msg: Dictionary) -> Dictionary:
 	var n := _resolve_target(spec)
 	if n == null:
 		return {"ok": false, "error": _not_found(spec)}
+	var off := Internals.runtime_refusal(n)
+	if not off.is_empty():
+		return {"ok": false, "error": off}
 	if not (n is Control):
 		return {"ok": false, "error": "not a Control (%s) — type_text drives focusable text inputs" % n.get_class()}
 	var ctrl := n as Control
@@ -1839,6 +1875,9 @@ func _click_node3d(msg: Dictionary) -> Dictionary:
 	var n := _resolve_target(msg)
 	if n == null:
 		return {"ok": false, "error": _not_found(msg)}
+	var off := Internals.runtime_refusal(n)
+	if not off.is_empty():
+		return {"ok": false, "error": off}
 	if not (n is Node3D):
 		return {"ok": false, "error": "not a Node3D (%s)" % n.get_class()}
 	var n3 := n as Node3D
@@ -1917,6 +1956,9 @@ func _scroll_cmd(msg: Dictionary) -> Dictionary:
 		var n := _resolve_target(msg)
 		if n == null:
 			return {"ok": false, "error": _not_found(msg)}
+		var off := Internals.runtime_refusal(n)
+		if not off.is_empty():
+			return {"ok": false, "error": off}
 		if not (n is Control):
 			return {"ok": false, "error": "scroll target must be a Control, or give position=[x,y]"}
 		pos = (n as Control).get_global_rect().get_center()

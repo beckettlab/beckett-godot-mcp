@@ -70,7 +70,7 @@ func _create_resource(args: Dictionary) -> Dictionary:
 func _set_resource(args: Dictionary) -> Dictionary:
 	var obj := Reflect.resolve(str(args.get("target", "")))
 	if obj == null:
-		return {"error": "Could not resolve target: %s" % str(args.get("target", ""))}
+		return {"error": Reflect.miss(str(args.get("target", "")))}
 	var prop := str(args.get("property", ""))
 	var value: Resource = null
 	var guard: Dictionary = {}

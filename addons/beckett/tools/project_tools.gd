@@ -288,7 +288,7 @@ func _register(registry) -> void:
 	registry.register({
 		"name": "read_file",
 		"description": "Read a text file by res:// (or user://) path.",
-		"help": "path = res://..., user://..., or an absolute path that lies inside the project folder or the project's user:// folder.\n\nReads are CONFINED to those two folders. Any other path is refused with an error that names it: a folder elsewhere on the machine, a relative path (it could mean any folder), a path with '..', or a path that goes through a symbolic link or junction that leads out of the project (a cloned repository can ship one). read_script, list_dir, validate_script, logs_read, wait_until file_exists:, load_skill, apply_template, test_run, build_csharp, and every tool that opens a scene, script or resource by path follow the same rule. search_files, rescan_filesystem, list_skills and the project-analysis tools do not follow a link that leads out of the project; they list what they left out in skipped_links. logs_read with no path reads the log that debug/file_logging/log_path names, under the same rule.\n\nTo read outside the project on purpose, the person who owns the project sets the project setting beckett/allow_outside_reads=true (under [beckett] in project.godot; set_project_setting refuses to turn it on, so an agent cannot lift the confinement itself), or starts the editor with BECKETT_ALLOW_OUTSIDE_READS=1 (the environment wins, and BECKETT_ALLOW_OUTSIDE_READS=0 forces the confinement back on over a project setting that a repository committed). Each reply to such a read says so (outside_read), and doctor warns while it is on.\n\nWrites are never affected: write_file, write_script, script_patch, create_resource, save_scene, apply_template, asset_lib_install and the playtest and compare_screenshots baselines stay under res:// or user://, and refuse a path that goes through a link leaving the project, whatever this setting says.",
+		"help": "path = res://..., user://..., or an absolute path that lies inside the project folder or the project's user:// folder.\n\nReads are CONFINED to those two folders. Any other path is refused with an error that names it: a folder elsewhere on the machine, a relative path (it could mean any folder), a path with '..', or a path that goes through a symbolic link or junction that leads out of the project (a cloned repository can ship one). read_script, list_dir, validate_script, logs_read, wait_until file_exists:, apply_template, build_csharp (in Full also load_skill and test_run), and every tool that opens a scene, script or resource by path follow the same rule. search_files, get_project_statistics and rescan_filesystem (in Full also find_unused_resources, detect_circular_dependencies, test_run and list_skills) do not follow a link that leads out of the project; they list what they left out in skipped_links. logs_read with no path reads the log that debug/file_logging/log_path names, under the same rule.\n\nTo read outside the project on purpose, the person who owns the project sets the project setting beckett/allow_outside_reads=true (under [beckett] in project.godot; set_project_setting refuses to turn it on, so an agent cannot lift the confinement itself), or starts the editor with BECKETT_ALLOW_OUTSIDE_READS=1 (the environment wins, and BECKETT_ALLOW_OUTSIDE_READS=0 forces the confinement back on over a project setting that a repository committed). Each reply to such a read says so (outside_read), and doctor warns while it is on.\n\nWrites are never affected: write_file, write_script, script_patch, create_resource, save_scene and apply_template (in Full also asset_lib_install and the playtest and compare_screenshots baselines) stay under res:// or user://, and refuse a path that goes through a link leaving the project, whatever this setting says.",
 		"readonly": true,
 		"max_result_chars": 200000,  # same reasoning as read_script: the text is the answer; see script_tools.gd
 		"input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
@@ -370,8 +370,9 @@ func _register(registry) -> void:
 		"input_schema": {"type": "object", "properties": {}},
 		"handler": Callable(self, "_doctor"),
 	})
-	# NOTE: logs_read (L3) lives in test_tools.gd — premium modules keep ALL their
-	# code out of the Lite build; nothing tier-3+ may be implemented in this file.
+	# NOTE: logs_read (L3) lives in run_tools.gd, a core module that ships in Lite. What may not be
+	# registered in this file, or in any other core module, is a Full-only tool (tier 5 and up):
+	# pack.ps1's leak gate fails a Lite build that carries the registration of one.
 
 
 func _read_file(args: Dictionary) -> Dictionary:
@@ -1051,4 +1052,4 @@ func _dotnet_report(warnings: Array) -> Dictionary:
 	return out
 
 
-# (logs_read moved to test_tools.gd — see the note in _register.)
+# (logs_read is registered by run_tools.gd; see the note in _register.)

@@ -9,6 +9,7 @@ class_name BeckettSceneTools
 ## can still be dropped by that save; PersistGuard says so in the reply.
 
 const Reflect := preload("res://addons/beckett/core/reflection.gd")
+const Internals := preload("res://addons/beckett/core/internals.gd")  # instance_scene never puts one of Beckett's own scenes in the player's
 const PersistGuard := preload("res://addons/beckett/core/persist_guard.gd")
 const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # the read rule for a scene opened by path, the write rule for one saved to a path
 
@@ -112,7 +113,7 @@ func _create_node(args: Dictionary) -> Dictionary:
 		return {"error": "Cannot instantiate class: %s" % type, "suggestion": "Use find_classes base=Node to find a node type."}
 	var parent := _node(str(args.get("parent", "")))
 	if parent == null:
-		return {"error": "Could not resolve parent: %s" % str(args.get("parent", ""))}
+		return {"error": Reflect.miss(str(args.get("parent", "")), "parent")}
 
 	var node := ClassDB.instantiate(type) as Node
 	if node == null:
@@ -136,7 +137,7 @@ func _create_node(args: Dictionary) -> Dictionary:
 func _delete_node(args: Dictionary) -> Dictionary:
 	var node := _node(str(args.get("target", "")))
 	if node == null:
-		return {"error": "Could not resolve target: %s" % str(args.get("target", ""))}
+		return {"error": Reflect.miss(str(args.get("target", "")))}
 	var root := EditorInterface.get_edited_scene_root()
 	if node == root:
 		return {"error": "Refusing to delete the scene root."}
@@ -157,7 +158,7 @@ func _delete_node(args: Dictionary) -> Dictionary:
 func _rename_node(args: Dictionary) -> Dictionary:
 	var node := _node(str(args.get("target", "")))
 	if node == null:
-		return {"error": "Could not resolve target: %s" % str(args.get("target", ""))}
+		return {"error": Reflect.miss(str(args.get("target", "")))}
 	var new_name := str(args.get("name", ""))
 	if new_name.is_empty():
 		return {"error": "name is required"}
@@ -174,10 +175,10 @@ func _rename_node(args: Dictionary) -> Dictionary:
 func _reparent_node(args: Dictionary) -> Dictionary:
 	var node := _node(str(args.get("target", "")))
 	if node == null:
-		return {"error": "Could not resolve target: %s" % str(args.get("target", ""))}
+		return {"error": Reflect.miss(str(args.get("target", "")))}
 	var new_parent := _node(str(args.get("new_parent", "")))
 	if new_parent == null:
-		return {"error": "Could not resolve new_parent: %s" % str(args.get("new_parent", ""))}
+		return {"error": Reflect.miss(str(args.get("new_parent", "")), "new_parent")}
 	var old_parent := node.get_parent()
 	if old_parent == null:
 		return {"error": "Node has no current parent."}
@@ -208,12 +209,15 @@ func _instance_scene(args: Dictionary) -> Dictionary:
 	var guard := PathGuard.check_read(scene_path)
 	if guard.has("error"):
 		return guard
+	if Internals.is_beckett_path(scene_path):
+		return {"error": Internals.file_text(scene_path)}
 	var packed := ResourceLoader.load(scene_path) as PackedScene
 	if packed == null:
 		return {"error": "Could not load PackedScene: %s" % scene_path}
 	var parent := _node(str(args.get("parent", "")))
 	if parent == null:
-		return {"error": "Could not resolve parent."}
+		var off := Reflect.refusal_for(str(args.get("parent", "")))
+		return {"error": off if not off.is_empty() else "Could not resolve parent."}
 	var inst := packed.instantiate()
 	if args.has("name"):
 		inst.name = str(args["name"])
@@ -262,7 +266,7 @@ func _open_scene(args: Dictionary) -> Dictionary:
 func _duplicate_node(args: Dictionary) -> Dictionary:
 	var node := _node(str(args.get("target", "")))
 	if node == null:
-		return {"error": "Could not resolve target: %s" % str(args.get("target", ""))}
+		return {"error": Reflect.miss(str(args.get("target", "")))}
 	var root := EditorInterface.get_edited_scene_root()
 	if node == root:
 		return {"error": "Refusing to duplicate the scene root."}
@@ -287,7 +291,7 @@ func _duplicate_node(args: Dictionary) -> Dictionary:
 func _move_node(args: Dictionary) -> Dictionary:
 	var node := _node(str(args.get("target", "")))
 	if node == null:
-		return {"error": "Could not resolve target: %s" % str(args.get("target", ""))}
+		return {"error": Reflect.miss(str(args.get("target", "")))}
 	var parent := node.get_parent()
 	if parent == null:
 		return {"error": "Node has no parent."}
@@ -306,16 +310,11 @@ func _move_node(args: Dictionary) -> Dictionary:
 
 # ---------------------------------------------------------------- helpers
 
+## The node a target names in the open scene. The shared resolver (reflection.gd) answers, so this tool and every
+## other one agree on what a target is, and on what no target may be: a node outside the open scene, or one of
+## Beckett's own. This used to be a private copy of the lookup, one that also took any absolute path in the editor.
 func _node(target: String) -> Node:
-	var root := EditorInterface.get_edited_scene_root()
-	if root == null:
-		return null
-	if target.is_empty() or target == "." or target == "/root" or target == root.name:
-		return root
-	var n := root.get_node_or_null(NodePath(target))
-	if n == null:
-		n = root.find_child(target, true, false)
-	return n
+	return Reflect.scene_node(target)
 
 
 ## Set owner on a duplicated subtree so it persists on save. Only on nodes that have none yet:

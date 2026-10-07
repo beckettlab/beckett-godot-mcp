@@ -34,7 +34,7 @@ Existing Godot MCP servers either shell out to the CLI (can't play the game, scr
 - **GDScript dev-loop with validate-before-write** — `write_script` / `script_patch` parse the code first and refuse to write what doesn't compile (closing the #1 AI-on-Godot failure: hallucinated GDScript). Godot's edge over UE: reload needs no compile step.
 - **Undoable authoring** — every scene/node mutation goes through `EditorUndoRedoManager` (atomic + undoable); `batch_execute` rolls a whole batch back on failure.
 - **One-step install** — enabling the plugin auto-starts the server and writes `.mcp.json`, so `claude`/Cursor connects with zero hand-editing (no Node.js to install — the competitor needs it just to try).
-- **Security** — localhost-only with `Origin` validation (anti DNS-rebind) + optional bearer token; read-only / allowlist / confirm-destructive gates; auto-start is opt-out (`beckett/autostart=false`).
+- **Security**: localhost-only, with exact Host and Origin checks (anti DNS-rebind), a per-project token for new projects, file reads confined to the project, and read-only / allowlist / confirm-destructive gates; auto-start is opt-out (`beckett/autostart=false`). [SECURITY.md](SECURITY.md) says what is protected, what is not, and how to report a problem.
 - **Run → see loop** — `play_scene` → `wait_until` → `logs_read` → `screenshot` / `get_remote_tree` → fix: launch the game, tail its output and errors, then look at the running frame and live scene tree to diagnose. (Full closes the loop autonomously: the AI drives the game and asserts.) Plus **MCP Resources + Prompts**.
 - **Dock panel** — status, one-click Start/Stop, copy-client-config, and an **AI-effort slider** (1–4 in Lite; L4 = *See*) that caps how many tools are advertised: cheaper model context when you only need a slice. **Applies live, no reconnect** — the server pushes `notifications/tools/list_changed` over its SSE stream and list-changed-aware clients (Claude Code, Cursor, …) re-fetch on the spot.
 - **Responsive even unfocused** — while MCP traffic is active the server clamps the editor's low-processor sleep, so calls stay fast when you're focused on the terminal instead of the editor (the usual agent setup).
@@ -69,11 +69,13 @@ The **Full** edition is the same core plus a premium layer that makes the AI the
 - **Author + ship:** `animation_manage` (keys / tracks / presets), `scatter_nodes` (Scene-Paint mass placement), background `export_project` + `job_status`, project-wide analysis (`find_unused_resources`, `detect_circular_dependencies`), and the Godot **Asset Store / Library** browser-installer (`asset_lib_search` / `asset_lib_info` / `asset_lib_install`).
 - **46 skill knowledge packs** (`list_skills` / `load_skill`): gdscript, particles, animation, ui, physics, multiplayer, mobile, and more, so reflection reaches each domain with no per-domain tools.
 
+Lite ships the game-side runtime (`addons/beckett/runtime/mcp_runtime.gd`, MIT source) that Full's drive tools use, and that runtime understands the drive commands. Lite's tools never send them and Lite's bridge refuses them, so Lite sees the running game without driving it. This is a product boundary, not a sandbox; [SECURITY.md](SECURITY.md) has the details.
+
 Full is a one-time purchase ($15) with lifetime updates: **https://beckettlabs.itch.io/beckett-godot-mcp**
 
 ## How it compares
 
-Beckett is one of only a few *embedded* (zero-sidecar) servers in the field, and the only one that puts *seeing the running game* in a free tier. The other players have real strengths (raw tool count, mindshare, breadth), so here's an honest side-by-side. (Competitor figures are their own published numbers; they ship far more hand-coded per-domain tools, which is a different design choice, not strictly "more capability": see [Why](#why).)
+Beckett is one of only a few *embedded* (zero-sidecar) servers in the field, and its free tier includes *seeing the running game*, as Native's does. The other players have real strengths (raw tool count, mindshare, breadth), so here's an honest side-by-side. (Competitor figures are their own published numbers; they ship far more hand-coded per-domain tools, which is a different design choice, not strictly "more capability": see [Why](#why).)
 
 | | **Beckett Lite** (free, MIT) | **Beckett Full** ($15) | **CLI shell-out** (e.g. Coding-Solo, free) | **Sidecar** (godot-mcp-pro, $15, Node 18+) | **Native** (free, embedded, 4.6+ only) |
 |---|:---:|:---:|:---:|:---:|:---:|
@@ -91,7 +93,7 @@ Beckett is one of only a few *embedded* (zero-sidecar) servers in the field, and
 
 1. **Install from the editor.** In Godot, open the **Asset Store** tab (**AssetLib** before 4.7), search **"Beckett"**, and install ([Asset Store listing](https://store.godotengine.org/asset/beckett/beckett-godot-mcp/), [Asset Library #5296](https://godotengine.org/asset-library/asset/5296)). Or copy `addons/beckett/` into your project manually.
 2. Enable **Beckett** in *Project → Project Settings → Plugins* (works on Godot **4.2+**, 4.4+ recommended; CI-verified on 4.4.1, and on 4.6.3 & 4.7.2 across Windows, macOS and Linux). Enabling it **auto-starts** the server and **writes `.mcp.json`**. (Opt out: `beckett/autostart=false`, `beckett/auto_write_client_config=false`. Other options: `BECKETT_PORT` default `8770`, `BECKETT_TOKEN`, `BECKETT_READONLY=1`, `BECKETT_ALLOWLIST`, `BECKETT_CONFIRM_DESTRUCTIVE=1`. Panel has Start/Stop.)
-3. Connect your client. For **Claude Code**, just run `claude` in the project — the auto-written [`.mcp.json`](.mcp.json) wires it up (`/mcp` → **beckett**). For Cursor/others, point at `http://127.0.0.1:8770/mcp` (Streamable HTTP) or use the panel's **Set up …** buttons. See [INSTALL.md](INSTALL.md).
+3. Connect your client. For **Claude Code**, just run `claude` in the project; the auto-written `.mcp.json` wires it up (`/mcp` → **beckett**). For Cursor/others, point at `http://127.0.0.1:8770/mcp` (Streamable HTTP) or press the panel's **Connect Detected Clients** button. See [INSTALL.md](INSTALL.md).
 
 ## Status
 

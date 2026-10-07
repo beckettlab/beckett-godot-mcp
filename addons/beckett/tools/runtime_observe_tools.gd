@@ -9,10 +9,14 @@ class_name BeckettRuntimeObserveTools
 ## only READS it — nothing injects input or mutates state.
 ##
 ## This is a CORE module: it ships in the free Lite edition, so Lite can SEE the
-## running game (screenshot, live tree, runtime reads). DRIVING it — input, clicks,
-## drag/scroll, runtime writes, assertions — is the Full-edition layer in
-## runtime_tools.gd. Keeping observe here (core) and drive there (the trimmed
-## sentinel) is what lets Lite see the game without shipping the drive code as source.
+## running game (screenshot, live tree, runtime reads). DRIVING it (input, clicks,
+## drag/scroll, runtime writes, assertions) is the Full-edition layer in
+## runtime_tools.gd. Keeping observe here (core) and the drive TOOLS there (the
+## trimmed sentinel) is what lets Lite see the game without shipping the tools
+## that drive it. The game-side runtime (runtime/mcp_runtime.gd) is one file for
+## both editions and does ship in Lite. Its drive commands stay out of reach
+## because Lite's own tools never send them and core/runtime_bridge.gd refuses
+## them (command_refusal), not because the code is absent.
 
 var server  # mcp_server node (exposes .bridge)
 
@@ -32,7 +36,7 @@ func _register(registry) -> void:
 	registry.register({
 		"name": "screenshot",
 		"description": "Capture an image the agent can see. target=game (default) captures the RUNNING game; target=editor captures the 2D editor viewport (PNG only). A bare call caps the long edge at max_dim=1280 — pass scale, region, max_dim=0, format or save_to to opt out. annotate=ui draws numbered Set-of-Mark boxes and returns the legend. For pure functional state ui_snapshot is cheaper. Token dials + delivery: help(tool=\"screenshot\").",
-		"help": "Token-cost dials (game target):\n  scale=0.5        quarters the pixels\n  max_dim=N        caps the LONG EDGE in px. A call passing NO framing argument defaults to max_dim=1280, because a bare 1440p capture was measured at 5,583,634 bytes of result body for a picture the model reads just as well smaller. Opt out with scale, region, max_dim=0, format or save_to — any of those means you already decided what you wanted back.\n  format=jpeg|webp with quality (default 0.8) compresses far below PNG on a game frame\n  region=[x, y, w, h]  crops, clamped to the frame\n\nannotate=ui draws numbered Set-of-Mark boxes over every visible interactive control AND returns the legend as structured {marks:[{i, path, rect, text?}]}. One glance answers both \"does it look right\" and \"what can I click where\"; follow up with click_control path=<the legend path>. The 1280 cap is folded into the same factor that draws the boxes, so an annotated capture stays pixel-accurate at any size.\n\ndeliver (1.14) chooses the CHANNEL, not the framing:\n  inline (default)  the image rides in the result, as it always has\n  link              the frame is parked in the capture store and you get a capture:// resource_link plus the absolute path — no base64 in the transcript at all\n  both              link and image\nA client older than MCP 2025-06-18 cannot read a resource_link, so deliver=link degrades to both rather than returning a picture nobody can see.\n\nsave_to also writes the frame to a path of your choosing (res://, user:// or absolute) so later captures can be diffed against it. That is how a baseline is minted, which is why it opts out of the size cap.",
+		"help": "Token-cost dials (game target):\n  scale=0.5        quarters the pixels\n  max_dim=N        caps the LONG EDGE in px. A call passing NO framing argument defaults to max_dim=1280, because a bare 1440p capture was measured at 5,583,634 bytes of result body for a picture the model reads just as well smaller. Opt out with scale, region, max_dim=0, format or save_to: any of those means you already decided what you wanted back.\n  format=jpeg|webp with quality (default 0.8) compresses far below PNG on a game frame\n  region=[x, y, w, h]  crops, clamped to the frame\n\nannotate=ui draws numbered Set-of-Mark boxes over every visible interactive control AND returns the legend as structured {marks:[{i, path, rect, text?}]}. One glance answers both \"does it look right\" and \"what can I click where\"; follow up with click_control path=<the legend path> (Full). The 1280 cap is folded into the same factor that draws the boxes, so an annotated capture stays pixel-accurate at any size.\n\ndeliver (1.14) chooses the CHANNEL, not the framing:\n  inline (default)  the image rides in the result, as it always has\n  link              the frame is parked in the capture store and you get a capture:// resource_link plus the absolute path, with no base64 in the transcript at all\n  both              link and image\nA client older than MCP 2025-06-18 cannot read a resource_link, so deliver=link degrades to both rather than returning a picture nobody can see.\n\nsave_to also writes the frame to a path of your choosing (res://, user:// or absolute) so later captures can be diffed against it (compare_screenshots, Full). That is how a baseline is minted, which is why it opts out of the size cap.",
 		"readonly": true,
 		# Bootstrap set (tool_registry.gd) and the heaviest member of it (~1.6 KB, most of it the
 		# argument list): it is the half of run-and-see that no other tool can stand in for, and the
@@ -55,7 +59,7 @@ func _register(registry) -> void:
 	registry.register({
 		"name": "get_remote_tree",
 		"description": "Dump the live scene tree of the RUNNING game (runtime counterpart of get_scene_tree). SCOPE IT to stay under token limits — a full game tree blows the budget. path=subtree root (name, relative, or absolute /root/...); depth=levels (-1=all); max_nodes (default 250); max_children per node (default 50); collapse=true groups runs of identical leaf siblings (e.g. '8x CPUParticles2D'); state=true adds game-owned state (help(tool=\"get_remote_tree\")). Returns {tree, node_count, truncated?}.",
-		"help": "state=true (1.16) returns the game-owned state beside the tree: {state: {<node path>: {...}}, state_nodes: N}.\n\nThe convention: a node that knows what its game means by \"state\" says so. Put it in the group \"beckett_state\" and give its script\n  func _beckett_state() -> Dictionary:\n      return {\"hp\": hp, \"inventory\": items, \"phase\": \"boss\"}\nThe same convention under the other name some tools use works unchanged: the group \"mcp_state\" with _mcp_state() (leftos/godot-mcp and wgt19861219/godot-mcp-enhanced). A node that has both is read through _beckett_state. Beckett calls the method on every read (and a playtest state step on every poll), so keep it a plain read of live fields with no side effects.\n\nWhat comes back: every such node of the WHOLE game, autoloads included (not only the subtree path= scopes the tree to), keyed by its path: relative to the scene root, or /root/... for an autoload. Values are plain JSON: numbers, strings, bools, lists and dictionaries; a Vector2, a Color or a node comes back as its text. The reply is capped (40 nodes, 6,000 characters per node, 12,000 in all, 64 entries per list or dictionary, depth 6, 120 characters per string) and says when it cut: state_truncated:true plus state_truncated_nodes, the nodes that lost something. A node that is in the group but cannot answer (no method, or the method did not return a Dictionary) is listed in state_errors with the reason, so a missing key never looks like a game that has no state. With no such node at all, state is {} and state_hint says how to add one.\n\ndepth=0 with state=true is the cheap way to read just the state.\n\nTo ASSERT on it (Full), use a playtest state step: {state: {node: \"Player\", path: \"inventory.0\", op: \"eq\", value: \"sword\"}}, ops eq ne lt le gt ge contains exists. See the playtest skill.",
+		"help": "state=true (1.16) returns the game-owned state beside the tree: {state: {<node path>: {...}}, state_nodes: N}.\n\nThe convention: a node that knows what its game means by \"state\" says so. Put it in the group \"beckett_state\" and give its script\n  func _beckett_state() -> Dictionary:\n      return {\"hp\": hp, \"inventory\": items, \"phase\": \"boss\"}\nThe same convention under the other name some tools use works unchanged: the group \"mcp_state\" with _mcp_state() (leftos/godot-mcp and wgt19861219/godot-mcp-enhanced). A node that has both is read through _beckett_state. Beckett calls the method on every read (and, in Full, a playtest state step on every poll), so keep it a plain read of live fields with no side effects.\n\nWhat comes back: every such node of the WHOLE game, autoloads included (not only the subtree path= scopes the tree to), keyed by its path: relative to the scene root, or /root/... for an autoload. Values are plain JSON: numbers, strings, bools, lists and dictionaries; a Vector2, a Color or a node comes back as its text. The reply is capped (40 nodes, 6,000 characters per node, 12,000 in all, 64 entries per list or dictionary, depth 6, 120 characters per string) and says when it cut: state_truncated:true plus state_truncated_nodes, the nodes that lost something. A node that is in the group but cannot answer (no method, or the method did not return a Dictionary) is listed in state_errors with the reason, so a missing key never looks like a game that has no state. With no such node at all, state is {} and state_hint says how to add one.\n\ndepth=0 with state=true is the cheap way to read just the state.\n\nTo ASSERT on it, the Full edition's playtest tool has a state step (the playtest skill has its grammar).",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"path": {"type": "string"},
@@ -69,7 +73,7 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "ui_snapshot",
-		"description": "One-call UI snapshot of the RUNNING game: every visible Control as structured data — path, class, text, rect, and the semantic state pixels cannot tell you (disabled, focused, checked, value, selected, editable, tooltip) plus per-control honesty flags. For FUNCTIONAL UI checks this replaces screenshot + find_ui_elements + get_control_rect + runtime_get_property; keep screenshot for visual/render bugs. Every field, and the free since_hash re-read: help(tool=\"ui_snapshot\").",
+		"description": "One-call UI snapshot of the RUNNING game: every visible Control as structured data (path, class, text, rect, and the semantic state pixels cannot tell you: disabled, focused, checked, value, selected, editable, tooltip) plus per-control honesty flags. For FUNCTIONAL UI checks this replaces a screenshot plus a read per control; keep screenshot for visual/render bugs. Every field, and the free since_hash re-read: help(tool=\"ui_snapshot\").",
 		"help": "Per control: path, class (plus a custom class_name when it has one), text, rect [x, y, w, h] in gui space as ints, and the semantic state a picture cannot carry —\n  disabled, focused, checked (toggles), value + range (sliders / spin / progress), selected (+ selected_text / tabs / item_count), editable / placeholder / secret (text fields), tooltip, mouse_ignore.\n\nInteractive controls also carry honesty flags:\n  clipped        scrolled out of view\n  occluded_by    another control would swallow the click (popup, modal, overlay)\n\nTop level: the focus owner, open popup / dialog windows (exclusive = modal), the viewport size, and a stable content 'hash'.\n\nThe hash is the cheap re-read: pass it back as since_hash and an UNCHANGED UI returns {unchanged:true} instead of the payload. Polling a menu costs almost nothing that way.\n\nScope: walks the whole SceneTree root, so autoload HUD layers and popups are included. Narrow with path=, slim with interactive_only=true, cap with max_nodes.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
@@ -83,7 +87,7 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "find_nodes",
-		"description": "Find LIVE nodes in the RUNNING game by type and/or name; returns their paths to feed into runtime_call/runtime_get_property/runtime_set_property. 'class' matches native classes AND custom class_name scripts (is_class alone misses custom nodes — they read as @Node@NN). name=substring on the node name. path=scope root (default scene root). recursive=true. max=cap (default 100).",
+		"description": "Find LIVE nodes in the RUNNING game by type and/or name; returns their paths to feed into runtime_get_property (in Full also runtime_call and runtime_set_property). 'class' matches native classes AND custom class_name scripts (is_class alone misses custom nodes, which read as @Node@NN). name=substring on the node name. path=scope root (default scene root). recursive=true. max=cap (default 100).",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"class": {"type": "string"}, "name": {"type": "string"},
@@ -105,7 +109,7 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "wait_for_node",
-		"description": "Block until a node appears in the RUNNING game (by path/name) or timeout. Use after play_scene to sync before driving.",
+		"description": "Block until a node appears in the RUNNING game (by path/name) or timeout. Use after play_scene to sync before you read the game (or, in Full, drive it).",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"path": {"type": "string"}, "timeout_ms": {"type": "integer"},
@@ -216,7 +220,7 @@ func _screenshot(args: Dictionary) -> Dictionary:
 	if args.has("save_to"):
 		# The bytes are already here — saving them server-side costs nothing and removes the
 		# only reason an agent ever had to edit the GAME (adding a capture() helper to the
-		# deliverable) just to look at it. It also gives compare_screenshots a baseline.
+		# deliverable) just to look at it. It also gives compare_screenshots (Full) a baseline.
 		var saved := _save_capture(b64, str(args["save_to"]))
 		if saved.is_empty():
 			desc += " → saved %s" % str(args["save_to"])

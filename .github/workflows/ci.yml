@@ -224,6 +224,13 @@ jobs:
       # First import pass: let the editor build .godot/ and register the plugin.
       # BECKETT_ENABLE=0 keeps the server off for this pass (we only want import).
       # Guarded by a timeout so a hung import fails the job instead of the 25-min cap.
+      # --import and not --editor --quit: on 4.4.1 a bare --editor --quit ends the editor
+      # while its first scan is still running ("Scan thread aborted") and writes no
+      # .godot/uid_cache.bin, so a uid:// in project.godot (the monorepo's autoload) did not
+      # resolve in the unit suite below. --import waits for the scan to finish. The cache is
+      # the proof that a pass finished (an editor that dies mid-import writes none: 4.4.1 did,
+      # once, on a woff2 font), so the pass runs again, up to three times, until it exists. The
+      # next pass resumes from what the last one imported.
       - name: Import project (editor warm-up)
         shell: pwsh
         env:
@@ -231,18 +238,22 @@ jobs:
           BECKETT_AUTO_CONFIG: '0'
         run: |
           $ErrorActionPreference = 'Stop'
-          $p = Start-Process -FilePath "$env:GODOT_BIN" `
-            -ArgumentList @('--headless', '--editor', '--path', '.', '--quit') `
-            -PassThru
-          # Wait-Process throws on timeout; SilentlyContinue makes it non-fatal, then we
-          # inspect HasExited (Wait-Process has no -PassThru). The probe step is the real
-          # gate, so a slow/hung import warns rather than fails.
-          Wait-Process -Id $p.Id -Timeout 300 -ErrorAction SilentlyContinue
-          if ($p.HasExited) {
-            Write-Host "import pass exited with code $($p.ExitCode)"
-          } else {
-            Write-Warning 'import pass exceeded 300s; killing and continuing'
-            try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+          foreach ($pass in 1..3) {
+            $p = Start-Process -FilePath "$env:GODOT_BIN" `
+              -ArgumentList @('--headless', '--import', '--path', '.') `
+              -PassThru
+            # Wait-Process throws on timeout; SilentlyContinue makes it non-fatal, then we
+            # inspect HasExited (Wait-Process has no -PassThru). The probe step is the real
+            # gate, so a slow/hung import warns rather than fails.
+            Wait-Process -Id $p.Id -Timeout 240 -ErrorAction SilentlyContinue
+            if ($p.HasExited) {
+              Write-Host "import pass $pass exited with code $($p.ExitCode)"
+            } else {
+              Write-Warning "import pass $pass exceeded 240s; killing and continuing"
+              try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+            }
+            if (Test-Path -LiteralPath '.godot/uid_cache.bin') { break }
+            Write-Warning "import pass $pass left no .godot/uid_cache.bin"
           }
 
       # Parse-check every addon script (catches parse errors + the class-name-cache

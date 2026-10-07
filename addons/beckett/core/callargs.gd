@@ -24,7 +24,9 @@ extends RefCounted
 ## Returns {"ok": true, "args": Array} or {"ok": false, "error": String}.
 ## Object-typed params accept a String resolved through `resolver` (any object with
 ## a _resolve_object_arg(String) -> Object method; editor and runtime each pass their
-## own). Methods without metadata (rare) fall back to raw passthrough.
+## own). A resolver that refuses some objects on purpose (Beckett's own) may also have
+## _object_arg_refusal(String) -> String, which says why: the error then carries that sentence
+## instead of "could not resolve". Methods without metadata (rare) fall back to raw passthrough.
 static func prepare(obj: Object, method: String, raw_args: Array, resolver: Object = null) -> Dictionary:
 	var meta := _method_meta(obj, method)
 	if meta.is_empty():
@@ -55,6 +57,10 @@ static func prepare(obj: Object, method: String, raw_args: Array, resolver: Obje
 				if o is Object:
 					out.append(o)
 					continue
+				if resolver.has_method("_object_arg_refusal"):
+					var why := str(resolver._object_arg_refusal(rv))
+					if not why.is_empty():
+						return {"ok": false, "error": "arg %d (%s): %s" % [i, aname, why]}
 				return {"ok": false, "error": "arg %d (%s): could not resolve '%s' to a live object" % [i, aname, str(rv)]}
 			var cls := str(a.get("class_name", ""))
 			if cls.is_empty():

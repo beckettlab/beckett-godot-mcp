@@ -8,6 +8,7 @@ class_name BeckettScriptTools
 ## at the source instead of letting broken code land on disk.
 
 const Reflect := preload("res://addons/beckett/core/reflection.gd")
+const Internals := preload("res://addons/beckett/core/internals.gd")  # attach_script never puts Beckett's own scripts on a node
 const ProjectToolsScript := preload("res://addons/beckett/tools/project_tools.gd")
 const WarningCheck := preload("res://addons/beckett/core/warning_check.gd")
 const PathGuard := preload("res://addons/beckett/core/path_guard.gd")
@@ -180,14 +181,18 @@ func _attach_script(args: Dictionary) -> Dictionary:
 	# failed while create_node parent=<root name> worked.
 	var node := Reflect.resolve(target) as Node
 	if node == null:
-		return {"error": "Could not resolve target: %s" % target}
+		return {"error": Reflect.miss(target)}
 	var path := str(args.get("path", ""))
 	var guard := PathGuard.check_read(path)
 	if guard.has("error"):
 		return guard
+	if Internals.is_beckett_path(path):
+		return {"error": Internals.file_text(path)}
 	var scr := ResourceLoader.load(path)
 	if scr == null or not (scr is Script):
 		return {"error": "Not a script: %s" % path}
+	if Internals.is_beckett_path((scr as Script).resource_path):
+		return {"error": Internals.file_text(path)}
 	var ur: EditorUndoRedoManager = server.get_undo_redo()
 	ur.create_action("MCP attach_script")
 	ur.add_do_property(node, "script", scr)

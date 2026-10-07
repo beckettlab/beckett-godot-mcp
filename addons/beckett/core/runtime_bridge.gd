@@ -113,7 +113,7 @@ func _drain_on_ready() -> void:
 				cmd[k] = d[k]
 		var r: Dictionary = send_command(cmd)
 		var err := str(r.get("error", ""))
-		var not_there := err.contains("not found") or err.contains("no node matches")
+		var not_there := is_target_missing(err)
 		if not bool(r.get("ok", false)) and not_there and Time.get_ticks_msec() < _on_ready_deadline:
 			still.append(d)
 			continue
@@ -126,6 +126,13 @@ func _drain_on_ready() -> void:
 				"error": "target never appeared within %d ms of the game connecting" % ON_READY_GRACE_MS,
 			}))
 		on_ready_queue = []
+
+
+## Is this error the game saying that node is not there (yet)? That is all the on_ready drain retries. Every other error
+## is final, and a refusal in particular (a write aimed at Beckett's own runtime, which the game answers with "off
+## limits") must never read as a node that has not appeared: it would be retried for the whole grace window.
+static func is_target_missing(err: String) -> bool:
+	return err.contains("not found") or err.contains("no node matches")
 
 
 func _on_ready_entry(d: Dictionary, r: Dictionary) -> Dictionary:
@@ -357,6 +364,45 @@ static func _game_view(mode: String, placement: String, source: String) -> Dicti
 	return {"mode": mode, "placement": placement, "source": source, "note": GAME_VIEW_NOTE}
 
 
+# --- which commands this edition may send (v1.16) --------------------------------------------
+# The game side of the channel understands the whole command set, drive commands included, in every edition: it is one
+# file. What keeps the free edition from driving the game is that its OWN tools never send those commands. This is the
+# second lock behind that: whatever reaches send_command in a Lite install, only the commands Lite itself sends go
+# through, so a route to this object that nobody has found yet is still a route to the see-only commands.
+#
+# The sentinel is the one mcp_server.gd uses to cap the effort dial (tools/runtime_tools.gd, which pack.ps1 -Lite
+# removes). It is repeated here, not preloaded, because the server preloads this file; a unit test holds the two equal.
+const FULL_SENTINEL := "res://addons/beckett/tools/runtime_tools.gd"
+
+## Every command the editor side of a Lite install sends, and the one the game answers to be sure it is there (ping):
+## the see tools (screenshot, ui_snapshot, tree, game_state, find, render_probe, debug_draw, get, exists, perf, logs),
+## describe_object's look at the running game, quiet_state for get_play_state, and the one write Lite makes, the
+## play_scene on_ready batch (set). A unit test reads the core tool modules and fails when one of them sends a command
+## that is not on this list, or when this list names one that no core module sends.
+const LITE_COMMANDS := ["ping", "describe", "find", "quiet_state", "screenshot", "ui_snapshot", "tree", "game_state",
+	"render_probe", "debug_draw", "get", "exists", "perf", "logs", "set"]
+
+## null asks the install (is the Full sentinel there?); the unit suite sets true or false to stand in for an edition.
+var lite: Variant = null
+var _lite_seen := -1  # the install's answer, asked once: an edition does not change while the editor runs
+
+
+## Is this the free edition? Same test as mcp_server.is_lite(), made on the install so no wiring can get it wrong.
+func is_lite_edition() -> bool:
+	if lite != null:
+		return bool(lite)
+	if _lite_seen == -1:
+		_lite_seen = 0 if ResourceLoader.exists(FULL_SENTINEL) else 1
+	return _lite_seen == 1
+
+
+## "" when the edition may send `command`, else the reason in plain words. Pure.
+static func command_refusal(command: String, lite_edition: bool) -> String:
+	if not lite_edition or LITE_COMMANDS.has(command):
+		return ""
+	return "the '%s' command belongs to the Full edition: Lite sees the running game but does not drive it (input, clicks, calls, time control and the rest of the drive layer are Full features)." % command.left(40)
+
+
 ## Send one command to the running game and block (bounded) for its JSON-line reply.
 ## Each command carries a sequence id the game echoes back. A LATE reply from an earlier
 ## command that timed out (its handler errored or blocked past the deadline) lands in the
@@ -364,6 +410,11 @@ static func _game_view(mode: String, placement: String, source: String) -> Dicti
 ## mis-returning it and leaving every subsequent call to read one stale line behind (the
 ## desync that used to wedge the channel until stop_scene).
 func send_command(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
+	# First, before anything is looked at or sent: a command outside the edition's set never reaches the game, whether
+	# or not one is connected.
+	var barred := command_refusal(str(cmd.get("cmd", "")), is_lite_edition())
+	if not barred.is_empty():
+		return {"ok": false, "error": barred}
 	# A game parked in the editor's debugger cannot answer until someone presses Continue: say so now. Waiting out
 	# the timeout teaches nothing, and the command would sit unread in the socket and run, late, the moment the
 	# game resumes (a click or a property write nobody is waiting for any more). A game that broke before its
@@ -451,7 +502,7 @@ func break_text() -> String:
 	return break_message(brk, game_view_state(), int(Engine.get_version_info().get("hex", 0)), is_game_connected())
 
 
-## The sentence an agent reads when the game is paused in the debugger. The customer who reported this bug had
+## The sentence an agent reads when the game is paused in the debugger. A user report of this bug described
 ## an agent that, after each bare timeout, abandoned the runtime tools and redid the work by running the game
 ## headless outside the editor, where no debugger is attached and the error just scrolls past. So it says what
 ## is going on, that Beckett is still connected, what NOT to do, and the ways forward: Continue and read the
@@ -505,7 +556,7 @@ static func _timeout_message(timeout_ms: int, gv: Dictionary) -> String:
 		msg += (" If that says false: the game is running EMBEDDED in the editor's Game workspace (placement: %s),"
 			+ " so the likeliest cause is its Suspend button: suspending stops the entire SceneTree,"
 			+ " this channel included, and every runtime call then times out with no other symptom."
-			+ " Press Suspend again (or Next Frame) and retry. This is NOT time_control op=freeze,"
+			+ " Press Suspend again (or Next Frame) and retry. This is NOT time_control op=freeze (Full),"
 			+ " which pauses the game and leaves the channel answering.") % str(gv.get("placement", "?"))
 	else:
 		msg += " If that says false, the game is busy or hung."

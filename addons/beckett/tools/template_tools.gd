@@ -141,7 +141,7 @@ func _apply_template(args: Dictionary) -> Dictionary:
 		"wrote": wrote,
 		"disk_verified": true,
 		"main_scene": main_scene,
-		"next": "Customize the copied files to your needs. Confirm structure with assert_scene before relying on it.",
+		"next": "Customize the copied files to your needs. Confirm the structure with get_scene_tree before relying on it.",
 	}
 	if not editor_notes.is_empty():
 		out["editor_notes"] = editor_notes

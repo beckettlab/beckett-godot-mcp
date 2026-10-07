@@ -41,8 +41,14 @@ const PersistGuard := preload("res://addons/beckett/core/persist_guard.gd")
 const SceneTools := preload("res://addons/beckett/tools/scene_tools.gd")
 const EngineIssues := preload("res://addons/beckett/core/engine_issues.gd")
 const DotnetCheck := preload("res://addons/beckett/core/dotnet_check.gd")
+const Subprocess := preload("res://addons/beckett/core/subprocess.gd")
 const CSharpTools := preload("res://addons/beckett/tools/csharp_tools.gd")
 const Quiet := preload("res://addons/beckett/runtime/quiet.gd")
+const Internals := preload("res://addons/beckett/core/internals.gd")
+const Reflect := preload("res://addons/beckett/core/reflection.gd")
+const ReflectionTools := preload("res://addons/beckett/tools/reflection_tools.gd")
+const SignalTools := preload("res://addons/beckett/tools/signal_tools.gd")
+const ResourceTools := preload("res://addons/beckett/tools/resource_tools.gd")
 const RunTools := preload("res://addons/beckett/tools/run_tools.gd")
 # Full-only modules: loaded dynamically so this suite ALSO runs on the Lite repo's CI,
 # where pack.ps1 physically trims them — their test groups then skip with a note.
@@ -182,6 +188,7 @@ func _init() -> void:
 	_g("class_sync", _t_class_sync())
 	_g("builtin_api", _t_builtin_api())
 	_g("warning_check", _t_warning_check())
+	_g("subprocess", _t_subprocess())
 	_g("write_path_guard", _t_write_path_guard())
 	_g("read_guard", _t_read_guard())
 	_g("read_guard_edges", _t_read_guard_edges())
@@ -210,6 +217,12 @@ func _init() -> void:
 	_g("token_toast", _t_token_toast())
 	_g("effort_desktop_hint", _t_effort_desktop_hint())
 	_g("doctor_tool_search", _t_doctor_tool_search())
+	_g("internals_guard", await _t_internals_guard())
+	_g("runtime_off_limits", await _t_runtime_off_limits())
+	_g("bridge_lite_commands", await _t_bridge_lite_commands())
+	_g("prompts_edition", _t_prompts_edition())
+	_g("lite_text_labels", _t_lite_text_labels())
+	_g("security_doc_labels", _t_security_doc_labels())
 	print("")
 	print("[unit] %d groups ran to their end" % _groups)
 	if _fail > 0:
@@ -2211,6 +2224,21 @@ func _t_ci_matrix() -> bool:
 	var unit_at := yml.find("- name: Unit suite")
 	var unit_step := yml.substr(unit_at, yml.find("\n      - name:", unit_at + 1) - unit_at) if unit_at != -1 else ""
 	_ok(unit_step.contains("tests/unit_tests.gd") and unit_step.contains("-cmatch 'SCRIPT ERROR: '"), "the unit step fails the job on a SCRIPT ERROR line, not just on a missing 'all N checks passed'")
+	# v1.16 fold. A bare `--editor --quit` ended 4.4.1 while its first scan was still running ("Scan thread aborted") and wrote no
+	# .godot/uid_cache.bin, so the monorepo's uid:// autoload and every registered uid failed to resolve in the unit suite on the
+	# 4.4.1 lane. --import waits for the scan to finish. Reproduced on a fresh clone with 4.4.1 on Windows (the CI log of the Linux lane
+	# shows the same "Scan thread aborted"). A warm-up that dies mid-import also writes no cache, so the step repeats until it exists.
+	var warm_at := yml.find("- name: Import project (editor warm-up)")
+	var warm_step := yml.substr(warm_at, yml.find("\n      - name:", warm_at + 1) - warm_at) if warm_at != -1 else ""
+	_ok(warm_step.contains("'--import'") and not warm_step.contains("'--quit'") and not warm_step.contains("'--editor'"),
+		"the CI warm-up imports with --import and waits for the scan, as a bare --editor --quit does not on 4.4.1")
+	_ok(warm_step.contains("uid_cache.bin") and warm_step.contains("foreach ($pass in 1..3)") and warm_step.contains("break"),
+		"...and runs again (three passes at most) until .godot/uid_cache.bin exists, because a pass the editor does not survive leaves none")
+	# The monorepo carries marketing assets under promo/ and dev/ (woff2 fonts, images). Importing them is what crashed 4.4.1 in one
+	# warm-up pass, and none of them is a resource of this project. The Lite repo has neither folder.
+	for folder in ["promo", "dev"]:
+		if DirAccess.dir_exists_absolute("res://" + folder):
+			_ok(FileAccess.file_exists("res://%s/.gdignore" % folder), "res://%s/ is outside the editor's import (it holds a .gdignore)" % folder)
 	return true
 
 
@@ -2527,7 +2555,143 @@ func _t_warning_check() -> bool:
 	var b: Dictionary = W.collect(boom, "")
 	_ok(bool(b.get("ok", false)) and not (b.get("errors", []) as Array).is_empty(),
 		"a static initializer that throws is reported, and the check still ends (%s)" % str(b.get("reason", "%d ms" % int(b.get("ms", 0)))))
+	# v1.16 fold. The child used to quit a few frames after compiling and the editor waited for it to be gone. The debugger writes its
+	# queue out on a thread, a process that quits first takes the queue with it, and on the macOS runners of the 1.16.0 CI the warnings of
+	# a check were lost in 3 runs of 4 while the check still said ok. The child now raises one more message (an error), whose text is a
+	# token, and the editor stops reading when it has read it: everything raised before it has been read too.
+	var every := 0
+	for i in 5:
+		var again: Dictionary = W.collect(src, "res://tests/fixtures/_warning_probe_target.gd")
+		var again_codes: Array = []
+		for w in again.get("warnings", []):
+			again_codes.append("%s@%d" % [w["code"], w["line"]])
+		if bool(again.get("ok", false)) and again_codes.has("UNUSED_VARIABLE@5") and again_codes.has("INTEGER_DIVISION@6"):
+			every += 1
+	_ok(every == 5, "five checks in a row each bring both warnings, not just one on a quiet machine (%d of 5)" % every)
+	var tok := "beckett-probe-done-1-2"
+	var raised := ["error", 1, [0, 0, 0, 5, "core/variant/variant_utility.cpp", "push_error", 1098, tok, "", false, 6]]
+	_ok(W.is_done(raised, tok) and W.is_done(["error", 1, [0, 0, 0, 5, "f.gd", "fn", 1, "CODE", tok, true, 0]], tok),
+		"the child's closing message is recognised by its token, in the error slot or the description slot")
+	_ok(not W.is_done(raised, "beckett-probe-done-1-3") and not W.is_done(raised, ""),
+		"...another token, or none, is not it")
+	_ok(not W.is_done(["debug_enter", 1, [false, tok, true, 1]], tok) and not W.is_done(["error", 1, [1, 2]], tok) and not W.is_done("x", tok) and not W.is_done(["error", 1, "x"], tok),
+		"...and only a whole error message can be it")
+	# The debugger drops warnings past 400 a second, and a token sent as a warning went with them: the check then waited out its whole
+	# timeout. The token is an error, which has a meter of its own, so a source with more warnings than the limit still ends at once.
+	var many := "extends Node\n\n\nfunc _ready() -> void:\n"
+	for k in 700:
+		many += "\tvar unused_%d := %d\n" % [k, k]
+	many += "\tpass\n"
+	var lots: Dictionary = W.collect(many, "")
+	_ok(bool(lots.get("ok", false)) and (lots.get("warnings", []) as Array).size() > 100,
+		"a source with 700 warnings is checked, and ends at once instead of timing out: %d of them came back (the debugger keeps 400 a second) in %s ms (%s)" % [(lots.get("warnings", []) as Array).size(), str(lots.get("ms", "-")), str(lots.get("reason", "ok"))])
+	# A child that goes away without having said the token has not finished reporting. That is "could not be checked", never an empty list.
+	var quitter := "user://beckett_unit_probe_quits.gd"
+	_wf(quitter, "extends SceneTree\n\nfunc _initialize() -> void:\n\tquit()\n")
+	var gone: Dictionary = W.collect(src, "", quitter)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(quitter))
+	_ok(not bool(gone.get("ok", true)) and not gone.has("warnings") and str(gone.get("reason", "")).contains("validate_probe.log"),
+		"a child that quits before it says the token is 'could not be checked' and names its log, never 'no warnings' (%s)" % str(gone.get("reason", "")))
+	_ok(not bool(W.collect(src, "", "res://addons/beckett/core/no_such_probe.gd").get("ok", true)), "a missing probe script is 'could not be checked' too")
 	return true
+
+
+# ---------------------------------------------------------------- v1.16 fold: child processes on Linux and macOS
+
+## The first CI run of 1.16.0 was green on Windows and red on Linux and macOS, for reasons that were one: code written against what
+## Windows answers. A program that never ran is -1 there and the shell's 127 elsewhere (git "missing" was only ever -1), and a child made
+## by OS.create_process writes into the stdout and stderr of its parent on Linux and macOS only (the deliberate SCRIPT ERROR of the
+## warning check's throwing-initializer case landed in this suite's own output, where the unit step fails the job on that text).
+func _t_subprocess() -> bool:
+	print("[unit] child processes: a program that never ran reads the same on every OS, and a quiet child keeps its output to itself")
+	var S := Subprocess
+	_ok(S.not_started(-1) and S.not_started(127) and S.not_started(126), "-1 (Windows), 127 and 126 (the shell on Linux and macOS) are programs that never ran")
+	_ok(not S.not_started(0) and not S.not_started(1) and not S.not_started(2), "0, 1 and 2 are programs that ran")
+	_ok(not S.not_started(128, "fatal: not a git repository (or any of the parent directories): .git\n", "git") and not S.not_started(129, "usage: git [-v | --version]\n", "git") and not S.not_started(128),
+		"an ordinary failure is a program that ran: git's 128 (fatal) and 129 (usage) are git speaking, with its words or without")
+	_ok(S.not_started(32512, "sh: 1: git: not found\n", "git") and S.not_started(2, "bash: git: command not found\n", "git") and S.not_started(9, "zsh: command not found: git\n", "git"),
+		"another number with the shell's own sentence (a raw wait status, 127 << 8, would still carry it) is a program that never ran")
+	_ok(not S.not_started(32512) and not S.not_started(32512, "", "git"), "...but with no sentence there is nothing to read it by")
+	_ok(not S.not_started(2, "sh: 1: dotnet: not found\n", "git") and S.not_started(2, "sh: 1: /opt/dotnet/dotnet: not found\n", "/opt/dotnet/dotnet"),
+		"...and a complaint about another program is not about this one (the shell names the program by its path)")
+	_ok(not S.not_started(1, "error: pathspec 'not found' did not match any file(s) known to git\n", "git") and not S.not_started(3, "fatal: no such file or directory\n", "git"),
+		"...and git's own words never count: only a shell speaks in sh:, bash:, zsh: lines")
+	_ok(S.not_started(9, "", "git", [0, 128, 129]) and S.not_started(255, "", "git", [0, 128, 129]) and not S.not_started(128, "fatal: bad revision 'x'\n", "git", [0, 128, 129]) and not S.not_started(0, "true\n", "git", [0, 128, 129]),
+		"when the caller knows the exit codes the program uses itself, any other number is a program that never ran, whatever the OS called it")
+
+	var args := PackedStringArray(["--headless", "--path", "/my proj", "--", "a b", "it's", "$HOME", "\"q\""])
+	var win: Dictionary = S.quiet_command("C:/Godot/godot.exe", args, "Windows")
+	_ok(str(win["path"]) == "C:/Godot/godot.exe" and win["args"] == args, "Windows starts the program itself: its child has no console, so there is nothing to wrap")
+	for os_name in ["Linux", "macOS", "FreeBSD"]:
+		var q: Dictionary = S.quiet_command("/opt/Godot App/godot", args, os_name)
+		var qa: PackedStringArray = q["args"]
+		_ok(str(q["path"]) == "/bin/sh" and qa[0] == "-c" and qa[1] == S.QUIET_SCRIPT and qa[2] == "/opt/Godot App/godot" and qa.slice(3) == args,
+			"%s runs it as sh -c 'exec ...' with the program as $0 and its arguments after it, untouched (spaces, quotes and a $ included)" % os_name)
+	_ok(S.QUIET_SCRIPT.begins_with("exec ") and S.QUIET_SCRIPT.contains(">/dev/null 2>&1") and S.QUIET_SCRIPT.contains("</dev/null") and S.QUIET_SCRIPT.contains("\"$0\" \"$@\""),
+		"...the script execs (the pid stays the program's), sends stdout and stderr to /dev/null and reads stdin from there")
+	_ok(str(S.quiet_command("/x/godot", args, "Linux", false)["path"]) == "/x/godot", "a machine with no /bin/sh starts the program the old way")
+
+	# What THIS engine answers for a program that is not there, and that the helper reads that answer as "never ran" (-1 on Windows, the
+	# shell's 127 elsewhere). The number is printed so a log shows it when an OS or an engine says something else.
+	var absent: Array = []
+	var absent_rc := OS.execute("beckett-no-such-program-zz", PackedStringArray(["--version"]), absent, true)
+	var absent_text := str(absent[0]) if not absent.is_empty() else ""
+	_ok(absent_rc != 0 and S.not_started(absent_rc, absent_text, "beckett-no-such-program-zz"),
+		"a program that is not there reads as one that never ran on this OS (exit %d, %s)" % [absent_rc, ("'" + absent_text.strip_edges().left(70) + "'") if not absent_text.is_empty() else "no text"])
+
+	if OS.get_name() == "Windows" or not FileAccess.file_exists(S.SHELL):
+		print("  skip  the Linux and macOS runs of a quiet child need /bin/sh")
+		return true
+	# The same command quiet_command builds, written out as one shell line (each word single-quoted) in a file and run with
+	# stderr read: anything the child leaks into the parent's streams comes back here. (OS.execute cannot carry the line itself:
+	# the engine wraps each argument in double quotes without escaping, so the " and $ of the script would be eaten.)
+	var dir := _os_temp_dir() + "/beckett_unit_quiet_child"
+	_rm_hard(dir)
+	DirAccess.make_dir_recursive_absolute(dir)
+	var proof := dir + "/ran.txt"
+	var cmd: Dictionary = S.quiet_command("/bin/sh", PackedStringArray(["-c", "echo to-stdout; echo to-stderr >&2; echo ran > \"$0\"", proof]), OS.get_name())
+	var line := _sh_word(str(cmd["path"]))
+	for a in (cmd["args"] as PackedStringArray):
+		line += " " + _sh_word(a)
+	_wf(dir + "/run.sh", line + "\necho after-the-child\n")
+	var seen: Array = []
+	var rc := OS.execute("/bin/sh", PackedStringArray([dir + "/run.sh"]), seen, true)
+	var seen_text := str(seen[0]).strip_edges() if not seen.is_empty() else ""
+	_ok(rc == 0 and FileAccess.file_exists(proof) and seen_text == "after-the-child",
+		"a quiet child runs, and what it writes to stdout and to stderr goes nowhere (the parent saw '%s' and exit %d)" % [seen_text.replace("\n", " | ").left(80), rc])
+	_rm_hard(dir)
+	# The pid OS.create_process hands back must be the program's own: with `exec` it is, and OS.kill then ends the program itself,
+	# where killing a shell that had merely started it would leave it running.
+	var pid := S.spawn_quiet("sleep", PackedStringArray(["30"]))
+	_ok(pid > 0 and OS.is_process_running(pid), "spawn_quiet starts the program and its pid is live (%d)" % pid)
+	var ps_probe: Array = []
+	if pid > 0 and OS.execute("ps", PackedStringArray(["-o", "comm=", "-p", str(pid)]), ps_probe, true) == 0:
+		var named := ""
+		for i in 150:
+			var ps_out: Array = []
+			OS.execute("ps", PackedStringArray(["-o", "comm=", "-p", str(pid)]), ps_out, true)
+			named = (str(ps_out[0]).strip_edges() if not ps_out.is_empty() else "").get_file()
+			if named == "sleep":
+				break
+			OS.delay_msec(20)
+		_ok(named == "sleep", "...and it is the program, not the shell that started it (ps names pid %d '%s')" % [pid, named])
+	else:
+		print("  skip  ps is not available: the pid check is left to the kill below")
+	if pid > 0:
+		OS.kill(pid)
+	var ended := false
+	for i in 150:
+		if not OS.is_process_running(pid):
+			ended = true
+			break
+		OS.delay_msec(20)
+	_ok(ended, "OS.kill ends the quiet child")
+	return true
+
+
+## One word for a POSIX shell: single-quoted, with a quote inside it closed, escaped and reopened.
+func _sh_word(s: String) -> String:
+	return "'" + s.replace("'", "'\\''") + "'"
 
 
 # ---------------------------------------------------------------- v1.16 security hardening (M1)
@@ -4468,7 +4632,7 @@ func _t_read_guard_edges() -> bool:
 	# --- a Windows drive-relative spelling is relative to the drive's CURRENT folder, which the text cannot tell
 	if win and proj.length() > 3 and proj[1] == ":":
 		var drive := proj.substr(0, 2)
-		var as_drive_rel := drive + proj.substr(3) + "/project.godot"  # E:best/godot-mcp/project.godot
+		var as_drive_rel := drive + proj.substr(3) + "/project.godot"  # e.g. C:work/game/project.godot
 		var dr: Dictionary = Guard.check_read(as_drive_rel)
 		_ok(dr.has("error") and str(dr["error"]).contains("relative"), "'%s' is relative to the current folder of its drive, so it is refused as a relative path" % as_drive_rel)
 		_ok(Guard.check_read(drive + "project.godot").has("error") and Guard.check_read(drive).has("error"), "...and so is a bare drive letter with a name behind it, and the bare drive")
@@ -6421,6 +6585,19 @@ func _mu_fixtures_clean() -> void:
 	_rm_tree(_MU_DIR)
 
 
+## A program that does nothing but exit with `code`, for a test that needs "a program that ran" without the real thing: a .cmd on Windows,
+## an executable shell script elsewhere. Returns its path ("" when it could not be made).
+func _fake_exit_program(dir: String, code: int) -> String:
+	if OS.get_name() == "Windows":
+		var p := dir + "/fake_exit_%d.cmd" % code
+		_wf(p, "@exit /b %d\r\n" % code)
+		return p.replace("/", "\\")
+	var q := dir + "/fake_exit_%d.sh" % code
+	_wf(q, "#!/bin/sh\nexit %d\n" % code)
+	FileAccess.set_unix_permissions(q, 493)  # rwxr-xr-x
+	return q if FileAccess.file_exists(q) else ""
+
+
 ## Remove a folder git (or anything else) made, including read-only files, which DirAccess cannot delete on Windows.
 func _rm_hard(path: String) -> void:
 	if not DirAccess.dir_exists_absolute(path):
@@ -6442,7 +6619,8 @@ func _t_playtest_select() -> bool:
 	var table := [["", "needed"], ["-x", "start with '-'"], ["--output=evil.txt", "start with '-'"], ["--", "start with '-'"], ["-", "start with '-'"],
 		["a b", "whitespace"], ["a\tb", "whitespace"], ["a\nb", "whitespace"], ["a\rb", "whitespace"], [" HEAD", "whitespace"], ["HEAD ", "whitespace"],
 		["a\u00a0b", "whitespace"], ["a\u2028b", "whitespace"], ["a\u3000b", "whitespace"], ["a\u200bb", "whitespace"], ["a\ufeffb", "whitespace"],
-		["a\u0001b", "control"], ["a\u007fb", "control"], ["a\"b", "quotes"], ["a\\b", "quotes"], ["x".repeat(201), "characters long"]]
+		["a\u0001b", "control"], ["a\u007fb", "control"], ["a\"b", "quotes"], ["a\\b", "quotes"], ["x".repeat(201), "characters long"],
+		["HEAD$(id)", "backticks"], ["HEAD`id`", "backticks"], ["$HOME", "backticks"], ["a${IFS}b", "backticks"]]
 	for row in table:
 		var why: String = S.ref_error(str(row[0]))
 		_ok(not why.is_empty() and why.contains(str(row[1])), "ref %s is refused: %s" % [str(row[0]).c_escape().left(24), why])
@@ -6589,10 +6767,16 @@ func _t_playtest_select() -> bool:
 	_ok(files == ["b.gd", "c.gd", "scenes/a.tscn", "sp ace.gd"], "changed since HEAD: the edited, the deleted and the untracked files, relative to the project, and nothing outside the project folder: %s" % str(changed))
 	_ok(str(S.changed_files(proj, "no-such-ref-zz").get("error", "")).contains("does not know the ref 'no-such-ref-zz'"), "a ref git does not know is an error that says so")
 	_ok(str(S.changed_files(proj, "HEAD", "git-does-not-exist-zz").get("error", "")).contains("git command on PATH"), "git missing: a plain error that says what to do")
+	# v1.16 fold: that was only ever true on Windows, where OS.execute says -1 for a program that is not there; Linux and macOS say 127.
+	# Whatever number an OS gives it, it is not one git itself uses, so a stand-in that runs and exits 9 must read as git missing too.
+	var odd := _fake_exit_program(base, 9)
+	_ok(not odd.is_empty() and str(S.changed_files(proj, "HEAD", odd).get("error", "")).contains("git command on PATH"),
+		"...and so does a program that runs and exits with a number git never uses (9)")
 	DirAccess.make_dir_recursive_absolute(nogit)
 	_ok(str(S.changed_files(nogit, "HEAD").get("error", "")).contains("not inside a git repository"), "a project outside any repository: a plain error that says what to do")
 	var evil := base + "/evil.txt"
-	for hostile in ["--output=" + evil, "-x", "HEAD --stat", "HEAD\n--output=" + evil]:
+	# The last two would make sh create the file on Linux and macOS, where the engine puts the ref between double quotes in one command line.
+	for hostile in ["--output=" + evil, "-x", "HEAD --stat", "HEAD\n--output=" + evil, "HEAD$(touch${IFS}" + evil + ")", "HEAD`touch${IFS}" + evil + "`"]:
 		var he: Dictionary = S.changed_files(proj, hostile)
 		_ok(he.has("error") and str(he["error"]).begins_with("since:") and not FileAccess.file_exists(evil), "a hostile ref (%s) is refused before git runs, and nothing was written" % hostile.c_escape().left(30))
 	_rm_hard(base)
@@ -9175,7 +9359,7 @@ func _t_break_messages() -> bool:
 	var emb := {"mode": "embedded", "placement": "main"}
 	var m45: String = RuntimeBridge.break_message(err, win, 0x040600)
 	_ok(m45.contains(RuntimeBridge.BREAK_MARK) and m45.contains("a script error") and m45.contains("still connected"), "a script error: the game is paused in the editor's debugger, and Beckett is still connected")
-	_ok(m45.contains("Do not re-run the game outside the editor"), "...and the agent is told NOT to fall back to running it headless outside the editor (what the customer's agent did after every timeout)")
+	_ok(m45.contains("Do not re-run the game outside the editor"), "...and the agent is told NOT to fall back to running it headless outside the editor (what the agent in the user report did after every timeout)")
 	_ok(m45.contains("Continue (F12)") and m45.contains("Debugger panel") and m45.contains("game_logs") and m45.contains("already captured") and m45.contains("stop_scene") and m45.contains("play_scene"), "4.5+: ask for Continue (F12), then game_logs (the error is already captured); or stop_scene, fix, play_scene")
 	var m44: String = RuntimeBridge.break_message(err, win, 0x040401)
 	_ok(m44.contains("game_logs cannot show it") and not m44.contains("already captured") and m44.contains("Continue (F12)") and m44.contains("stop_scene"), "4.4: the error text is only in the Debugger panel, so game_logs is not promised")
@@ -9219,6 +9403,7 @@ func _t_bridge_break() -> bool:
 		print("  skip  no loopback listener on this machine")
 		return true
 	var bridge = RuntimeBridge.new()
+	bridge.lite = false  # this group sends made-up command names (ping2, ping3, x) to tell the sends apart: the Lite command list is the next group's
 	var client := StreamPeerTCP.new()
 	client.connect_to_host("127.0.0.1", srv.get_local_port())
 	var game: StreamPeerTCP = null
@@ -9273,6 +9458,7 @@ func _t_bridge_break() -> bool:
 
 	# a game that broke before it connected: no peer at all, but "game not running" would send the agent to restart it
 	var lonely = RuntimeBridge.new()
+	lonely.lite = false
 	var lone_watch := _FakeWatch.new()
 	lonely.break_watch = lone_watch
 	_ok(str(lonely.send_command({"cmd": "x"}).get("error", "")).begins_with("game not running"), "a game that is not there and not paused: the usual 'game not running'")
@@ -10218,4 +10404,650 @@ func _t_review_untrusted_replies() -> bool:
 	_ok(ewin.keys().size() == 4 and ewin["on_screen"] == false and ewin["can_draw"] == false and ewin["parked"] == 7 and ewin["frames_drawn"] == 0,
 		"the window block keeps known keys only (no 'note', no position or size that is not two numbers) and coerces the values: %s" % str(ewin))
 	_ok(RunTools.quiet_line(eclean).begins_with("quiet: ") and not RunTools.quiet_line(eclean).contains("IGNORE") and RunTools.quiet_fields({"ok": true, "requested": false}) == {"requested": false}, "quiet_line reads the cleaned answer without an error, and a play that was not quiet is just that")
+	return true
+
+
+# ---------------------------------------------------------------- 1.16 fold: Beckett's own objects are off limits to its tools
+#
+# A 2026-10-07 audit drove a running game from the free edition with call_method alone: the bridge's absolute path as the target,
+# send_command as the method, any dictionary as the argument. Nothing of Beckett's was off limits to Beckett's own tools. The three
+# groups below pin the three locks that close it. The resolver and every tool built on it refuse Beckett's own objects and the editor
+# around the open scene; the game's runtime refuses a write or a call aimed at itself; a Lite install's bridge sends only the commands
+# Lite sends. tests/live-lite-routes.ps1 replays the audit's routes against a real Lite editor and a real game.
+
+## A node that runs one of Beckett's scripts. The real plugin, server and dock cannot be built in a plain engine run, and a Beckett script
+## on any node makes it one of Beckett's by the rule, so the bridge (a plain Node) stands in for each of them.
+func _beckett_node(node_name: String) -> Node:
+	var n: Node = RuntimeBridge.new()
+	n.name = node_name
+	return n
+
+
+## A script that is nothing but a claim to a path: it extends `base` and says it lives at `path` (no file is written there).
+func _fake_script(base: String, path: String) -> GDScript:
+	var gd := GDScript.new()
+	gd.source_code = "extends %s\n" % base
+	gd.reload()
+	gd.resource_path = path
+	return gd
+
+
+## A node of the player's game: `_hidden` is an underscore variable of the game's own, `held` points at whatever a test puts there.
+class _OffProbe extends Node:
+	var _hidden := 0
+	var text := ""
+	var held: Object = null
+	var bumps := 0
+
+	func bump() -> void:
+		bumps += 1
+
+
+## What CallArgs.prepare asks of a resolver that refuses some objects on purpose, and of one that does not say why.
+class _RefusingResolver extends RefCounted:
+	func _resolve_object_arg(_spec: String) -> Object:
+		return null
+
+	func _object_arg_refusal(spec: String) -> String:
+		return "%s is off limits (a stand-in)" % spec
+
+
+class _SilentResolver extends RefCounted:
+	func _resolve_object_arg(_spec: String) -> Object:
+		return null
+
+
+func _t_internals_guard() -> bool:
+	print("[unit] 1.16 fold: Beckett's own objects, and the editor around the open scene, are off limits to its tools")
+	await process_frame  # the SceneTree is only initialised after its first frame
+	# A stand-in editor tree: a plugin with a bridge and a widget below it, a dock that holds a panel, and the open scene beside them.
+	var editor := Node.new()
+	editor.name = "ZzFakeEditor"
+	root.add_child(editor)
+	var plugin: Node = _beckett_node("ZzFakePlugin")
+	editor.add_child(plugin)
+	var bridge: Node = _beckett_node("ZzFakeBridge")
+	plugin.add_child(bridge)
+	var label := Label.new()  # a dock widget: no script of its own, below one of Beckett's nodes
+	label.name = "ZzFakeLabel"
+	plugin.add_child(label)
+	var dock := Node.new()  # what wraps the real dock: no script, an ancestor of Beckett's panel
+	dock.name = "ZzFakeDock"
+	editor.add_child(dock)
+	var panel: Node = _beckett_node("ZzFakePanel")
+	dock.add_child(panel)
+	var scene := Node.new()
+	scene.name = "ZzFakeScene"
+	editor.add_child(scene)
+	var player := _OffProbe.new()
+	player.name = "ZzPlayer"
+	scene.add_child(player)
+	var bp := str(bridge.get_path())
+
+	# --- what is Beckett's own
+	_ok(Internals.is_internal(plugin) and Internals.is_internal(bridge) and Internals.is_internal(panel), "a node that runs one of Beckett's scripts is Beckett's own")
+	_ok(Internals.is_internal(label), "...and so is a node below one, with no script of its own (the dock's labels and buttons)")
+	_ok(not Internals.is_internal(player) and not Internals.is_internal(scene) and not Internals.is_internal(editor) and not Internals.is_internal(dock) and not Internals.is_internal(root) and not Internals.is_internal(null),
+		"the player's nodes, the scene root, the plain editor nodes and the tree root are not")
+	var chain_gd := GDScript.new()
+	chain_gd.source_code = "extends \"res://addons/beckett/core/runtime_bridge.gd\"\n"
+	chain_gd.reload()
+	var chained: Node = chain_gd.new()
+	var cased: Node = _fake_script("Node", "res://Addons/BECKETT/__unit_fake_a.gd").new()
+	var near: Node = _fake_script("Node", "res://addons/beckett_user/__unit_fake_b.gd").new()
+	var mine: Node = _fake_script("Node", "res://game/__unit_fake_c.gd").new()
+	_ok(Internals.owns_script(chained), "a script that EXTENDS one of Beckett's is Beckett's own")
+	_ok(Internals.owns_script(cased), "...a path is judged lower-cased, the way Windows reads it")
+	_ok(not Internals.owns_script(near) and not Internals.owns_script(mine), "...a folder that merely starts with the same letters, and the player's own script, are not")
+	for p in ["res://addons/beckett/core/callargs.gd", "res://Addons/Beckett/x.gd", "res://addons/beckett/../beckett/x.gd", "res://addons/x/../beckett/y.gd", "res://addons/beckett//core/x.gd"]:
+		_ok(Internals.is_beckett_path(p), "a file of Beckett's own: %s" % p)
+	for p in ["res://main.gd", "res://addons/beckett_other/x.gd", "res://addons/beckett.gd", "res://addons/x/beckett/y.gd", "user://addons/beckett/x.gd", "uid://not-a-real-uid", ""]:
+		_ok(not Internals.is_beckett_path(p), "not one of Beckett's files: '%s'" % p)
+	_ok(Internals.holds_internal(editor) and Internals.holds_internal(dock) and Internals.holds_internal(plugin) and Internals.holds_internal(root), "an ancestor of one of Beckett's nodes HOLDS it, the tree root included")
+	_ok(not Internals.holds_internal(scene) and not Internals.holds_internal(player) and not Internals.holds_internal(null), "the open scene and its nodes hold none")
+
+	# --- what a tool may name
+	var inner: String = Internals.refusal(bridge, scene, "the bridge")
+	_ok(inner.begins_with("the bridge is part of Beckett itself") and inner.contains(Internals.OFF_LIMITS) and inner.contains("get_scene_tree"), "one of Beckett's own is refused, in the caller's words, with what to do instead: %s" % inner)
+	var outer: String = Internals.refusal(editor, scene)
+	_ok(outer.begins_with("ZzFakeEditor (Node)") and outer.contains("outside the open scene") and outer.contains("off limits"), "a plain editor node outside the open scene is refused too (the ancestors of Beckett are one call from it): %s" % outer.left(90))
+	_ok(Internals.refusal(player, scene).is_empty() and Internals.refusal(scene, scene).is_empty() and Internals.refusal(null, scene).is_empty(), "a node of the open scene, the scene root and null are not refused")
+	var loose := Node.new()
+	_ok(Internals.refusal(loose, scene).is_empty(), "a node that is in no tree is judged by what it is, not by where it is")
+	loose.free()
+	_ok(Internals.refusal(player, null).contains("outside the open scene"), "with no scene open nothing in the tree is the scene's")
+	_ok(Internals.refusal(CallArgsProbe.new(), scene).is_empty(), "an object that is not a node is judged by its script alone")
+
+	# --- a method that fans out is asked about the node it is called on
+	var fans: Array = [
+		[editor, "propagate_call", ["send_command", [{"cmd": "eval"}]]],
+		[editor, "propagate_notification", [1]],
+		[editor, "emit_signal", ["tree_exited"]],
+		[editor, "call", ["propagate_call", "send_command", [{"cmd": "eval"}]]],
+		[editor, "callv", ["propagate_call", ["send_command", [{}]]]],
+		[editor, "call_deferred", ["propagate_call", "send_command"]],
+		[editor, "call_thread_safe", ["propagate_call", "x"]],
+		[editor, "call_deferred_thread_group", ["propagate_notification", 1]],
+		[editor, "rpc_id", [1, "propagate_call", "x"]],
+		[editor, "call", ["callv", "propagate_call", ["x", []]]],
+		[editor, "call", [" propagate_call ", "x"]],
+		[dock, "call", ["call", "call", "propagate_call", "x"]],
+		[root, "propagate_call", ["send_command"]],
+		[plugin, "call", ["call", "call", "call", "call", "call", "call", "call", "call", "call", "get_class"]],
+	]
+	var let_through: Array = []
+	for row in fans:
+		var why: String = Internals.dispatch_refusal(row[0], str(row[1]), row[2])
+		if why.is_empty() or not why.contains(Internals.OFF_LIMITS):
+			let_through.append("%s.%s" % [(row[0] as Node).name, row[1]])
+	_ok(let_through.is_empty(), "%d ways to fan out from a node that holds Beckett's objects (propagate_call itself, and call, callv, call_deferred, rpc_id around it, nested, with stray spaces) are refused%s" % [fans.size(), "" if let_through.is_empty() else ", let through: " + str(let_through)])
+	var calm: Array = [
+		[editor, "get_class", []], [editor, "call", ["get_class"]], [editor, "callv", ["get_class", []]], [editor, "call_deferred", ["queue_free"]], [editor, "call", []], [editor, "callv", []], [editor, "rpc_id", [1]],
+		[scene, "propagate_call", ["bump", []]], [scene, "call", ["propagate_call", "bump"]], [scene, "callv", ["propagate_notification", [1]]], [player, "propagate_notification", [1]],
+		[scene, "call", ["call", "call", "call", "call", "call", "call", "call", "call", "call", "get_class"]], [null, "propagate_call", ["x"]], [Resource.new(), "propagate_call", ["x"]],
+	]
+	var wrongly: Array = []
+	for row in calm:
+		var why2: String = Internals.dispatch_refusal(row[0], str(row[1]), row[2])
+		if not why2.is_empty():
+			wrongly.append("%s.%s" % [(row[0] as Object).get_class() if row[0] != null else "null", row[1]])
+	_ok(wrongly.is_empty(), "%d ordinary calls are not refused: a method that does not fan out, a node that holds nothing of Beckett's (the open scene), a target that is not a node%s" % [calm.size(), "" if wrongly.is_empty() else ", refused: " + str(wrongly)])
+	for text in [Internals.internal_text("x"), Internals.outside_text("x"), Internals.dispatch_text("x", "propagate_call"), Internals.runtime_text("x"), Internals.file_text("x")]:
+		_ok(text.contains("off limits") and not RuntimeBridge.is_target_missing(text), "a refusal says 'off limits', and never reads as a node that is not there yet: %s" % text.left(60))
+	_ok(Internals.internal_text("a".repeat(500)).length() < 400 and not Internals.internal_text("a\nb").contains("\n"), "a long name is cut and a line break in it is not echoed")
+
+	# --- the resolver every tool shares (the open scene is stood in for by the override the editor never sets)
+	Reflect.scene_root_override = scene
+	var pp := str(plugin.get_path())
+	_ok(Reflect.resolve("ZzPlayer") == player and Reflect.resolve(str(player.get_path())) == player, "a node of the open scene resolves by name and by absolute path")
+	_ok(Reflect.resolve(".") == scene and Reflect.resolve("/root") == scene and Reflect.resolve("ZzFakeScene") == scene, "'.', '/root' and the root's own name are the open scene's root")
+	for t in [bp, pp, str(panel.get_path()), str(label.get_path())]:
+		_ok(Reflect.resolve(t) == null and Reflect.refusal_for(t).contains(Internals.OFF_LIMITS), "one of Beckett's own is never resolved, and the refusal says so: %s" % t)
+	for t in ["/root/", "/root//", "/root/.", "..", "../..", "../ZzFakeDock", str(editor.get_path()), "../ZzFakePlugin/ZzFakeBridge"]:
+		_ok(Reflect.resolve(t) == null and Reflect.refusal_for(t).contains("off limits"), "a node outside the open scene is never resolved (the tree root has four spellings): %s" % t)
+	_ok(Reflect.resolve("res://addons/beckett/core/callargs.gd") != null and Reflect.refusal_for("res://addons/beckett/core/callargs.gd").is_empty(), "a Script resource under Beckett's folder is data, not a live object: it still resolves")
+	player.held = bridge
+	_ok(Reflect.resolve("ZzPlayer/held") == null and Reflect.refusal_for("ZzPlayer/held").contains(Internals.OFF_LIMITS), "a sub-resource path that WALKS to one of Beckett's objects stops there")
+	_ok(Reflect.resolve("../ZzFakePlugin/ZzFakeBridge/anything") == null and Reflect.refusal_for("../ZzFakePlugin/ZzFakeBridge/anything").contains(Internals.OFF_LIMITS), "...and a walk whose node prefix is one of them never starts")
+	bridge.set("_peer", StreamPeerTCP.new())  # what the game answers on: an object with no script of its own, so only where the walk came from can refuse it
+	_ok(Reflect.resolve("../ZzFakePlugin/ZzFakeBridge/_peer") == null and Reflect.refusal_for("../ZzFakePlugin/ZzFakeBridge/_peer").contains(Internals.OFF_LIMITS), "a path that walks from one of Beckett's nodes to the socket the game answers on is refused at the node")
+	_ok(Reflect.resolve("ZzPlayer/held/_peer") == null and Reflect.refusal_for("ZzPlayer/held/_peer").contains(Internals.OFF_LIMITS), "...and so is one that reaches the node through a property of the player's own and goes on to the socket")
+	bridge.set("_peer", null)
+	player.held = null
+	_ok(Reflect.scene_node("") == scene and Reflect.scene_node(".") == scene and Reflect.scene_node("ZzPlayer") == player, "scene_node: '', '.' and a name answer as the scene tools always did")
+	_ok(Reflect.scene_node("..") == null and Reflect.scene_node(bp) == null and Reflect.scene_node("ZzNope") == null, "...and never answer a node outside the scene, one of Beckett's, or nothing")
+	_ok(Reflect.miss("ZzNope") == "Could not resolve target: ZzNope" and Reflect.miss("ZzNope", "parent") == "Could not resolve parent: ZzNope", "a plain miss keeps the words it always had")
+	_ok(Reflect.miss(bp).contains(Internals.OFF_LIMITS) and Reflect.miss("..", "parent").contains("outside the open scene") and Reflect.refusal_for("").is_empty() and Reflect.refusal_for("res://x.gd").is_empty(), "a refused target gets the refusal instead, and a resource path or nothing is never refused here")
+
+	# --- the tools: every route of the audit, then ordinary use
+	var rt := ReflectionTools.new()
+	var routes: Array = [
+		{"target": bp, "method": "send_command", "args": [{"cmd": "eval", "expr": "1"}]},
+		{"target": pp, "method": "propagate_call", "args": ["send_command", [{"cmd": "eval"}]]},
+		{"target": str(editor.get_path()), "method": "propagate_call", "args": ["send_command", [{"cmd": "eval"}]]},
+		{"target": "/root/", "method": "propagate_call", "args": ["send_command", [{"cmd": "eval"}]]},
+		{"target": "/root/", "method": "call", "args": ["propagate_call", "send_command", [{"cmd": "eval"}]]},
+		{"target": "..", "method": "callv", "args": ["propagate_call", ["send_command", [{"cmd": "eval"}]]]},
+		{"target": "../..", "method": "call_deferred", "args": ["propagate_call", "send_command"]},
+		{"target": "../ZzFakeDock", "method": "propagate_call", "args": ["send_command"]},
+		{"target": bp, "method": "get", "args": ["expected_token"]},
+		{"target": bp, "method": "queue_on_ready", "args": [[{"path": "X", "property": "p", "value": 1}]]},
+	]
+	var through: Array = []
+	for r in routes:
+		var out: Dictionary = rt._call_method(r)
+		if not str(out.get("error", "")).contains("off limits"):
+			through.append("%s.%s" % [str(r["target"]).get_file(), r["method"]])
+	_ok(through.is_empty(), "call_method refuses all %d routes: the bridge by path, propagate_call from the plugin, the editor and the tree root (four spellings), call/callv/call_deferred around it%s" % [routes.size(), "" if through.is_empty() else ", let through: " + str(through)])
+	_ok(str(rt._describe_object({"target": bp}).get("error", "")).contains(Internals.OFF_LIMITS), "describe_object refuses one of Beckett's own, and says why (it used to answer 'could not resolve' or the object's properties)")
+	_ok(str(rt._set_property({"target": bp, "property": "on_ready_queue", "value": [1]}).get("error", "")).contains(Internals.OFF_LIMITS), "set_property refuses it")
+	var described: Dictionary = rt._describe_object({"target": "ZzPlayer"})
+	_ok(described.has("json") and str(described["json"]["class"]) == "Node", "...and describe_object still describes a node of the scene")
+	var bumped: Dictionary = rt._call_method({"target": "ZzPlayer", "method": "bump"})
+	_ok(bumped.has("json") and player.bumps == 1, "call_method still calls a method of the player's own node")
+	var fanned: Dictionary = rt._call_method({"target": ".", "method": "propagate_call", "args": ["bump"]})
+	_ok(fanned.has("json") and player.bumps == 2, "...and propagate_call from the scene root still reaches the scene below it (bumps: %d)" % player.bumps)
+	var planted: Node = _beckett_node("ZzPlanted")  # one of Beckett's scripts on a node of the open scene
+	scene.add_child(planted)
+	var f1: Dictionary = rt._call_method({"target": ".", "method": "propagate_call", "args": ["bump"]})
+	var f2: Dictionary = rt._call_method({"target": ".", "method": "call", "args": ["propagate_call", "bump"]})
+	_ok(str(f1.get("error", "")).contains("propagate_call") and str(f1["error"]).contains(Internals.OFF_LIMITS) and f2.has("error") and player.bumps == 2, "a scene node that HOLDS one of Beckett's refuses to fan a call out (directly, or through call): nothing ran (bumps: %d)" % player.bumps)
+	_ok(rt._call_method({"target": ".", "method": "get_class"}).has("json") and Reflect.resolve("ZzPlanted") == null and Reflect.scene_node("ZzPlanted") == null, "...while a call that does not fan out still runs, and the planted node itself is off limits")
+	scene.remove_child(planted)
+	planted.free()
+	var arg: Dictionary = rt._call_method({"target": ".", "method": "add_child", "args": [bp]})
+	_ok(str(arg.get("error", "")).contains("arg 0") and str(arg["error"]).contains(Internals.OFF_LIMITS) and bridge.get_parent() == plugin, "handing one of Beckett's nodes to add_child as an argument is refused too, and it stays where it is")
+	var sg := SignalTools.new()
+	for route in [{"from": "ZzPlayer", "signal": "ready", "to": bp, "method": "send_command"}, {"from": bp, "signal": "ready", "to": "ZzPlayer", "method": "bump"}, {"from": "..", "signal": "ready", "to": "ZzPlayer", "method": "bump"}]:
+		_ok(str(sg._connect_signal(route).get("error", "")).contains("off limits"), "connect_signal refuses %s -> %s" % [route["from"], route["to"]])
+	_ok(str(sg._disconnect_signal({"from": bp, "signal": "x", "to": "ZzPlayer", "method": "y"}).get("error", "")).contains("off limits") and str(sg._list_signals({"target": bp}).get("error", "")).contains("off limits"), "disconnect_signal and list_signals refuse it")
+	_ok((sg._list_signals({"target": "ZzPlayer"}) as Dictionary).has("json"), "list_signals still lists a node of the scene")
+	var scn := SceneTools.new()
+	_ok(scn._node("ZzPlayer") == player and scn._node("..") == null and scn._node(bp) == null and scn._node("") == scene, "the scene tools' target lookup is the shared one")
+	var scene_routes: Array = [
+		scn._delete_node({"target": bp}), scn._rename_node({"target": bp, "name": "X"}), scn._duplicate_node({"target": pp}), scn._move_node({"target": bp, "to_index": 0}),
+		scn._reparent_node({"target": bp, "new_parent": "."}), scn._reparent_node({"target": "ZzPlayer", "new_parent": bp}), scn._delete_node({"target": str(editor.get_path())}),
+	]
+	var scene_through: int = scene_routes.filter(func(o: Dictionary) -> bool: return not str(o.get("error", "")).contains("off limits")).size()
+	_ok(scene_through == 0 and is_instance_valid(bridge) and bridge.get_parent() == plugin and player.get_parent() == scene, "delete, rename, duplicate, move and reparent refuse one of Beckett's nodes and the editor around the scene, and nothing moved")
+	_ok(str(ResourceTools.new()._set_resource({"target": bp, "property": "x", "class": "Resource"}).get("error", "")).contains("off limits"), "set_resource refuses it")
+	var cp := CallArgs.prepare(CallArgsProbe.new(), "take_obj", ["whatever"], _RefusingResolver.new())
+	_ok(not bool(cp["ok"]) and str(cp["error"]).begins_with("arg 0 (o): whatever is off limits"), "CallArgs asks a resolver why an object argument was refused, and passes its words on")
+	var cq := CallArgs.prepare(CallArgsProbe.new(), "take_obj", ["whatever"], _SilentResolver.new())
+	_ok(not bool(cq["ok"]) and str(cq["error"]).contains("could not resolve 'whatever'"), "...and a resolver with nothing to say gets the old 'could not resolve'")
+	# the tools only Full ships
+	for path in ["res://addons/beckett/tools/animation_tools.gd", "res://addons/beckett/tools/scatter_tools.gd"]:
+		if ResourceLoader.exists(path):
+			var other = load(path).new()
+			_ok(other._node("ZzPlayer") == player and other._node(bp) == null and other._node("..") == null, "%s looks nodes up through the shared resolver" % path.get_file())
+	if ResourceLoader.exists("res://addons/beckett/tools/qa_tools.gd"):
+		var qa = load("res://addons/beckett/tools/qa_tools.gd").new()
+		_ok(str(qa._assert_node_state({"target": bp, "property": "x"}).get("error", "")).contains("off limits"), "assert_node_state refuses one of Beckett's own")
+
+	Reflect.scene_root_override = null
+	root.remove_child(editor)
+	editor.free()
+	for stray in [chained, cased, near, mine]:
+		(stray as Node).free()
+	return true
+
+
+func _t_runtime_off_limits() -> bool:
+	print("[unit] 1.16 fold: the game's runtime refuses every write and call aimed at itself, however the command names its target")
+	await process_frame
+	# The autoload and its implementation as the game has them: BeckettRuntime (its script is one of Beckett's) holding BeckettRuntimeImpl.
+	var holder := Node.new()
+	holder.name = "BeckettRuntime"
+	holder.set_script(_fake_script("Node", "res://addons/beckett/runtime/__unit_fake_autoload.gd"))
+	var rt = MCPRuntime.new()
+	rt.name = "BeckettRuntimeImpl"
+	holder.add_child(rt)
+	root.add_child(holder)
+	var game := Node.new()
+	game.name = "ZzGame"
+	root.add_child(game)
+	var probe := _OffProbe.new()
+	probe.name = "ZzOffProbe"
+	game.add_child(probe)
+	var go := Button.new()
+	go.name = "ZzGo"
+	go.text = "ZzGoText"
+	game.add_child(go)
+	var presses := [0]
+	go.pressed.connect(func() -> void: presses[0] += 1)
+	var innocent: Node = _beckett_node("ZzInnocent")  # a node of the player's tree, innocently named, that runs a script of Beckett's
+	game.add_child(innocent)
+	var fake_ctl: Control = _fake_script("Control", "res://addons/beckett/runtime/__unit_fake_control.gd").new()
+	fake_ctl.name = "ZzFakeCtl"
+	game.add_child(fake_ctl)
+	var fake_btn: Button = _fake_script("Button", "res://addons/beckett/runtime/__unit_fake_button.gd").new()
+	fake_btn.name = "ZzFakeBtn"
+	fake_btn.text = "ZzZapText"
+	game.add_child(fake_btn)
+	var fake_3d: Node3D = _fake_script("Node3D", "res://addons/beckett/runtime/__unit_fake_3d.gd").new()
+	fake_3d.name = "ZzFake3D"
+	game.add_child(fake_3d)
+
+	var state := func() -> Array:
+		return [rt._recording, rt._stepping, rt._replaying, rt._step_kind, rt._step_target, rt._step_inputs.size(), rt._step_injected, rt._resume_paused, rt._typing_done, rt._rec.size()]
+	var before: Array = state.call()
+	var nth := -1
+	for i in 80:
+		var g: Dictionary = rt._dispatch({"cmd": "get", "class": "Node", "under": "/root", "nth": i, "prop": "name"})
+		if bool(g.get("ok", false)) and str(g.get("value", "")) == "BeckettRuntimeImpl":
+			nth = i
+			break
+	_ok(nth > 0, "the selector walk from /root reaches the runtime node by position (nth %d): a selector is a way to it like a path" % nth)
+
+	# --- C2: the on_ready write, however it names the runtime
+	var impl_path := "/root/BeckettRuntime/BeckettRuntimeImpl"
+	var selectors: Array = [
+		{"path": impl_path}, {"path": "/root/BeckettRuntime"}, {"path": "BeckettRuntimeImpl"}, {"path": "BeckettRuntime"},
+		{"name": "BeckettRuntimeImpl"}, {"class": "Node", "name": "BeckettRuntimeImpl"}, {"class": "Node", "under": "/root", "nth": nth},
+		{"under": "/root/BeckettRuntime", "class": "Node"}, {"under": "/root/BeckettRuntime", "class": "Node", "nth": 1}, {"path": "ZzInnocent"},
+	]
+	var landed: Array = []
+	for sel in selectors:
+		var cmd := {"cmd": "set", "prop": "_recording", "value": true}
+		for k in (sel as Dictionary):
+			cmd[k] = sel[k]
+		var reply: Dictionary = rt._dispatch(cmd)
+		var err := str(reply.get("error", ""))
+		if bool(reply.get("ok", true)) or not err.contains(Internals.OFF_LIMITS) or RuntimeBridge.is_target_missing(err):
+			landed.append(str(sel))
+	_ok(landed.is_empty(), "a set is refused for %d spellings of the runtime (path, bare name, name, class + name, class + nth, under, and a node of the game that runs one of Beckett's scripts), with the reason, and the reason is no 'not found' that on_ready would retry%s" % [selectors.size(), "" if landed.is_empty() else ", not refused: " + "; ".join(PackedStringArray(landed))])
+	var vars := {"_stepping": true, "_step_inputs": [[{"type": "key", "keycode": "A", "pressed": true}]], "_step_kind": "count", "_step_target": 8, "_replaying": true, "_replay_events": [], "_resume_paused": false}
+	var wrote: Array = []
+	for v in vars:
+		var rv: Dictionary = rt._dispatch({"cmd": "set", "path": impl_path, "prop": v, "value": vars[v]})
+		if bool(rv.get("ok", true)):
+			wrote.append(v)
+	_ok(wrote.is_empty() and state.call() == before, "...the audit's own variables (_stepping, _step_inputs, _step_kind, _step_target, _replaying ...) stay as they were: %s" % str(state.call()))
+	var hop := {"cmd": "set", "path": "ZzOffProbe", "prop": "held:_recording", "value": true}
+	probe.held = rt
+	_ok(not bool(rt._dispatch(hop).get("ok", true)) and str(rt._dispatch(hop).get("error", "")).contains(Internals.OFF_LIMITS) and rt._recording == false, "a property path whose hop lands on the runtime (held:_recording) is refused too")
+	probe.held = null
+	var innocent_try: Dictionary = rt._dispatch({"cmd": "set", "path": "ZzInnocent", "prop": "expected_token", "value": "x"})
+	_ok(not bool(innocent_try.get("ok", true)) and str(innocent["expected_token"]) == "", "a Beckett script on a node named like the player's is refused by what it is, not by its name")
+
+	# --- the other arms that write or call
+	var arms: Array = [
+		{"cmd": "call", "path": impl_path, "method": "_close_step", "args": ["x"]},
+		{"cmd": "call", "name": "BeckettRuntimeImpl", "method": "set", "args": ["_recording", true]},
+		{"cmd": "call", "path": "ZzOffProbe", "method": "add_child", "args": [impl_path]},
+		{"cmd": "click_control", "path": "ZzFakeCtl"},
+		{"cmd": "type_text", "path": "ZzFakeCtl", "text": "x"},
+		{"cmd": "scroll", "path": "ZzFakeCtl", "amount": 1},
+		{"cmd": "click_text", "text": "ZzZapText"},
+		{"cmd": "click_node3d", "path": "ZzFake3D"},
+	]
+	var unrefused: Array = []
+	for a in arms:
+		var out: Dictionary = rt._dispatch(a)
+		if bool(out.get("ok", true)) or not str(out.get("error", "")).contains(Internals.OFF_LIMITS):
+			unrefused.append("%s -> %s" % [a["cmd"], str(out).left(80)])
+	_ok(unrefused.is_empty() and holder.get_child(0) == rt, "call (the method, the object argument), click_control, type_text, scroll, click_text and click_node3d refuse a target of Beckett's, and the runtime stayed under its autoload%s" % ["" if unrefused.is_empty() else ": " + "; ".join(PackedStringArray(unrefused))])
+	_ok(state.call() == before and presses[0] == 0, "...and the runtime's state is exactly what it was")
+
+	# --- the player's own nodes keep working, underscore variables included
+	var w1: Dictionary = rt._dispatch({"cmd": "set", "path": "ZzOffProbe", "prop": "_hidden", "value": 7})
+	var w2: Dictionary = rt._dispatch({"cmd": "set", "path": "ZzOffProbe", "prop": "text", "value": "hi"})
+	_ok(bool(w1.get("ok", false)) and probe._hidden == 7 and bool(w2.get("ok", false)) and probe.text == "hi", "a set on the player's node applies, an underscore variable of its own included")
+	var c1: Dictionary = rt._dispatch({"cmd": "call", "path": "ZzOffProbe", "method": "bump"})
+	var c2: Dictionary = rt._dispatch({"cmd": "click_text", "text": "ZzGoText"})
+	_ok(bool(c1.get("ok", false)) and probe.bumps == 1 and bool(c2.get("ok", false)) and presses[0] == 1, "a call and a click on the player's own nodes still run")
+	var sel_ok: Dictionary = rt._dispatch({"cmd": "set", "class": "Button", "name": "ZzGo", "prop": "text", "value": "again"})
+	_ok(bool(sel_ok.get("ok", false)) and go.text == "again", "...by selector too")
+	var read: Dictionary = rt._dispatch({"cmd": "get", "path": impl_path, "prop": "_recording"})
+	_ok(bool(read.get("ok", false)) and read.get("value") == false, "a READ of the runtime is not what is closed: get still answers")
+
+	root.remove_child(holder)
+	holder.free()
+	root.remove_child(game)
+	game.free()
+	return true
+
+
+func _t_bridge_lite_commands() -> bool:
+	print("[unit] 1.16 fold: a Lite install's bridge sends only the commands Lite's own tools send")
+	_ok(RuntimeBridge.FULL_SENTINEL == MCPServer.SENTINEL_FULL_MODULE, "the bridge reads the edition off the sentinel mcp_server.gd caps the effort dial with")
+	# What the editor side of each edition sends, read off the source: the list is not a second opinion, it is held to the code.
+	var core_files := ["res://addons/beckett/tools/reflection_tools.gd", "res://addons/beckett/tools/run_tools.gd", "res://addons/beckett/tools/runtime_observe_tools.gd", "res://addons/beckett/core/runtime_bridge.gd"]
+	var core_cmds: Array = []
+	for f in core_files:
+		for c in _cmd_literals(f):
+			if not core_cmds.has(c):
+				core_cmds.append(c)
+	var unlisted: Array = core_cmds.filter(func(c): return not RuntimeBridge.LITE_COMMANDS.has(c))
+	var unused: Array = RuntimeBridge.LITE_COMMANDS.filter(func(c): return c != "ping" and not core_cmds.has(c))
+	_ok(not core_cmds.is_empty() and unlisted.is_empty(), "every command a core module sends (%d: %s) is on the Lite list%s" % [core_cmds.size(), ", ".join(PackedStringArray(core_cmds)), "" if unlisted.is_empty() else ", missing: " + str(unlisted)])
+	_ok(unused.is_empty(), "...and the Lite list has nothing no core module sends (ping aside, which the game answers to be sure it is there)%s" % ("" if unused.is_empty() else ": " + str(unused)))
+	var lite_tree := not ResourceLoader.exists(RuntimeBridge.FULL_SENTINEL)
+	var driven: Array = []
+	if lite_tree:
+		# Nothing else is shipped here, so no file of this tree may send a command that is not Lite's.
+		for f in _gd_files_under("res://addons/beckett"):
+			for c in _cmd_literals(f):
+				if not RuntimeBridge.LITE_COMMANDS.has(c):
+					driven.append("%s sends %s" % [f.get_file(), c])
+		_ok(driven.is_empty(), "this Lite tree: no script sends a command outside the list%s" % ("" if driven.is_empty() else ": " + str(driven)))
+	else:
+		for f in ["res://addons/beckett/tools/runtime_tools.gd", "res://addons/beckett/tools/playtest_tools.gd", "res://addons/beckett/tools/qa_tools.gd"]:
+			if ResourceLoader.exists(f):
+				for c in _cmd_literals(f):
+					if not driven.has(c) and not core_cmds.has(c):
+						driven.append(c)
+		var passed: Array = driven.filter(func(c): return RuntimeBridge.command_refusal(c, true).is_empty())
+		_ok(driven.size() >= 20 and passed.is_empty(), "the %d commands only the Full modules send are all refused for Lite%s" % [driven.size(), "" if passed.is_empty() else ", let through: " + str(passed)])
+	# The game answers 47 commands; Lite sends the ones on the list, and every other one has to be refused for Lite and sent for Full.
+	var src := FileAccess.get_file_as_string("res://addons/beckett/runtime/mcp_runtime.gd")
+	var from := src.find("func _dispatch(")
+	var to := src.find("\nfunc ", from + 10)
+	var arms: Array = []
+	var arm_re := RegEx.create_from_string("\\n\\t\\t\"([a-z_0-9]+)\":")
+	for m in arm_re.search_all(src.substr(from, to - from)):
+		arms.append(m.get_string(1))
+	var absent: Array = RuntimeBridge.LITE_COMMANDS.filter(func(c): return not arms.has(c))
+	_ok(arms.size() >= 40 and absent.is_empty(), "the game's dispatch has %d commands and every one on the Lite list is among them%s" % [arms.size(), "" if absent.is_empty() else ", not: " + str(absent)])
+	var held_back: Array = arms.filter(func(c): return not RuntimeBridge.LITE_COMMANDS.has(c))
+	var open_to_lite: Array = held_back.filter(func(c): return RuntimeBridge.command_refusal(c, true).is_empty())
+	var shut_to_full: Array = held_back.filter(func(c): return not RuntimeBridge.command_refusal(c, false).is_empty())
+	_ok(held_back.size() >= 30 and open_to_lite.is_empty() and shut_to_full.is_empty(), "the other %d (eval, input, call, click_*, tc_*, replay_*, record_*, ...) are refused for Lite and untouched for Full" % held_back.size())
+	var refusal_text: String = RuntimeBridge.command_refusal("eval", true)
+	_ok(refusal_text.contains("belongs to the Full edition") and refusal_text.contains("'eval'") and RuntimeBridge.command_refusal("x".repeat(500), true).length() < 300, "the refusal says the command belongs to the Full edition and names it (cut short when it is a novel)")
+	_ok(not RuntimeBridge.command_refusal("", true).is_empty() and not RuntimeBridge.command_refusal("EVAL", true).is_empty() and not RuntimeBridge.command_refusal(" get", true).is_empty() and RuntimeBridge.command_refusal("get", true).is_empty(), "no command, another case or a stray space is not a Lite command, and the exact one is")
+
+	# --- the bridge itself
+	var bridge = RuntimeBridge.new()
+	bridge.lite = true
+	var r1: Dictionary = bridge.send_command({"cmd": "eval", "expr": "1"})
+	_ok(not bool(r1.get("ok", true)) and str(r1.get("error", "")).contains("belongs to the Full edition"), "a Lite bridge refuses a drive command before it looks at anything else, connected or not")
+	_ok(str(bridge.send_command({"cmd": "tree"}).get("error", "")).begins_with("game not running") and str(bridge.send_command({"cmd": "set", "prop": "p"}).get("error", "")).begins_with("game not running"), "...and lets a see command and the on_ready write through to the usual 'game not running'")
+	_ok(str(bridge.send_command({}).get("error", "")).contains("belongs to the Full edition") and str(bridge.send_command({"cmd": ["get"]}).get("error", "")).contains("belongs to the Full edition"), "a command with no name, or a name that is not a string, is no Lite command")
+	bridge.lite = false
+	_ok(str(bridge.send_command({"cmd": "eval", "expr": "1"}).get("error", "")).begins_with("game not running"), "a Full bridge sends every command: eval gets as far as the connection check")
+	bridge.lite = null
+	_ok(bridge.is_lite_edition() == lite_tree, "left alone, the bridge reads the edition off the install (%s)" % ("Lite" if lite_tree else "Full"))
+	_ok(RuntimeBridge.is_target_missing("node not found: X") and RuntimeBridge.is_target_missing("no node matches selector class=X (nth=0)") and not RuntimeBridge.is_target_missing(Internals.runtime_text("X")), "on_ready retries a node that is not there yet, and a refusal is not that")
+	# a real socket pair: what a Lite bridge writes to the game, and what it does not
+	var srv := TCPServer.new()
+	if srv.listen(0, "127.0.0.1") != OK:
+		print("  skip  no loopback listener on this machine")
+		bridge.free()
+		return true
+	var client := StreamPeerTCP.new()
+	client.connect_to_host("127.0.0.1", srv.get_local_port())
+	var game: StreamPeerTCP = null
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < 3000:
+		client.poll()
+		if game == null and srv.is_connection_available():
+			game = srv.take_connection()
+		if game != null and client.get_status() == StreamPeerTCP.STATUS_CONNECTED:
+			break
+		OS.delay_msec(5)
+	if game == null or client.get_status() != StreamPeerTCP.STATUS_CONNECTED:
+		print("  skip  the loopback pair did not connect")
+		srv.stop()
+		bridge.free()
+		return true
+	bridge._peer = client
+	bridge.lite = true
+	var barred: Dictionary = bridge.send_command({"cmd": "input", "events": [{"type": "key", "keycode": "A", "pressed": true}]}, 300)
+	OS.delay_msec(40)
+	game.poll()
+	_ok(str(barred.get("error", "")).contains("belongs to the Full edition") and game.get_available_bytes() == 0, "a drive command to a CONNECTED game is refused and nothing is written to the socket")
+	game.put_data(('{"_id": %d, "ok": true, "nodes": []}\n' % (int(bridge._seq) + 1)).to_utf8_buffer())
+	var seen: Dictionary = bridge.send_command({"cmd": "find", "class": "Button"}, 2000)
+	game.poll()
+	var wire := game.get_utf8_string(game.get_available_bytes())
+	_ok(bool(seen.get("ok", false)) and wire.contains("\"cmd\":\"find\""), "a see command goes out and its answer comes back")
+	bridge.queue_on_ready([{"path": "ZzX", "property": "p", "value": 1}])
+	game.put_data(('{"_id": %d, "ok": true, "after": 1}\n' % (int(bridge._seq) + 1)).to_utf8_buffer())
+	bridge._drain_on_ready()
+	game.poll()
+	var wire2 := game.get_utf8_string(game.get_available_bytes())
+	var status: Dictionary = bridge.on_ready_status()
+	_ok(wire2.contains("\"cmd\":\"set\"") and int(status.get("failed", -1)) == 0 and (status.get("applied", []) as Array).size() == 1, "the play_scene on_ready write (a set) is sent by a Lite bridge and reported as applied")
+	client.disconnect_from_host()
+	game.disconnect_from_host()
+	srv.stop()
+	bridge.free()
+	return true
+
+
+## The command names in the `"cmd": "name"` literals of one script.
+func _cmd_literals(path: String) -> Array:
+	var out: Array = []
+	var re := RegEx.create_from_string("\"cmd\"\\s*:\\s*\"([a-z_0-9]+)\"")
+	for m in re.search_all(FileAccess.get_file_as_string(path)):
+		var c := m.get_string(1)
+		if not out.has(c):
+			out.append(c)
+	return out
+
+
+# ---------------------------------------------------------------- 1.16 fold: the words match the edition
+
+## What the prompts ask of the server, and nothing else: is this the free edition?
+class _EditionServer extends RefCounted:
+	var lite := false
+	func is_lite() -> bool:
+		return lite
+
+
+## The tools only the Full edition has: tiers 5 and 6 of the effort table, plus the two skill tools (tier 1, but not in Lite).
+func _full_only_tools() -> Array:
+	var out: Array = []
+	out.append_array(Effort.adds_at(5))
+	out.append_array(Effort.adds_at(6))
+	out.append("list_skills")
+	out.append("load_skill")
+	return out
+
+
+## The names in `names` that `text` mentions as a whole word. `label_ok` lets a mention stand when the word Full is within a
+## hundred characters of it. scroll and drag are skipped: they are tools, but also plain English, and a text points a model at
+## the other names.
+func _full_names_in(text: String, names: Array, label_ok: bool) -> Array:
+	var bad: Array = []
+	for n in names:
+		var tool_name := str(n)
+		if tool_name == "scroll" or tool_name == "drag":
+			continue
+		var re := RegEx.create_from_string("(?<![A-Za-z0-9_])" + tool_name + "(?![A-Za-z0-9_])")
+		for m in re.search_all(text):
+			var from := maxi(0, m.get_start() - 100)
+			if label_ok and text.substr(from, m.get_end() + 100 - from).contains("Full"):
+				continue
+			bad.append(tool_name)
+			break
+	return bad
+
+
+func _prompt_text(prompts, prompt_name: String, args: Dictionary) -> String:
+	var got: Dictionary = prompts.get_prompt(prompt_name, args)
+	if not bool(got.get("ok", false)):
+		return ""
+	return str(got["messages"][0]["content"]["text"])
+
+
+func _t_prompts_edition() -> bool:
+	print("[unit] 1.16 fold: the prompts name no tool the edition lacks")
+	var Prompts = load("res://addons/beckett/prompts/prompts.gd")
+	var full_only := _full_only_tools()
+	_ok(full_only.size() >= 30 and full_only.has("simulate_input") and full_only.has("assert_node_state") and full_only.has("load_skill"),
+		"the Full-only tools, read off the effort table (%d of them), include the three the old prompts sent a Lite agent to" % full_only.size())
+	var lite_p = Prompts.new()
+	lite_p.server = _EditionServer.new()
+	lite_p.server.lite = true
+	var full_p = Prompts.new()
+	full_p.server = _EditionServer.new()
+	var bare_p = Prompts.new()
+	var args := {"target": "Player", "path": "res://a.gd", "goal": "a door that opens", "idea": "a zombie game"}
+	var lite_desc := {}
+	for p in lite_p.list():
+		lite_desc[str(p["name"])] = str(p["description"])
+	var full_desc := {}
+	for p in full_p.list():
+		full_desc[str(p["name"])] = str(p["description"])
+	_ok(lite_desc.size() == 6 and lite_desc.has("make_game") and lite_desc.has("build_test_fix"), "the list has the six prompts")
+
+	# Lite: every prompt answers, and none of them (nor the list) names a tool Lite lacks, labeled or not.
+	var leaks: Array = []
+	var every_text := ""
+	for pn in lite_desc.keys():
+		var text := _prompt_text(lite_p, str(pn), args)
+		_ok(not text.is_empty(), "Lite: get_prompt %s answers" % pn)
+		every_text += "\n" + text
+		for n in _full_names_in(text + " " + str(lite_desc[pn]), full_only, false):
+			leaks.append("%s names %s" % [pn, n])
+	_ok(leaks.is_empty(), "Lite: no prompt, and no line of the list, names a Full-only tool%s" % ("" if leaks.is_empty() else ": " + ", ".join(PackedStringArray(leaks))))
+
+	var bt := _prompt_text(lite_p, "build_test_fix", args)
+	var mg := _prompt_text(lite_p, "make_game", args)
+	_ok(bt.contains("a door that opens") and not bt.contains("%s") and mg.contains("a zombie game") and not mg.contains("%s"), "Lite: the goal and the idea are in the text, and no placeholder is left in it")
+	_ok(bt.contains("Full edition") and mg.contains("Full edition"), "Lite: the step Lite cannot take is named as the Full edition's")
+	var reg = _all_registry()
+	var relied_on := ["validate_script", "write_script", "create_node", "set_property", "save_scene", "play_scene", "wait_until", "screenshot", "get_remote_tree",
+		"runtime_get_property", "game_logs", "monitor_properties", "stop_scene", "logs_read", "describe_class", "find_methods"]
+	var lost: Array = []
+	for n in relied_on:
+		if not reg.has(str(n)) or not (bt + mg).contains(str(n)) or Effort.tier_of(str(n)) > 4:
+			lost.append(n)
+	_ok(lost.is_empty(), "Lite: the two workflow prompts use %d tools, all registered here and all at tier 4 or below%s" % [relied_on.size(), "" if lost.is_empty() else ", not so: " + str(lost)])
+	_ok(not bt.contains("DRIVE") and not lite_desc["build_test_fix"].contains("play-test") and not lite_desc["make_game"].contains("polished"), "Lite: neither prompt promises driving a game, a play-test or a polished result")
+
+	# Full: the wording it always had, and the one bug in it fixed.
+	var fbt := _prompt_text(full_p, "build_test_fix", args)
+	var fmg := _prompt_text(full_p, "make_game", args)
+	_ok(fbt.contains("simulate_input") and fbt.contains("a door that opens") and fmg.contains("load_skill name=game-oneshot") and fmg.contains("assert_node_state"), "Full: the drive and skill steps are still there")
+	_ok(fmg.contains("a zombie game") and not fmg.contains("%s"), "Full: make_game carries the idea (the engine used to refuse a format with two arguments for one placeholder, and the text kept a literal %s)")
+	_ok(_prompt_text(bare_p, "make_game", args) == fmg and _prompt_text(bare_p, "build_test_fix", args) == fbt, "a prompt object with no server reads as Full, the wording it always had")
+	var changed: Array = []
+	for n in lite_desc:
+		if lite_desc[n] != full_desc[n]:
+			changed.append(n)
+	changed.sort()
+	_ok(changed == ["build_test_fix", "make_game"], "only the two workflow prompts are listed differently in Lite (%s)" % ", ".join(PackedStringArray(changed)))
+	_ok(str(full_desc["build_test_fix"]).contains("play-test"), "...and the Full list is the one it always was")
+	return true
+
+
+func _t_lite_text_labels() -> bool:
+	print("[unit] 1.16 fold: what Lite's own text says about a Full-only tool says that it is Full")
+	var full_only := _full_only_tools()
+	var checked := 0
+	var unlabeled: Array = []
+	for t in _all_tool_specs():
+		var tool_name := str(t["name"])
+		if full_only.has(tool_name):
+			continue
+		checked += 1
+		var texts: Array = [str(t.get("description", "")), str(t.get("help", ""))]
+		var props: Dictionary = (t.get("input_schema", {}) as Dictionary).get("properties", {})
+		for k in props:
+			if props[k] is Dictionary:
+				texts.append(str((props[k] as Dictionary).get("description", "")))
+		for tx in texts:
+			for n in _full_names_in(str(tx), full_only, true):
+				unlabeled.append("%s names %s" % [tool_name, n])
+	_ok(checked >= 50, "%d tools are in the Lite set of this tree" % checked)
+	_ok(unlabeled.is_empty(), "no description, long form or argument text of those names a Full-only tool without saying Full%s" % ("" if unlabeled.is_empty() else ": " + ", ".join(PackedStringArray(unlabeled))))
+	# The working notes the Lite server hands over at initialize carry the boundary, and every Full-only name in them is labeled.
+	var srv = MCPServer.new()
+	srv._max_effort = 4
+	var notes: String = srv._instructions()
+	srv.free()
+	_ok(notes.contains("free Lite edition") and notes.contains("Full-edition features") and _full_names_in(notes, full_only, true).is_empty(), "the Lite instructions name the boundary and label what they name")
+	# The one-line description in plugin.cfg: edition-neutral, the Full-only parts marked, short, and no dashes.
+	var cfg := ConfigFile.new()
+	if cfg.load("res://addons/beckett/plugin.cfg") == OK:
+		var d := str(cfg.get_value("plugin", "description", ""))
+		var cut := d.find("Full edition")
+		_ok(cut > 0 and d.length() <= 300 and not d.contains(char(0x2014)) and not d.contains(char(0x2013)), "plugin.cfg: the description marks the Full parts, stays under 300 characters and has no dashes (%d)" % d.length())
+		var before := d.substr(0, maxi(cut, 0)).to_lower()
+		var after := d.substr(maxi(cut, 0)).to_lower()
+		var promised_early: Array = ["skill", "playtest", "driving", "autonomous", "assert"].filter(func(w): return before.contains(w))
+		_ok(promised_early.is_empty() and after.contains("skill") and after.contains("playtest"), "...and nothing Full-only is promised before it says so%s" % ("" if promised_early.is_empty() else ": " + str(promised_early)))
+	else:
+		print("  skip  plugin.cfg did not load")
+	# tests/ci-smoke.ps1 is staged into the public repo: its usage text names no machine of ours.
+	if FileAccess.file_exists("res://tests/ci-smoke.ps1"):
+		var path_re := RegEx.create_from_string("[A-Za-z]:[\\\\/](Godot_v|best|Users)")
+		_ok(path_re.search(FileAccess.get_file_as_string("res://tests/ci-smoke.ps1")) == null, "tests/ci-smoke.ps1 names no local Godot or user folder")
+	else:
+		print("  skip  tests/ci-smoke.ps1 absent")
+	return true
+
+
+func _t_security_doc_labels() -> bool:
+	print("[unit] 1.16 fold: SECURITY.md says which tools are the Full edition's")
+	if not FileAccess.file_exists("res://SECURITY.md"):
+		print("  skip  SECURITY.md is not in this tree")
+		return true
+	var doc := FileAccess.get_file_as_string("res://SECURITY.md")
+	var unlabeled := _full_names_in(doc, _full_only_tools(), true)
+	_ok(unlabeled.is_empty(), "every Full-only tool SECURITY.md names has the word Full within a hundred characters%s" % ("" if unlabeled.is_empty() else ": " + ", ".join(PackedStringArray(unlabeled))))
+	_ok(doc.contains("(Full edition)"), "...and the label it uses is the one on the page: (Full edition)")
 	return true
