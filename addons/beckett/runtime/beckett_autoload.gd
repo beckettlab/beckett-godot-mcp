@@ -65,9 +65,11 @@ func _ready() -> void:
 		push_warning("[beckett] runtime implementation not present at %s, so the play/observe loop is off; this is expected in an exported pack and means a half-installed addon anywhere else" % IMPL_PATH)
 		return
 	var impl = load(IMPL_PATH)
-	if impl == null:
+	if impl == null or not impl.can_instantiate():
 		# Present but unloadable, i.e. mcp_runtime.gd failed to parse. The engine has already
-		# said why on its own line; ours names the consequence.
+		# said why on its own line; ours names the consequence. A script that fails to parse
+		# still loads as a GDScript object, one that cannot be instantiated, so null alone
+		# never caught it and impl.new() below raised a script error instead of this line.
 		push_warning("[beckett] runtime implementation at %s failed to load, so the play/observe loop is off" % IMPL_PATH)
 		return
 

@@ -300,6 +300,7 @@ static func _reason(status: int) -> String:
 		403: return "Forbidden"
 		404: return "Not Found"
 		405: return "Method Not Allowed"
+		412: return "Precondition Failed"  # the project check (mcp_server.gd) where there is no JSON-RPC id to answer
 		413: return "Payload Too Large"
 		415: return "Unsupported Media Type"
 		431: return "Request Header Fields Too Large"

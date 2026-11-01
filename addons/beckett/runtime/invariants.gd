@@ -38,6 +38,21 @@ const PURE_CALLS := ["get_node", "get_node_or_null", "get_parent", "get_child", 
 	"size", "length", "has", "abs", "absf", "absi", "min", "max", "mini", "maxi", "minf", "maxf", "clamp", "clampi", "clampf", "floor", "floorf", "floori",
 	"ceil", "ceilf", "ceili", "round", "roundf", "roundi", "sqrt", "sign", "signf", "signi", "pow", "len", "str", "int", "float", "bool", "lerp", "lerpf"]
 
+## The Variant utility functions no expression from a suite, a step or a tool call may call, and why. An Expression
+## reaches every utility function, and these two turn data into objects: str_to_var LOADS whatever a
+## Resource("C:/elsewhere/secret.json") in its text names, from any folder, and hands it back (a false assert prints
+## its value), past the read rule every path a tool takes is held to (core/path_guard.gd).
+## This ban is the only guard an expression has, and it is not a sandbox. The engine singletons (OS, ResourceLoader,
+## FileAccess) are not names it knows (measured on 4.4.1, 4.6.2 and 4.7, and pinned by the unit suite), but it reaches
+## everything the game's scene tree reaches: get_tree().change_scene_to_file() loads a scene from any folder, an Image's
+## save_png() writes a file anywhere, get_node() and instance_from_id() reach any object, Beckett's own runtime included.
+## Every expression comes from a Full edition tool (runtime_call expr=, a playtest expr assert or invariant, a ui_do or
+## step_until condition); Lite never sends one. That edition is the boundary, as SECURITY.md says.
+const UNSAFE_CALLS := {
+	"str_to_var": "it loads any file a Resource(\"...\") in its text names, outside the project as well",
+	"bytes_to_var_with_objects": "it builds an object of any class out of bytes",
+}
+
 static var _re_call: RegEx = null
 
 var active := false          # a rule set is loaded (cheap early-out for the per-frame call)
@@ -45,7 +60,7 @@ var _items: Array = []
 
 
 ## Validate a suite's `invariants` value without loading it: shape, the cap, unique names, and that
-## every expression PARSES. Used by playtest op=save (refuse a typo early) and by open(). Returns
+## every expression PARSES and calls none of UNSAFE_CALLS. Used by playtest op=save (refuse a typo early) and by open(). Returns
 ## {ok: true, items: [{name, expr}]} or {ok: false, error}.
 static func normalize(list: Variant) -> Dictionary:
 	if list == null:
@@ -76,6 +91,9 @@ static func normalize(list: Variant) -> Dictionary:
 		if seen.has(nm):
 			return {"ok": false, "error": "two invariants are named '%s': names identify them in the results, so they must differ" % nm}
 		seen[nm] = true
+		var unsafe := unsafe_call(text)
+		if not unsafe.is_empty():
+			return {"ok": false, "error": "invariant '%s': %s" % [nm, unsafe]}
 		var ex := Expression.new()
 		if ex.parse(text) != OK:
 			return {"ok": false, "error": "invariant '%s' does not parse: %s" % [nm, ex.get_error_text()]}
@@ -221,6 +239,18 @@ static func is_pure_read(operand: String) -> bool:
 			continue
 		return false
 	return true
+
+
+## "" when the expression `src` may be evaluated, else why not: it calls one of UNSAFE_CALLS (text inside a string
+## literal is not a call). Every place that evaluates an expression it was handed asks this before parsing it.
+static func unsafe_call(src: String) -> String:
+	if _re_call == null:
+		_re_call = RegEx.create_from_string("([A-Za-z_][A-Za-z0-9_]*)\\s*\\(")
+	for m in _re_call.search_all(_without_strings(src)):
+		var fn := m.get_string(1)
+		if UNSAFE_CALLS.has(fn):
+			return "an expression may not call %s(): %s" % [fn, UNSAFE_CALLS[fn]]
+	return ""
 
 
 ## `s` with the inside of every string literal emptied ('a(b' becomes ''), so a call-shaped text in a string is

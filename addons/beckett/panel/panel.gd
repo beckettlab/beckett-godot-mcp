@@ -13,7 +13,8 @@ extends VBoxContainer
 const MCPClientConfig := preload("res://addons/beckett/core/client_config.gd")
 const MCPEffortScript := preload("res://addons/beckett/core/effort.gd")
 const MCPReflectScript := preload("res://addons/beckett/core/reflection.gd")  # node-path resolver, shared with the tools
-const MCPVersionScript := preload("res://addons/beckett/core/version.gd")  # the release number in the tagline
+const MCPVersionScript := preload("res://addons/beckett/core/version.gd")  # the release number in the tagline, the build in its tooltip
+const MCPServerScript := preload("res://addons/beckett/core/mcp_server.gd")  # port_is_strict: Start keeps the rule the plugin started with
 
 var server   # mcp_server node
 var plugin   # EditorPlugin
@@ -165,9 +166,11 @@ func _build_server_card() -> void:
 	var tagwrap := MarginContainer.new()  # margin_top pushes the tagline onto the baseline
 	tagwrap.add_theme_constant_override("margin_top", baseline_drop)
 	tagwrap.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	var tagline := Label.new()
-	var ver := _plugin_version()
-	tagline.text = "MCP for Godot" + (" · v" + ver if ver != "" else "")
+	var tagline := TaglineLabel.new()
+	tagline.text = _tagline_text()
+	# The exact build goes in the tooltip, not the line: these labels set the dock's minimum width
+	# (its horizontal scroll is off, plugin.gd), and a Label ignores the mouse unless told otherwise.
+	tagline.mouse_filter = Control.MOUSE_FILTER_PASS
 	tagline.add_theme_font_size_override("font_size", int(11 * _es))
 	tagline.add_theme_color_override("font_color", _dim())
 	tagwrap.add_child(tagline)
@@ -195,6 +198,7 @@ func _build_server_card() -> void:
 	_status_text.add_theme_font_size_override("font_size", int(13 * _es))
 	_status_text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_status_text.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_status_text.mouse_filter = Control.MOUSE_FILTER_PASS  # the why of a walked or refused port is in its tooltip
 	status_row.add_child(_status_text)
 	_toggle_btn = Button.new()
 	_toggle_btn.custom_minimum_size = Vector2(84 * _es, 26 * _es)
@@ -1171,11 +1175,13 @@ func _process(delta: float) -> void:
 func _refresh() -> void:
 	var running: bool = server != null and server.is_running()
 
-	var sc := _color("success_color", Color(0.3, 0.8, 0.4)) if running else _dim()
+	var line := server_status_line(running, _port(), _requested_port(), _start_error())
+	var sc := _color("success_color", Color(0.3, 0.8, 0.4)) if running else (_color("warning_color", Color(0.9, 0.7, 0.2)) if bool(line["warn"]) else _dim())
 	_paint_dot(_status_dot, sc, true)
-	_status_text.text = "Running · port %d" % _port() if running else "Stopped"
+	_status_text.text = str(line["text"])
+	_status_text.tooltip_text = str(line["tooltip"])
 	_status_text.add_theme_color_override("font_color",
-		_color("font_color", Color(0.9, 0.9, 0.9)) if running else _dim())
+		_color("font_color", Color(0.9, 0.9, 0.9)) if running else (_color("warning_color", Color(0.9, 0.7, 0.2)) if bool(line["warn"]) else _dim()))
 
 	_toggle_btn.text = "Stop Server" if running else "Start Server"
 	_toggle_btn.icon = _eicon("Stop") if running else _eicon("Play")
@@ -1274,19 +1280,63 @@ func _on_toggle_server() -> void:
 		server.stop_server()
 		_flash("Server stopped")
 	else:
-		server.start_server(MCPClientConfig.configured_port())
-		_flash("Server running on port %d" % _port())
+		# The same rule the plugin started with: a BECKETT_PORT that is taken stays not served.
+		var port := MCPClientConfig.configured_port()
+		if int(server.start_server(port, MCPServerScript.port_is_strict())) == OK:
+			_flash("Server running on port %d" % _port())
+		else:
+			_flash("Not serving: port %d is taken. The status line's tooltip says why." % port, false)
 	_refresh()
 
 
 func _on_copy_url() -> void:
+	if _refuse_unserved():
+		return
 	DisplayServer.clipboard_set(MCPClientConfig.mcp_url(_port(), _auth_token()))
 	_flash("Endpoint URL copied ✓")
 
 
 func _on_copy() -> void:
+	if _refuse_unserved():
+		return
 	DisplayServer.clipboard_set(MCPClientConfig.config_json(_port(), _auth_token()))
 	_flash("Client config copied ✓")
+
+
+## After a start that did not serve, the port this dock would hand out is another program's (1.17): a URL
+## or a config naming it sends a client there, where nothing refuses it. Copy URL, Copy config and Connect
+## say so instead. "" when there is nothing to refuse: serving, or never started (autostart off).
+static func unserved_refusal(running: bool, requested: int, start_error: String) -> String:
+	if running or start_error.is_empty():
+		return ""
+	return "Not serving: port %d belongs to another program, and a client sent there would act on it. Free the port and press Start, or restart the editor with another BECKETT_PORT (BECKETT_PORT_WALK=1 walks past a busy one)." % requested
+
+
+## unserved_refusal for this dock: true, with the reason flashed, when it must not hand out its port.
+func _refuse_unserved() -> bool:
+	var why := unserved_refusal(server != null and server.is_running(), _requested_port(), _start_error())
+	if not why.is_empty():
+		_flash(why, false)
+	return not why.is_empty()
+
+
+## A token change while this editor does not serve (1.17): the new token or the switch-off holds for this editor,
+## but no client config is rewritten, because the URL it would write names the port another program holds (Rotate
+## or Disable would otherwise send every detected client, global configs included, there). "" when the configs may be
+## rewritten; else the flash that says they were left alone, and why.
+static func token_change_held_back(head: String, running: bool, requested: int, start_error: String) -> String:
+	var why := unserved_refusal(running, requested, start_error)
+	if why.is_empty():
+		return ""
+	return "%s for this editor, and no client config was rewritten. %s" % [head, why]
+
+
+## token_change_held_back for this dock: true, with the reason flashed, when the configs are left as they are.
+func _configs_held_back(head: String) -> bool:
+	var why := token_change_held_back(head, server != null and server.is_running(), _requested_port(), _start_error())
+	if not why.is_empty():
+		_flash(why, false)
+	return not why.is_empty()
 
 
 # ---------------------------------------------------------------- auth (v1.9)
@@ -1294,8 +1344,11 @@ func _on_copy() -> void:
 ## The endpoint as SHOWN. The token rides in the path, and the dock is on screen in every
 ## screenshot, screen share and stream a user ever makes of their editor — printing the
 ## secret there in full is a leak with no upside, since the way you actually use this row is
-## to click it and paste. Masked on screen, complete on the clipboard.
+## to click it and paste. Masked on screen, complete on the clipboard. After a start that did not serve, the
+## row names no URL: the port in it would be another program's (unserved_refusal).
 func _display_url() -> String:
+	if not unserved_refusal(server != null and server.is_running(), _requested_port(), _start_error()).is_empty():
+		return "no endpoint: port %d is taken" % _requested_port()
 	var tok := _auth_token()
 	var full := MCPClientConfig.mcp_url(_port(), tok)
 	if tok.is_empty():
@@ -1350,7 +1403,8 @@ func _auth_enable() -> void:
 		_refresh_auth_row()
 		return
 	_clients_accum = 999.0  # re-detect on the next tick
-	_report_token_change("Token auth enabled", MCPClientConfig.ensure_all(_port(), tok), true)
+	if not _configs_held_back("Token auth enabled"):
+		_report_token_change("Token auth enabled", MCPClientConfig.ensure_all(_port(), tok), true)
 	_refresh()
 
 
@@ -1363,7 +1417,8 @@ func _on_auth_rotate() -> void:
 		_flash("Could not write the token file (see editor log)", false)
 		return
 	_clients_accum = 999.0
-	_report_token_change("Token rotated", MCPClientConfig.ensure_all(_port(), tok), true)
+	if not _configs_held_back("Token rotated"):
+		_report_token_change("Token rotated", MCPClientConfig.ensure_all(_port(), tok), true)
 	_refresh()
 
 
@@ -1374,7 +1429,8 @@ func _auth_disable() -> void:
 		return
 	server.set_auth_disabled()
 	_clients_accum = 999.0
-	_report_token_change("Token auth disabled", MCPClientConfig.ensure_all(_port(), ""), false)
+	if not _configs_held_back("Token auth disabled"):
+		_report_token_change("Token auth disabled", MCPClientConfig.ensure_all(_port(), ""), false)
 	_refresh()
 
 
@@ -1444,6 +1500,8 @@ func _all_calls_text() -> String:
 
 ## One button, every detected client: project configs + Claude Desktop's global file.
 func _on_connect_clients() -> void:
+	if _refuse_unserved():
+		return
 	var results: Array = MCPClientConfig.ensure_all(_port(), _auth_token())
 	if results.is_empty():
 		_flash("No MCP clients detected on this machine", false)
@@ -1927,6 +1985,44 @@ func _fmt_k(n: int) -> String:
 func _plugin_version() -> String:
 	var v: String = MCPVersionScript.current()
 	return "" if v == MCPVersionScript.UNKNOWN else v
+
+
+## The masthead tagline: the plain release number. The exact build and where it came from are its tooltip
+## (TaglineLabel below).
+func _tagline_text() -> String:
+	var ver := _plugin_version()
+	return "MCP for Godot" + (" · v" + ver if ver != "" else "")
+
+
+## The tagline's Label, whose tooltip (version.gd describe: the build and where this tree came from) is worked
+## out when someone hovers it rather than while the dock is built: the build's fingerprint reads every addon
+## file once (60 to 110 ms measured), and the dock is built while the editor starts up. Kept after that.
+class TaglineLabel extends Label:
+	const Version := preload("res://addons/beckett/core/version.gd")
+
+	func _get_tooltip(_at_position: Vector2) -> String:
+		return Version.describe()
+
+
+## The server line under the masthead: {text, tooltip, warn}. Kept short on purpose (the label sets the
+## dock's minimum width), with the reason in the tooltip: a walked port, or why a start did not serve.
+static func server_status_line(running: bool, port: int, requested: int, start_error: String) -> Dictionary:
+	if running:
+		var tip := ""
+		if requested > 0 and requested != port:
+			tip = "Port %d was busy, so this editor serves on %d. The client configs Beckett writes at editor start follow the live port (Connect Detected Clients rewrites them), and res://.beckett/endpoint.json names it." % [requested, port]
+		return {"text": "Running · port %d" % port, "tooltip": tip, "warn": false}
+	if not start_error.is_empty():
+		return {"text": "Not serving · port %d taken" % requested, "tooltip": start_error, "warn": true}
+	return {"text": "Stopped", "tooltip": "", "warn": false}
+
+
+func _requested_port() -> int:
+	return int(server.requested_port()) if server != null and server.has_method("requested_port") else 0
+
+
+func _start_error() -> String:
+	return str(server.last_start_error()) if server != null and server.has_method("last_start_error") else ""
 
 
 ## Running: the port actually BOUND (start_server may have walked past a busy one). Stopped:

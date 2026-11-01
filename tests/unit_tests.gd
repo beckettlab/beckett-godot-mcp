@@ -31,12 +31,20 @@ const InputCodec := preload("res://addons/beckett/runtime/input_codec.gd")
 const Invariants := preload("res://addons/beckett/runtime/invariants.gd")
 const UiDo := preload("res://addons/beckett/runtime/ui_do.gd")
 const UiInspect := preload("res://addons/beckett/runtime/ui_inspect.gd")
+const _WORLD_CLICK_PATH := "res://addons/beckett/runtime/world_click.gd"  # Full-only (pack.ps1 trims it): gates the coords drive checks
+const _DRIVE_AIM_PATH := "res://addons/beckett/runtime/drive_aim.gd"  # Full-only too: the push point, the focus rule, GUI -> window pixels
+const _STEP_CLOCK_PATH := "res://addons/beckett/runtime/step_clock.gd"  # Full-only too: the tick clock of time_control's step windows and the playtest replay
 const RuntimeBridge := preload("res://addons/beckett/core/runtime_bridge.gd")
 const BreakWatch := preload("res://addons/beckett/core/break_watch.gd")
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")
+const TypedJson := preload("res://addons/beckett/core/typed_json.gd")
 const GameLogSink := preload("res://addons/beckett/runtime/game_log_sink.gd")
 const ProjectTools := preload("res://addons/beckett/tools/project_tools.gd")
 const Captures := preload("res://addons/beckett/core/captures.gd")
+const CaptureSource := preload("res://addons/beckett/runtime/capture_source.gd")
+## compare_screenshots' pixel math is Full-only (pack.ps1 trims it with qa_tools.gd): loaded by path, so Lite parses.
+const _IMAGE_DIFF_PATH := "res://addons/beckett/tools/image_diff.gd"
+const _QA_TOOLS_PATH := "res://addons/beckett/tools/qa_tools.gd"
 const PersistGuard := preload("res://addons/beckett/core/persist_guard.gd")
 const SceneTools := preload("res://addons/beckett/tools/scene_tools.gd")
 const EngineIssues := preload("res://addons/beckett/core/engine_issues.gd")
@@ -78,6 +86,13 @@ func _init() -> void:
 	_g("idempotency_bounds", _t_idempotency_bounds())
 	_g("instructions_skill_count", _t_instructions_skill_count())
 	_g("server_version", _t_server_version())
+	_g("identity_paths", _t_identity_paths())
+	_g("identity_gate", _t_identity_gate())
+	_g("identity_initialize", _t_identity_initialize())
+	_g("port_rule", _t_port_rule())
+	_g("discovery_records", _t_discovery_records())
+	_g("build_fingerprint", _t_build_fingerprint())
+	_g("doctor_identity", _t_doctor_identity())
 	_g("http_content_type", _t_http_content_type())
 	_g("session_never_404", _t_session_never_404())
 	_g("secure_equals", _t_secure_equals())
@@ -85,8 +100,10 @@ func _init() -> void:
 	_g("origin_gate", _t_origin_gate())
 	_g("validate_args", _t_validate_args())
 	_g("call_args", _t_call_args())
+	_g("node_path_values", _t_node_path_values())
 	_g("error_echo", _t_error_echo())
 	_g("class_name_mask", _t_class_name_mask())
+	_g("validate_as_file", _t_validate_as_file())
 	if ResourceLoader.exists(_PLAYTEST_TOOLS_PATH):
 		_g("playtest_helpers", _t_playtest_helpers())
 		_g("perf_assert_eval", _t_perf_assert_eval())
@@ -145,6 +162,19 @@ func _init() -> void:
 	_g("break_flag_compose", _t_break_flag_compose())
 	_g("break_flag_arm", _t_break_flag_arm())
 	_g("wait_break", _t_wait_break())
+	_g("honest_timeout_words", _t_honest_timeout_words())
+	_g("honest_on_ready_busy", _t_honest_on_ready_busy())
+	_g("honest_on_ready_unknown", _t_honest_on_ready_unknown())
+	_g("honest_on_ready_lost", _t_honest_on_ready_lost())
+	_g("honest_read_back", _t_honest_read_back())
+	_g("honest_wait_busy", _t_honest_wait_busy())
+	_g("honest_frame_clock", _t_honest_frame_clock())
+	_g("honest_frame_clock_live", await _t_honest_frame_clock_live())
+	if ResourceLoader.exists(_PLAYTEST_TOOLS_PATH):
+		_g("honest_status_polls", _t_honest_status_polls())
+		_g("honest_perf_clock_baseline", _t_honest_perf_clock_baseline())
+	else:
+		print("[unit] honest status-poll and perf-baseline groups skipped (Lite build: the playtest and drive modules are trimmed)")
 	_g("game_not_running_pause", _t_game_not_running_pause())
 	_g("perf_summary_runtime", _t_perf_summary_runtime())
 	_g("runtime_fingerprint", _t_runtime_fingerprint())
@@ -153,12 +183,24 @@ func _init() -> void:
 	_g("invariants", _t_invariants())
 	_g("ui_do_status_inject", await _t_ui_do_status_inject())
 	_g("runtime_invariants_restart", _t_runtime_invariants_restart())
+	if ResourceLoader.exists(_STEP_CLOCK_PATH):
+		_g("step_clock_pure", _t_step_clock_pure())
+		_g("step_clock_machine", _t_step_clock_machine())
+		_g("step_clock_ticks", await _t_step_clock_ticks())
+		_g("step_clock_replay", _t_step_clock_replay())
+	else:
+		print("[unit] step clock groups skipped (Lite build: runtime/step_clock.gd trimmed)")
 	_g("game_state", _t_game_state())
 	_g("game_state_runtime", await _t_game_state_runtime())
 	_g("game_state_tool", _t_game_state_tool())
 	_g("scene_restart", await _t_scene_restart())
 	_g("scene_change", await _t_scene_change())
 	_g("ui_inspect", await _t_ui_inspect())
+	_g("coords", await _t_coords())
+	if ResourceLoader.exists(_WORLD_CLICK_PATH) and ResourceLoader.exists(_DRIVE_AIM_PATH):
+		_g("coords_drive", await _t_coords_drive())
+	else:
+		print("[unit] coords drive checks skipped (Lite build: runtime/world_click.gd and drive_aim.gd trimmed)")
 	_g("focus_graph", await _t_focus_graph())
 	_g("type_stream", _t_type_stream())
 	_g("bridge_compare", _t_bridge_compare())
@@ -166,13 +208,35 @@ func _init() -> void:
 	_g("setting_type_mirror", _t_setting_type_mirror())
 	_g("doctor_context", _t_doctor_context())
 	_g("property_owner", _t_property_owner())
+	_g("runtime_set_values", await _t_runtime_set_values())
+	_g("typed_values", _t_typed_values())
+	_g("typed_wire", await _t_typed_wire())
+	_g("node_state_one_rule", await _t_node_state_one_rule())
+	_g("runtime_call_expr", await _t_runtime_call_expr())
 	_g("winding", _t_winding())
 	_g("screenshot_metric", _t_screenshot_metric())
 	_g("screenshot_cap", _t_screenshot_cap())
 	_g("compare_downscale_chain", _t_compare_downscale_chain())
+	_g("capture_upscale", _t_capture_upscale())
+	_g("capture_cursor", _t_capture_cursor())
+	_g("capture_layout", await _t_capture_layout())
+	_g("capture_resolve", await _t_capture_resolve())
+	_g("capture_line", _t_capture_line())
+	_g("screenshot_viewport_wiring", _t_screenshot_viewport_wiring())
+	_g("editor_view_pick", _t_editor_view_pick())
+	_g("capture_no_dashes", _t_capture_no_dashes())
+	if ResourceLoader.exists(_IMAGE_DIFF_PATH) and ResourceLoader.exists(_QA_TOOLS_PATH):
+		_g("image_diff_changed", _t_image_diff_changed())
+		_g("image_diff_legacy", _t_image_diff_legacy())
+		_g("image_diff_picture", _t_image_diff_picture())
+		_g("compare_wiring", _t_compare_wiring())
+	else:
+		print("[unit] image diff and compare groups skipped (Lite build: compare_screenshots is trimmed)")
 	_g("dock_tier_stats", _t_dock_tier_stats())
 	_g("resolver_suggestions", _t_resolver_suggestions())
+	_g("colon_targets", await _t_colon_targets())
 	_g("description_budget", _t_description_budget())
+	_g("api_floor", _t_api_floor())
 	_g("help_never_advertised", _t_help_never_advertised())
 	_g("output_schema", _t_output_schema())
 	_g("captures", _t_captures())
@@ -195,8 +259,17 @@ func _init() -> void:
 	_g("native_install", _t_native_install())
 	_g("token_file_permissions", _t_token_file_permissions())
 	_g("persist_guard", _t_persist_guard())
+	_g("resource_persist", _t_resource_persist())
+	_g("instance_edit_state", _t_instance_edit_state())
+	_g("rename_paths", _t_rename_paths())
 	_g("disk_readback", _t_disk_readback())
 	_g("writers_readback_errors", _t_writers_readback_errors())
+	_g("property_writes", _t_property_writes())
+	_g("editor_property_values", await _t_editor_property_values())
+	_g("str_to_var_guard", await _t_str_to_var_guard())
+	_g("loaded_copy_refresh", _t_loaded_copy_refresh())
+	_g("hot_reload_heal", _t_hot_reload_heal())
+	_g("skipped_reload", _t_skipped_reload())
 	_g("bool_flags", _t_bool_flags())
 	_g("engine_issues", _t_engine_issues())
 	_g("dotnet_check", _t_dotnet_check())
@@ -219,6 +292,7 @@ func _init() -> void:
 	_g("doctor_tool_search", _t_doctor_tool_search())
 	_g("internals_guard", await _t_internals_guard())
 	_g("runtime_off_limits", await _t_runtime_off_limits())
+	_g("runtime_subpath", await _t_runtime_subpath())
 	_g("bridge_lite_commands", await _t_bridge_lite_commands())
 	_g("prompts_edition", _t_prompts_edition())
 	_g("lite_text_labels", _t_lite_text_labels())
@@ -500,6 +574,49 @@ func _t_description_budget() -> bool:
 			elif str(t["help"]).length() <= str(t["description"]).length():
 				dangling.append(str(t["name"]) + " (help no longer than the description)")
 	_ok(dangling.is_empty(), "every help(tool=...) pointer resolves to a longer long form%s" % ("" if dangling.is_empty() else ": " + ", ".join(dangling)))
+	return true
+
+
+## The 4.2 floor, read off the source, since no 4.2 binary runs anywhere: what 4.2 lacks is reached by name only.
+## Resource.reset_state() is bound from 4.4. A typed call compiles on 4.2 and 4.3 (a native type, so the analyzer only
+## warns), then fails there at run time with "Nonexistent function", which ended the loaded-copy refresh before it
+## copied anything. ResourceLoader.CACHE_MODE_REPLACE_DEEP and CACHE_MODE_IGNORE_DEEP are 4.3 values: named in a
+## script, they stop it from parsing on 4.2, and in mcp_runtime.gd that is every runtime tool.
+func _t_api_floor() -> bool:
+	print("[unit] the 4.2 floor: reset_state and the deep cache modes are reached by name, never named in code")
+	var reset_re := RegEx.create_from_string("\\breset_state\\s*\\(")
+	var deep_re := RegEx.create_from_string("\\bCACHE_MODE_[A-Z]+_DEEP\\b")
+	var typed: Array = []
+	var deep: Array = []
+	for f in _addon_gd_files():
+		var lines: PackedStringArray = _code_of(FileAccess.get_file_as_string(f)).split("\n")
+		for i in lines.size():
+			var t := lines[i]
+			if reset_re.search(t) != null and not t.strip_edges().begins_with("func "):
+				typed.append("%s:%d" % [f.trim_prefix("res://addons/beckett/"), i + 1])
+			if deep_re.search(t) != null:
+				deep.append("%s:%d" % [f.trim_prefix("res://addons/beckett/"), i + 1])
+	_ok(typed.is_empty(), "no addon script calls reset_state() by its typed name (has_method / call only)%s" % ("" if typed.is_empty() else ": " + ", ".join(typed)))
+	_ok(deep.is_empty(), "no addon script names a CACHE_MODE_*_DEEP constant (ClassDB looks it up by name)%s" % ("" if deep.is_empty() else ": " + ", ".join(deep)))
+	# The scan is not vacuous: the by-name sites it leaves alone are there.
+	var pt_src := FileAccess.get_file_as_string("res://addons/beckett/tools/project_tools.gd")
+	var rt_src := FileAccess.get_file_as_string("res://addons/beckett/runtime/mcp_runtime.gd")
+	_ok(pt_src.contains("held.has_method(&\"reset_state\")") and pt_src.contains("held.call(&\"reset_state\")"), "refresh_loaded_copy reaches reset_state through has_method and call")
+	_ok(rt_src.contains("ClassDB.class_has_integer_constant(\"ResourceLoader\", \"CACHE_MODE_REPLACE_DEEP\")"), "the restart's cache mode is looked up through ClassDB")
+	var mode: int = MCPRuntime.deep_replace_mode()
+	if ClassDB.class_has_integer_constant("ResourceLoader", "CACHE_MODE_REPLACE_DEEP"):
+		_ok(mode == ClassDB.class_get_integer_constant("ResourceLoader", "CACHE_MODE_REPLACE_DEEP") and mode != ResourceLoader.CACHE_MODE_REPLACE, "on this engine the restart re-reads deep (mode %d)" % mode)
+	else:
+		_ok(mode == ResourceLoader.CACHE_MODE_REPLACE, "an engine without the deep mode restarts with CACHE_MODE_REPLACE (mode %d)" % mode)
+	var pt_path := "res://addons/beckett/tools/playtest_tools.gd"
+	if ResourceLoader.exists(pt_path):
+		var PT = load(pt_path)
+		var deep_txt := str(PT.reset_text(true))
+		var flat_txt := str(PT.reset_text(false))
+		_ok(deep_txt.contains("the .tres files it names) re-read from disk") and flat_txt.contains("come from the cache on this Godot") and flat_txt.contains("restarted before every run") and flat_txt.contains("autoloads"),
+			"op=repeat's reset says what a restart re-reads, and on an engine without the deep reload that the .tres files come from the cache")
+	else:
+		print("  skip  playtest_tools.gd is not in this build (Lite trims it)")
 	return true
 
 
@@ -806,7 +923,10 @@ func _t_server_version() -> bool:
 	var init := {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "unit", "version": "0"}}}
 	var s = MCPServer.new()
 	var info := _server_info(_http_req(s, "POST", {}, init))
-	_ok(str(info.get("version", "")) == declared, "initialize reports the plugin.cfg version (%s; got '%s')" % [declared, str(info.get("version", ""))])
+	# 1.17: the exact build, "<plugin.cfg version>+<8 hex>"; the part before "+" is what plugin.cfg declares.
+	var got := str(info.get("version", ""))
+	_ok(got == Version.display() and got.split("+")[0] == declared and got.length() == declared.length() + 9 and _is_hex(got.right(8)),
+		"initialize reports the exact build: the plugin.cfg version (%s), '+' and 8 hex digits (got '%s')" % [declared, got])
 	_ok(str(info.get("name", "")) == MCPServer.SERVER_NAME and str(info.get("title", "")).begins_with("Beckett"), "...next to the name and title it always carried")
 	_ok(Version.current() == declared and Version._cached == declared, "current() answers the same version and keeps it after the first read")
 
@@ -841,7 +961,7 @@ func _t_server_version() -> bool:
 	var pt = ProjectTools.new()
 	pt.server = srv
 	var lost_doc: Dictionary = (pt._doctor({}) as Dictionary)["json"]
-	_ok(str(lost_doc["beckett_version"]) == Version.UNKNOWN, "...and doctor says '%s'" % Version.UNKNOWN)
+	_ok(str(lost_doc["beckett_version"]) == Version.UNKNOWN and str(lost_doc["beckett_build"]) == Version.UNKNOWN, "...and doctor says '%s', for the build too" % Version.UNKNOWN)
 
 	# Read once: the first good read is kept, and an edit of the file afterwards is not seen by the running editor.
 	Version.cfg_path = dir + "/good.cfg"
@@ -854,9 +974,16 @@ func _t_server_version() -> bool:
 	Version.cfg_path = Version.PLUGIN_CFG
 	Version._cached = ""
 	_ok(Version.current() == declared, "pointed back at plugin.cfg, the reader answers the real version")
-	_ok(dock._plugin_version() == declared, "the dock's tagline shows it")
+	# The dock: the line keeps the short release number (it sets the dock's minimum width), the tooltip names the build.
+	var tag_text: String = dock._tagline_text()
+	_ok(dock._plugin_version() == declared and tag_text.ends_with("v" + declared), "the dock's tagline shows the release number (%s)" % tag_text)
+	var tag_label = load("res://addons/beckett/panel/panel.gd").TaglineLabel.new()
+	var tag_tip := str(tag_label._get_tooltip(Vector2.ZERO))
+	tag_label.free()
+	_ok(tag_tip.contains(Version.display()) and tag_tip.contains(str(Version.provenance()["note"])), "...and its tooltip the exact build and where it came from (%s)" % tag_tip.replace("\n", " / "))
 	var doc: Dictionary = (pt._doctor({}) as Dictionary)["json"]
 	_ok(str(doc["beckett_version"]) == declared, "doctor reports it as beckett_version")
+	_ok(str(doc["beckett_build"]) == Version.display() and str(doc["beckett_build"]) == got, "...and the build serverInfo.version carries as beckett_build")
 	if ResourceLoader.exists(_PLAYTEST_TOOLS_PATH):
 		_ok(load(_PLAYTEST_TOOLS_PATH).new()._beckett_version() == declared, "a saved playtest suite and a report are stamped with it")
 	else:
@@ -878,6 +1005,514 @@ func _t_server_version() -> bool:
 		if src.contains("get_value(\"plugin\", \"version\"") or src.contains("SERVER_VERSION"):
 			strays.append(path)
 	_ok(strays.is_empty(), "no other module reads the version out of plugin.cfg or still names SERVER_VERSION (found: %s)" % [strays])
+	return true
+
+
+# ---------------------------------------------------------------- which editor (1.17)
+
+## A handle_http answer's body as a Dictionary ({} when it is not a JSON object).
+func _json_body(resp: Dictionary) -> Dictionary:
+	var parser := JSON.new()
+	if parser.parse(str(resp.get("body", ""))) != OK or not (parser.data is Dictionary):
+		return {}
+	return parser.data
+
+
+func _is_hex(s: String) -> bool:
+	if s.is_empty():
+		return false
+	for i in s.length():
+		if "0123456789abcdef".find(s[i]) == -1:
+			return false
+	return true
+
+
+## An absolute folder on this OS, for the rule's tests (the rule is Windows-shaped only on Windows).
+func _abs_folder(tail: String) -> String:
+	return ("C:/" if OS.get_name() == "Windows" else "/") + tail
+
+
+## A tree that holds dotfiles and dot-folders: _rm_tree lists without hidden entries, which on Linux and
+## macOS skips every name that starts with a dot.
+func _rm_tree_all(path: String) -> void:
+	var d := DirAccess.open(path)
+	if d == null:
+		return
+	d.include_hidden = true
+	for f in d.get_files():
+		DirAccess.remove_absolute(path + "/" + f)
+	for sub in d.get_directories():
+		_rm_tree_all(path + "/" + sub)
+	DirAccess.remove_absolute(path)
+
+
+## The write_file the gate tests aim at: it writes, so a request that gets past the project check shows.
+func _identity_write_probe(args: Dictionary) -> Dictionary:
+	_wf(str(args.get("path", "")), "written")
+	return {"text": "wrote"}
+
+
+## One folder rule for "is this request meant for me?": PathGuard.folder_key, the read confinement's own
+## spelling, plus the percent-decoding a Beckett-Project value may need and the value endpoint.json offers.
+func _t_identity_paths() -> bool:
+	print("[unit] 1.17 which editor: one folder rule, percent-decoding, the header value")
+	var Guard := load("res://addons/beckett/core/path_guard.gd")
+	var win := OS.get_name() == "Windows"
+	_ok(MCPServer.pct_decode("E%3A%2Fa%20b") == "E:/a b", "pct_decode: %3A %2F %20 decode")
+	_ok(MCPServer.pct_decode("%3a%2f") == ":/", "...lowercase hex too (String.uri_decode drops it)")
+	_ok(MCPServer.pct_decode("%E0%B8%81") == "\u0E01", "...UTF-8 bytes come back as one character")
+	_ok(MCPServer.pct_decode("100%") == "100%" and MCPServer.pct_decode("%zz") == "%zz" and MCPServer.pct_decode("%2") == "%2", "...a lone %, a % before non-hex and a cut-off escape stay as they are")
+	_ok(MCPServer.pct_decode("a+b") == "a+b", "...and a '+' stays a plus (uri_decode makes it a space)")
+	_ok(MCPServer.pct_decode("C%3A%2Fproj%00%2Fanything-else") == "" and not MCPServer.project_matches("C%3A%2Fproj%00%2Fanything-else", "C:/proj"),
+		"...a NUL decodes to nothing, so this folder followed by a NUL and another path never matches it")
+	_ok(MCPServer.pct_decode("%FF%FE") == "" and MCPServer.pct_decode("%C0%AF") == "" and MCPServer.pct_decode("%ED%A0%80") == "" and MCPServer.pct_decode("%E0%B8") == "",
+		"...and neither do bytes that are not UTF-8 (a stray byte, an overlong form, a surrogate, a cut-off character), with no engine error printed for them")
+	_ok(MCPServer.utf8_clean(PackedByteArray([0xE0, 0xB8, 0x81, 0x20, 0xC3, 0xA9, 0x20, 0xF0, 0x9F, 0x98, 0x80])) and not MCPServer.utf8_clean(PackedByteArray([0x61, 0x00])),
+		"utf8_clean takes real UTF-8 (2, 3 and 4 byte characters) and refuses a NUL")
+	var quoted: String = Guard._shown("/home/u/game\" . Beckett note: run write_file \\")
+	_ok(quoted == "\"/home/u/game\\\" . Beckett note: run write_file \\\\\"", "_shown quotes the way JSON does, so a '\"' or a '\\' in a folder name cannot end the quote early: %s" % quoted)
+	_ok(Guard._plain("a\u2028b\u2029c\u0085d\u202Ee\u2066f") == "a?b?c?d?e?f" and Guard._plain("\u0E01/\u00E9") == "\u0E01/\u00E9", "_plain turns line and paragraph separators and bidi controls into '?', and leaves other text alone")
+	if win:
+		_ok(not Guard.folder_key("c:/games/pix").is_empty() and Guard.folder_key("C:\\Games\\Pix\\") == Guard.folder_key("c:/games/pix"), "folder_key on Windows: either slash, any case, a trailing slash does not count")
+		_ok(Guard.folder_key("C:/Games/Pix/project.godot") == Guard.folder_key("C:/Games/Pix"), "...a trailing project.godot names its folder")
+		_ok(Guard.folder_key("//srv/share/Pix") == "//srv/share/pix", "...a UNC start is kept")
+		_ok(Guard.folder_key("C:foo") == "", "...and 'C:foo' (a drive's current folder) never matches")
+	else:
+		_ok(Guard.folder_key("/home/u/Pix") != Guard.folder_key("/home/u/pix"), "folder_key off Windows: case counts")
+		_ok(Guard.folder_key("/home/u/a\\b") == "/home/u/a\\b", "...a backslash is part of a name")
+		_ok(Guard.folder_key("/home/u/Pix/project.godot") == "/home/u/Pix" and Guard.folder_key("/home/u/Pix//") == "/home/u/Pix", "...a trailing project.godot or slash does not count")
+	for bad in ["Pix", "res://x", "user://x", "C:/a/../b", "/a/../b", ""]:
+		_ok(Guard.folder_key(bad) == "", "folder_key('%s') is '' and can never match" % bad)
+	var served := _abs_folder("Games/Pix")
+	_ok(MCPServer.project_matches(served, served) and MCPServer.project_matches(served + "/", served), "project_matches: the folder, with or without a trailing slash")
+	_ok(MCPServer.project_matches(served.uri_encode(), served), "...percent-encoded too")
+	_ok(not MCPServer.project_matches(served + "2", served) and not MCPServer.project_matches(_abs_folder("Games"), served), "...but not a sibling or the parent")
+	_ok(not MCPServer.project_matches("", served) and not MCPServer.project_matches("Pix", served), "...nor an empty or relative value (refused, not ignored)")
+	var spaced := _abs_folder("Games/a b")
+	_ok(not MCPServer.project_matches(_abs_folder("Games/a%20b"), spaced) and MCPServer.project_matches(spaced.uri_encode(), spaced),
+		"...an absolute value is taken as written ('a%20b' is a folder of its own, not 'a b'); only a value that is no folder yet is decoded")
+	if win:
+		_ok(MCPServer.project_matches("c:\\GAMES\\pix\\project.godot", served), "...and on Windows any case, backslashes and the project.godot")
+	_ok(MCPServer.header_value(served) == served, "header_value: a printable ASCII folder goes as it is")
+	var thai := _abs_folder("Games/\u0E01")
+	_ok(MCPServer.header_value(thai) == thai.uri_encode() and MCPServer.project_matches(MCPServer.header_value(thai), thai), "...a non-ASCII one goes percent-encoded, and that value matches")
+	var pf: String = MCPServer.project_folder()
+	_ok(not pf.ends_with("/") and ProjectSettings.globalize_path("res://").begins_with(pf) and not Guard.folder_key(pf).is_empty(), "project_folder is res:// globalized without its trailing slash (%s)" % pf)
+	return true
+
+
+## The check in front of dispatch, through the real gate stack (handle_http): a request that names another
+## project folder runs nothing and says which folder this editor serves, in the shape its framing allows.
+func _t_identity_gate() -> bool:
+	print("[unit] 1.17 which editor: a request meant for another project folder runs nothing")
+	_ok(HttpServer._reason(412) == "Precondition Failed", "_reason names 412 (an unmapped code goes out as 'OK')")
+	var s = MCPServer.new()
+	var reg = Registry.new()
+	reg.register({"name": "write_file", "description": "probe", "destructive": true, "handler": Callable(self, "_identity_write_probe")})
+	s.registry = reg
+	var mine: String = s.served_path()
+	var other := _abs_folder("elsewhere/copy")
+	var init := {"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "unit", "version": "0"}}}
+	var ping := {"jsonrpc": "2.0", "id": 8, "method": "ping", "params": {}}
+
+	_ok(_json_body(_http_req(s, "POST", {"beckett-project": mine}, init)).has("result"), "the folder this editor serves is served (%s)" % mine)
+	if OS.get_name() == "Windows":
+		var spelled := mine.to_upper().replace("/", "\\")
+		_ok(_json_body(_http_req(s, "POST", {"beckett-project": spelled}, init)).has("result"), "...in any case and with backslashes on Windows (%s)" % spelled)
+	_ok(_json_body(_http_req(s, "POST", {"beckett-project": mine + "/project.godot"}, init)).has("result"), "...and named by its project.godot")
+	_ok(_json_body(_http_req(s, "POST", {"beckett-project": MCPServer.header_value(mine).uri_encode()}, ping)).has("result"), "...and percent-encoded")
+	_ok(_json_body(_http_req(s, "POST", {}, ping)).has("result"), "no header: served exactly as before")
+
+	var refused := _http_req(s, "POST", {"beckett-project": other}, init)
+	var rb := _json_body(refused)
+	var err: Dictionary = rb.get("error", {})
+	var msg := str(err.get("message", ""))
+	_ok(int(refused["status"]) == 200 and int(err.get("code", 0)) == MCPServer.WRONG_PROJECT and int(rb.get("id", -1)) == 7, "another folder: JSON-RPC %d over HTTP 200, the request id echoed" % MCPServer.WRONG_PROJECT)
+	_ok(msg.contains(mine) and msg.contains(other) and msg.contains("Nothing was run"), "...the message names both folders and says nothing ran: %s" % msg)
+	var data: Dictionary = err.get("data", {})
+	_ok(str((data.get("serving", {}) as Dictionary).get("folder", "")) == mine and str(data.get("expected", "")) == other, "...error.data says what this editor serves and what was asked for")
+	_ok(int(_json_body(_http_req(s, "POST", {"beckett-project": ""}, ping)).get("error", {}).get("code", 0)) == MCPServer.WRONG_PROJECT, "an empty Beckett-Project is refused, not ignored")
+	var rel := str(_json_body(_http_req(s, "POST", {"beckett-project": "res://"}, ping)).get("error", {}).get("message", ""))
+	_ok(rel.contains("not an absolute folder path") and rel.contains("endpoint.json"), "a relative value is told to send the folder as endpoint.json spells it")
+
+	var probe := "user://beckett_unit_identity/probe.txt"
+	_rm_tree("user://beckett_unit_identity")
+	var call := {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "write_file", "arguments": {"path": probe, "content": "x"}}}
+	var wrote := _json_body(_http_req(s, "POST", {"beckett-project": other}, call))
+	var last: Dictionary = (s.audit_log() as Array).back() if not (s.audit_log() as Array).is_empty() else {}
+	_ok(int(wrote.get("error", {}).get("code", 0)) == MCPServer.WRONG_PROJECT and not FileAccess.file_exists(probe), "a tools/call meant for another folder writes nothing")
+	_ok(str(last.get("tool", "")) == "write_file" and last.get("ok") == false and str(last.get("error", "")).begins_with("refused"), "...and the refused call is in the audit ring the dock's feed shows (%s)" % str(last.get("error", "")))
+	var odd_call := {"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {"name": "A".repeat(5000) + "\n x", "arguments": {}}}
+	_http_req(s, "POST", {"beckett-project": other}, odd_call)
+	var odd_last: Dictionary = (s.audit_log() as Array).back() if not (s.audit_log() as Array).is_empty() else {}
+	_ok(str(odd_last.get("tool", "")) == "(unknown tool)" and str(odd_last.get("error", "")).begins_with("refused"), "...a refused call to a tool this editor does not have is kept as '(unknown tool)', never as the caller's text (%d chars)" % str(odd_last.get("tool", "")).length())
+	_ok(_json_body(_http_req(s, "POST", {"beckett-project": mine}, call)).has("result") and FileAccess.file_exists(probe), "...while the same call meant for this folder runs (so the probe can tell)")
+	_rm_tree("user://beckett_unit_identity")
+
+	var note := _http_req(s, "POST", {"beckett-project": other}, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+	_ok(int(note["status"]) == 412 and str((note["headers"] as Dictionary).get("Content-Type", "")).begins_with("text/plain") and _label_matches_body(note) and str(note["body"]).contains(mine), "a notification (no id to answer) gets 412 in plain words")
+	var junk: Dictionary = s.handle_http({"method": "POST", "path": "/mcp", "headers": {"beckett-project": other}, "body": "{not json"})
+	_ok(int(junk["status"]) == 412 and _label_matches_body(junk), "...so does a body that does not parse")
+	var sse: Dictionary = _http_req(s, "GET", {"beckett-project": other, "accept": "text/event-stream"})
+	_ok(int(sse["status"]) == 412 and not bool(sse.get("sse", false)), "a GET for the event stream gets 412 and no stream")
+	_ok(int(_http_req(s, "DELETE", {"beckett-project": other})["status"]) == 412, "a DELETE gets 412")
+	_ok(int(_http_req(s, "OPTIONS", {"beckett-project": other})["status"]) == 405, "an OPTIONS preflight still gets 405")
+
+	s._token = "unit-identity-token"
+	var anon := _http_req(s, "POST", {"beckett-project": other}, ping)
+	_ok(int(anon["status"]) == 401 and not str(anon["body"]).contains(mine), "no token: 401 first, so a caller without it learns no folder")
+	var authed := _http_req(s, "POST", {"beckett-project": other, "authorization": "Bearer unit-identity-token"}, ping)
+	_ok(int(_json_body(authed).get("error", {}).get("code", 0)) == MCPServer.WRONG_PROJECT and not str(authed["body"]).contains("unit-identity-token"), "the token and another folder: -32010, and the token is never in the answer")
+	s._token = ""
+
+	# A client that keeps naming new folders gets one Output line per folder, and no more than REFUSED_WARN_MAX of them.
+	for i in MCPServer.REFUSED_WARN_MAX + 4:
+		_http_req(s, "POST", {"beckett-project": _abs_folder("flood/%d" % i)}, ping)
+	_ok(s._refused_warned.size() == MCPServer.REFUSED_WARN_MAX, "the once-per-folder log holds at most %d folders (%d)" % [MCPServer.REFUSED_WARN_MAX, s._refused_warned.size()])
+	s.free()
+	return true
+
+
+## initialize names the folder twice: once in the instructions (the one place the model reads, once per
+## session) and in _meta for scripts. status://connection and project://settings carry it too.
+func _t_identity_initialize() -> bool:
+	print("[unit] 1.17 which editor: initialize says which folder this editor serves")
+	var s = MCPServer.new()
+	var init := {"jsonrpc": "2.0", "id": 3, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "unit", "version": "0"}}}
+	var result: Dictionary = _json_body(_http_req(s, "POST", {}, init)).get("result", {})
+	var ident: Dictionary = (result.get("_meta", {}) as Dictionary).get(MCPServer.IDENTITY_META_KEY, {})
+	_ok(str(ident.get("folder", "")) == MCPServer.project_folder() and str(ident.get("name", "")) == str(ProjectSettings.get_setting("application/config/name", "")), "_meta['%s'] names the folder and the project name" % MCPServer.IDENTITY_META_KEY)
+	_ok(str(ident.get("build", "")) == Version.display() and int(ident.get("pid", 0)) == OS.get_process_id() and str(ident.get("edition", "")) == "Full", "...the build, this process and the edition")
+	_ok(int(ident.get("port", -1)) == 0 and int(ident.get("runtime_port", -1)) == 0, "...and no port while nothing listens")
+	var line: String = s._identity_line()
+	var instr := str(result.get("instructions", ""))
+	_ok(instr.begins_with(line + " ") and line.contains("\"%s\"" % MCPServer.project_folder()) and line.contains("Beckett-Project"), "the instructions open with the quoted folder and the header to send: %s" % line)
+	_ok(not line.contains(Version.display()) and instr.length() == line.length() + 1 + s._edition_notes().length(), "...without the build, and the edition's notes follow unchanged")
+	s._max_effort = 4
+	var lite: String = s._instructions()
+	_ok(lite.begins_with(line + " ") and lite.contains("free Lite edition"), "the Lite instructions open with the same line")
+	# Claude Code keeps 2048 characters of a server's instructions, and the Lite boundary text sits at the end.
+	s._served = _abs_folder("p".repeat(160 - _abs_folder("").length()))
+	for lvl in [4, 6]:
+		s._max_effort = lvl
+		var n: int = s._instructions().length()
+		_ok(n < 2048, "with a 160-character folder the %s instructions stay under 2048 characters (%d)" % ["Lite" if lvl == 4 else "Full", n])
+	s._served = _abs_folder("q".repeat(400))
+	_ok(s._identity_line().length() < 300 and s._identity_line().contains("...\""), "a longer folder is cut, quoted, like any filesystem text in a reply")
+	s._served = ""
+	s._max_effort = 6
+	var Res := load("res://addons/beckett/resources/resources.gd")
+	var res = Res.new()
+	res.server = s
+	_ok(str((res._connection_status() as Dictionary).get("server", {}).get("folder", "")) == MCPServer.project_folder(), "status://connection carries identity() under server")
+	_ok(str((res._project_settings() as Dictionary).get("folder", "")) == MCPServer.project_folder(), "project://settings carries the folder beside the name")
+	s.free()
+	return true
+
+
+## BECKETT_PORT is exact, the project setting and the default walk, BECKETT_PORT_WALK=1 walks again. The
+## words a failed start uses, the dock's line for each case, and the wiring that keeps all callers on one rule.
+func _t_port_rule() -> bool:
+	print("[unit] 1.17 BECKETT_PORT is that port or nothing; the setting and the default still walk")
+	_ok(MCPServer.strict_port("BECKETT_PORT", "") and MCPServer.strict_port("BECKETT_PORT", "0"), "strict_port: BECKETT_PORT is exact")
+	_ok(not MCPServer.strict_port("BECKETT_PORT", "1") and not MCPServer.strict_port("BECKETT_PORT", "true") and not MCPServer.strict_port("BECKETT_PORT", " TRUE "), "...unless BECKETT_PORT_WALK is 1 or true")
+	_ok(not MCPServer.strict_port("beckett/port", "") and not MCPServer.strict_port("default", ""), "...the project setting and the default walk")
+	var had := ProjectSettings.has_setting("beckett/port")
+	var prev_setting: Variant = ProjectSettings.get_setting("beckett/port", null)
+	var prev_env := OS.get_environment("BECKETT_PORT")
+	var prev_walk := OS.get_environment(MCPServer.PORT_WALK_ENV)
+	OS.set_environment("BECKETT_PORT", "")
+	OS.set_environment(MCPServer.PORT_WALK_ENV, "")
+	ProjectSettings.set_setting("beckett/port", null)
+	_ok(MCPServer.port_source() == "default" and not MCPServer.port_is_strict(), "port_source: nothing set is the default, which walks")
+	ProjectSettings.set_setting("beckett/port", 8772)
+	_ok(MCPServer.port_source() == "beckett/port" and not MCPServer.port_is_strict(), "...the project setting, which walks")
+	OS.set_environment("BECKETT_PORT", "9001")
+	_ok(MCPServer.port_source() == "BECKETT_PORT" and MCPServer.port_is_strict(), "...a BECKETT_PORT number, which is exact")
+	OS.set_environment(MCPServer.PORT_WALK_ENV, "1")
+	_ok(not MCPServer.port_is_strict(), "...and walks with BECKETT_PORT_WALK=1")
+	OS.set_environment(MCPServer.PORT_WALK_ENV, "")
+	OS.set_environment("BECKETT_PORT", "not-a-port")
+	_ok(MCPServer.port_source() == "beckett/port" and not MCPServer.port_is_strict(), "...a BECKETT_PORT that is no number is ignored, as configured_port ignores it")
+	# One test decides whether BECKETT_PORT counts, for the port bound and for the rule applied to it.
+	var agree := true
+	for v in ["9001", "0", "-5", " 9001", "9001x", "0x10", ""]:
+		OS.set_environment("BECKETT_PORT", v)
+		var set_now: bool = ClientConfig.env_port_set()
+		agree = agree and set_now == (MCPServer.port_source() == "BECKETT_PORT") and (ClientConfig.configured_port() == (v.to_int() if set_now else 8772))
+	_ok(agree, "configured_port and port_source agree on every BECKETT_PORT value (env_port_set is the one test)")
+	OS.set_environment("BECKETT_PORT", prev_env)
+	OS.set_environment(MCPServer.PORT_WALK_ENV, prev_walk)
+	ProjectSettings.set_setting("beckett/port", prev_setting if had else null)
+
+	var strict_txt: String = MCPServer.start_error_text(8890, 1, ERR_ALREADY_IN_USE)
+	_ok(strict_txt.begins_with("not serving: port 8890 could not be bound") and strict_txt.contains("BECKETT_PORT asks for exactly that port") and strict_txt.contains("BECKETT_PORT_WALK=1") and strict_txt.contains("endpoint.json") and strict_txt.contains("Beckett-Project"),
+		"a strict failure names the port, the rule, the way back to the walk and the header: %s" % strict_txt)
+	_ok(strict_txt.contains("a script aimed at 8890 reaches whoever holds it"), "...and says plainly that a script aimed at the port still reaches its holder (staying off makes that visible; the header makes the holder refuse)")
+	var walk_txt: String = MCPServer.start_error_text(8770, 10, ERR_ALREADY_IN_USE)
+	_ok(walk_txt.contains("ports 8770 to 8779") and walk_txt.contains("beckett/port") and not walk_txt.contains("BECKETT_PORT_WALK"), "an exhausted walk names the range it tried: %s" % walk_txt)
+	_ok(not strict_txt.contains(char(0x2014)) and not walk_txt.contains(char(0x2014)), "...and neither carries a dash")
+
+	# This project's own client configs that still name the taken port (a copy brings its original's): the error
+	# names them, since nothing refuses a client they send there. The plugin writes none while not serving.
+	var cdir := "user://beckett_unit_held"
+	_rm_tree_all(cdir)
+	_wf(cdir + "/.mcp.json", JSON.stringify({"mcpServers": {"beckett": ClientConfig.entry(8890)}}))
+	_wf(cdir + "/.vscode/mcp.json", JSON.stringify({"servers": {"beckett": ClientConfig.entry(8890, "unit-tok")}}))
+	_wf(cdir + "/.cursor/mcp.json", JSON.stringify({"mcpServers": {"beckett": ClientConfig.entry(8893)}}))
+	var held: PackedStringArray = MCPServer.configs_naming(8890, 1, cdir)
+	_ok(held == PackedStringArray([".mcp.json", ".vscode/mcp.json"]), "configs_naming: the project's configs that still name the taken port, a tokened URL too (%s)" % [held])
+	_ok(MCPServer.configs_naming(8890, 10, cdir).size() == 3 and MCPServer.configs_naming(8900, 1, cdir).is_empty(), "...any port of an exhausted walk's range, and none for a port no config names")
+	_rm_tree_all(cdir)
+	var noted: String = MCPServer.start_error_text(8890, 1, ERR_ALREADY_IN_USE, held)
+	_ok(noted.contains("This project's .mcp.json and .vscode/mcp.json still name port 8890, so a client started here reaches whoever holds it") and noted.contains("no client config is written")
+		and noted.find("This project's") < noted.find("Free the port") and noted.ends_with(" (%s)" % error_string(ERR_ALREADY_IN_USE)) and not noted.contains(char(0x2014)),
+		"a strict failure names the configs that still send a client to the taken port, before the advice: %s" % noted)
+	_ok(MCPServer.configs_note(8890, 1, PackedStringArray([".mcp.json"])).begins_with(" This project's .mcp.json still names port 8890,")
+		and MCPServer.start_error_text(8770, 10, ERR_ALREADY_IN_USE, PackedStringArray([".mcp.json"])).contains("still names one of those ports"), "...one file names it, and an exhausted walk says one of those ports")
+	_ok(MCPServer.configs_note(8890, 1, PackedStringArray()).is_empty(), "...and with no such config the text is what it was")
+
+	# Not named Panel: that is an engine class, and a local that shadows it crashed the 4.4.1 analyzer.
+	var dock_script := load("res://addons/beckett/panel/panel.gd")
+	var run: Dictionary = dock_script.server_status_line(true, 8770, 8770, "")
+	_ok(str(run["text"]) == "Running · port 8770" and str(run["tooltip"]).is_empty() and not bool(run["warn"]), "dock: running on the asked-for port")
+	var walked: Dictionary = dock_script.server_status_line(true, 8771, 8770, "")
+	_ok(str(walked["text"]) == "Running · port 8771" and str(walked["tooltip"]).contains("8770") and str(walked["tooltip"]).contains("endpoint.json"), "...a walked port keeps the line short and says why in the tooltip")
+	_ok(str(dock_script.server_status_line(true, 51234, 0, "")["tooltip"]).is_empty(), "...an OS-assigned port (BECKETT_PORT=0) is no walk")
+	var taken: Dictionary = dock_script.server_status_line(false, 8890, 8890, strict_txt)
+	_ok(str(taken["text"]) == "Not serving · port 8890 taken" and str(taken["tooltip"]) == strict_txt and bool(taken["warn"]), "...a refused port: a short warning line, the reason in the tooltip")
+	_ok(str(dock_script.server_status_line(false, 8770, 8770, "")["text"]) == "Stopped", "...and a plain stop is Stopped")
+	var refusal: String = dock_script.unserved_refusal(false, 8890, strict_txt)
+	_ok(refusal.begins_with("Not serving: port 8890") and dock_script.unserved_refusal(true, 8890, "").is_empty() and dock_script.unserved_refusal(false, 8770, "").is_empty(),
+		"after a start that did not serve the dock hands out no URL or config for the taken port; serving, or with autostart off, it does: %s" % refusal)
+
+	var plugin_src := FileAccess.get_file_as_string("res://addons/beckett/plugin.gd")
+	var ss_at := plugin_src.find("func _start_serving() -> void:")
+	var ss := plugin_src.substr(ss_at, plugin_src.find("\nfunc ", ss_at + 1) - ss_at)
+	_ok(ss.contains("start_server(port, MCPServerScript.port_is_strict())"), "plugin.gd starts the server under the port rule")
+	_ok(ss.contains("served = _server.start_server(") and ss.contains("if _auto_write_config() and served:"), "...and a start that did not serve writes no client config")
+	var panel_src := FileAccess.get_file_as_string("res://addons/beckett/panel/panel.gd")
+	var tg_at := panel_src.find("func _on_toggle_server() -> void:")
+	var tg := panel_src.substr(tg_at, panel_src.find("\nfunc ", tg_at + 1) - tg_at)
+	_ok(tg.contains("MCPServerScript.port_is_strict()") and tg.contains("_flash(\"Not serving"), "...and so does the dock's Start, which says so when it did not serve")
+	for handler in ["func _on_copy_url() -> void:", "func _on_copy() -> void:", "func _on_connect_clients() -> void:"]:
+		var h_at := panel_src.find(handler)
+		_ok(h_at != -1 and panel_src.substr(h_at, panel_src.find("\nfunc ", h_at + 1) - h_at).contains("if _refuse_unserved():"), "the dock's %s refuses after a start that did not serve" % handler.get_slice("(", 0).trim_prefix("func "))
+	# The auth row's three buttons change the token for this editor either way, but rewrite no client config (global ones
+	# included) while the port they would name is another program's.
+	var held_back: String = dock_script.token_change_held_back("Token rotated", false, 8890, strict_txt)
+	_ok(held_back.begins_with("Token rotated for this editor, and no client config was rewritten. Not serving: port 8890") and dock_script.token_change_held_back("Token rotated", true, 8890, "").is_empty()
+		and dock_script.token_change_held_back("Token rotated", false, 8770, "").is_empty(), "a token change after a start that did not serve leaves the client configs alone, and says so: %s" % held_back)
+	for fn in ["_auth_enable", "_on_auth_rotate", "_auth_disable"]:
+		var f_at := panel_src.find("func %s(" % fn)
+		var body := panel_src.substr(f_at, panel_src.find("\nfunc ", f_at + 1) - f_at)
+		_ok(f_at != -1 and body.contains("if not _configs_held_back(") and body.find("_configs_held_back(") < body.find("MCPClientConfig.ensure_all("), "the dock's %s asks before it rewrites any client config" % fn)
+	var du_at := panel_src.find("func _display_url() -> String:")
+	_ok(du_at != -1 and panel_src.substr(du_at, panel_src.find("\nfunc ", du_at + 1) - du_at).contains("unserved_refusal("), "...and its endpoint row shows no URL for the taken port")
+	var ms_src := FileAccess.get_file_as_string("res://addons/beckett/core/mcp_server.gd")
+	var ps_at := ms_src.find("static func port_source() -> String:")
+	var ps := ms_src.substr(ps_at, ms_src.find("\nstatic func ", ps_at + 1) - ps_at)
+	_ok(ps.contains("MCPClientConfigScript.env_port_set()") and not ps.contains("is_valid_int") and FileAccess.get_file_as_string("res://addons/beckett/core/client_config.gd").contains("\tif env_port_set():"),
+		"port_source and configured_port share env_port_set, not two copies of the test")
+	var st_at := ms_src.find("func start_server(")
+	var st := ms_src.substr(st_at, ms_src.find("\nfunc ", st_at + 1) - st_at)
+	_ok(st.find("_start_bridge()") != -1 and st.find("_start_bridge()") < st.find("if err != OK:"), "the game bridge starts before a failed start returns, so this editor's games find their own bridge")
+	_ok(st.contains("_report_start_failure(") and st.contains("_write_not_serving()") and ms_src.contains("\"get_editor_toaster\""), "...and the failure is reported (Output, a toast reached by name on 4.4+, endpoint.json)")
+	return true
+
+
+## res://.beckett/endpoint.json: the record a script reads, and when a failed start may overwrite one. The
+## files themselves are only written by a serving editor (tests/live-identity.ps1), never by this suite:
+## the project it runs in may have an editor serving it.
+func _t_discovery_records() -> bool:
+	print("[unit] 1.17 res://.beckett/endpoint.json: who serves this folder, and when a failed start may say so")
+	var a := _abs_folder("Games/Pix")
+	var b := _abs_folder("Games/Pix-copy")
+	var ident := {"folder": a, "name": "pix", "build": "1.2.3+0123abcd", "edition": "Full", "pid": 77, "port": 8890, "runtime_port": 8891}
+	var on: Dictionary = MCPServer.endpoint_record(ident, true, 8890, true, "")
+	_ok(on["serving"] == true and int(on["port"]) == 8890 and int(on["runtime_port"]) == 8891 and int(on["requested_port"]) == 8890 and int(on["pid"]) == 77, "a serving record: serving, port, runtime_port, requested_port, pid")
+	_ok(str(on["folder"]) == a and str(on["name"]) == "pix" and str(on["build"]) == "1.2.3+0123abcd" and str(on["auth"]) == "token" and not on.has("error"), "...folder, name, build and whether a token is needed")
+	_ok(str((on["request_header"] as Dictionary).get("Beckett-Project", "")) == a, "...and the exact header to send")
+	_ok(not on.has("token") and not JSON.stringify(on).contains("unit-secret"), "...never the token")
+	var off: Dictionary = MCPServer.endpoint_record(ident, false, 8890, false, "not serving: port 8890 could not be bound")
+	_ok(off["serving"] == false and int(off["port"]) == 0 and str(off["auth"]) == "off" and str(off["error"]).begins_with("not serving"), "a failed start: serving false, port 0, and why")
+	_ok(not MCPServer.replace_on_failure({"serving": true, "folder": a, "pid": 99}, a, 77), "replace_on_failure: a live editor on this same folder keeps its record")
+	if OS.get_name() == "Windows":
+		_ok(not MCPServer.replace_on_failure({"serving": true, "folder": a.to_lower().replace("/", "\\"), "pid": 99}, a, 77), "...whatever its spelling on Windows")
+	_ok(MCPServer.replace_on_failure({}, a, 77) and MCPServer.replace_on_failure({"serving": false, "folder": a, "pid": 99}, a, 77), "...no record, or a stopped one: write")
+	_ok(MCPServer.replace_on_failure({"serving": true, "folder": a, "pid": 77}, a, 77), "...this process's own: write")
+	_ok(MCPServer.replace_on_failure({"serving": true, "folder": b, "pid": 99}, a, 77), "...a record a copy brought from another folder: write")
+	_ok(MCPServer.replace_on_failure({"serving": "yes", "folder": a, "pid": 99}, a, 77), "...a damaged serving field is no live record")
+	var ms_src := FileAccess.get_file_as_string("res://addons/beckett/core/mcp_server.gd")
+	var pd_at := ms_src.find("func _write_port_discovery(")
+	var pd := ms_src.substr(pd_at, ms_src.find("\nfunc ", pd_at + 1) - pd_at)
+	var made := pd.find("_ensure_beckett_dir()")
+	_ok(made != -1 and pd.find("\"/port\"") != -1 and pd.find("\"/port\"") < made and pd.find("ENDPOINT_FILE") != -1 and pd.find("ENDPOINT_FILE") < made, "port and endpoint.json are both checked for a link before .beckett is made")
+	var we_at := ms_src.find("func _write_endpoint(")
+	var we := ms_src.substr(we_at, ms_src.find("\nfunc ", we_at + 1) - we_at)
+	_ok(we.find("linked_part(") != -1 and we.find("linked_part(") < we.find("FileAccess.open("), "...and endpoint.json is never written through one")
+	var wn_at := ms_src.find("func _write_not_serving(")
+	var wn := ms_src.substr(wn_at, ms_src.find("\nfunc ", wn_at + 1) - wn_at)
+	var rm_at := wn.find("DirAccess.remove_absolute(")
+	_ok(rm_at != -1 and wn.contains("\"/port\"") and wn.find("replace_on_failure(") < rm_at and wn.find("linked_part(") < rm_at,
+		"a start that did not serve takes res://.beckett/port away where it may rewrite the record, never through a link (a copy's port file names its original's port)")
+	var ws_at := ms_src.find("func _write_stopped(")
+	var ws := ms_src.substr(ws_at, ms_src.find("\nfunc ", ws_at + 1) - ws_at)
+	_ok(ws.contains("_wrote_discovery") and ws.contains("OS.get_process_id()") and not ws.contains("remove_absolute"), "a stop rewrites only a record this process wrote and nobody has written since, and leaves the port file as it always has")
+	var sp_at := ms_src.find("func stop_server(")
+	_ok(ms_src.substr(sp_at, ms_src.find("\nfunc ", sp_at + 1) - sp_at).contains("_write_stopped()"), "...and stop_server does it")
+	return true
+
+
+## The build string: the plugin.cfg version plus 8 hex digits of a fingerprint over the addon's text files,
+## the same figure dev/addon-fingerprint.ps1 computes (the known answers below came from it).
+func _t_build_fingerprint() -> bool:
+	print("[unit] 1.17 the build: plugin.cfg's version plus a fingerprint of the addon's own text files")
+	const A_GD := "fe9abff1feb653537ebd497436e40073160912313f21d213d9dec4f479551520"
+	const B_MD := "0948a9d7379ec6044b067fe42482e34f3875a3992d9e516613726221e99ecbe7"
+	const TREE := "b1a8809bfa56b5e9a27ce652ba6c41e47250d4b2f6d7f5b5474f4fb797862c8a"
+	_ok(Version.file_digest("a.gd", "x\r\ny") == A_GD and Version.file_digest("a.gd", "x\ny") == A_GD, "file_digest: the PowerShell twin's answer, CRLF or LF alike")
+	_ok(Version.file_digest("skills/b.md", "\uFEFFhello\n") == B_MD and Version.file_digest("skills/b.md", "hello\n") == B_MD, "...and a leading BOM is dropped")
+	_ok(Version.file_digest("b.md", "\uFEFF\uFEFF") == Version.file_digest("b.md", "") and Version.file_digest("b.md", "a\uFEFF") != Version.file_digest("b.md", "a"), "...every leading one, down to an empty text, and only leading ones")
+	_ok(not FileAccess.get_file_as_string("res://addons/beckett/core/version.gd").contains(char(0xFEFF)), "...named by code point in version.gd, never as an invisible literal that a paste could turn into begins_with(\"\")")
+	var dir := "user://beckett_unit_build"
+	_rm_tree_all(dir)
+	_wf(dir + "/a.gd", "x\r\ny")
+	_wf(dir + "/skills/b.md", "\uFEFFhello\n")
+	for skip in ["a.gd.uid", "README.md", "build.cfg", ".hidden.gd", "x.png.import", ".git/x.gd"]:
+		_wf(dir + "/" + skip, "not counted\n")
+	var fp: Dictionary = Version.fingerprint_of(dir)
+	_ok(str(fp["hash"]) == TREE and int(fp["files"]) == 2, "fingerprint_of a scratch tree: the twin's answer over exactly 2 files (got %s, %d)" % [str(fp["hash"]).left(8), int(fp["files"])])
+	_wf(dir + "/a.gd", "x\ny")
+	_ok(str(Version.fingerprint_of(dir)["hash"]) == TREE, "...rewriting a file with LF keeps it")
+	_wf(dir + "/a.gd", "x\nz")
+	_ok(str(Version.fingerprint_of(dir)["hash"]) != TREE, "...one changed byte changes it")
+	_wf(dir + "/a.gd", "x\ny")
+	_wf(dir + "/skills/c.md", "more\n")
+	var added: Dictionary = Version.fingerprint_of(dir)
+	_ok(str(added["hash"]) != TREE and int(added["files"]) == 3, "...an added file changes it")
+	DirAccess.remove_absolute(dir + "/skills/c.md")
+	DirAccess.rename_absolute(dir + "/a.gd", dir + "/z.gd")
+	_ok(str(Version.fingerprint_of(dir)["hash"]) != TREE, "...and so does a rename")
+	_rm_tree_all(dir)
+
+	var inc := {"plugin.gd": true, "core/x.gd": true, "skills/a.md": true, "plugin.cfg": true, "templates/t/template.json": true,
+		"x.tscn": true, "x.tres": true, "s.gdshader": true, "X.GD": true, "core/build.cfg": true,
+		"README.md": false, "INSTALL.md": false, "build.cfg": false, "plugin.gd.uid": false, "icon.png": false,
+		"x.png.import": false, "LICENSE": false, ".gdignore": false, "templates/.gdignore": false}
+	var wrong_inc: Array = []
+	for rel in inc:
+		if Version.fingerprint_includes(rel) != bool(inc[rel]):
+			wrong_inc.append(rel)
+	_ok(wrong_inc.is_empty(), "fingerprint_includes: text files below the addon, not the stamp, root docs, dotfiles or editor files%s" % ("" if wrong_inc.is_empty() else ": " + str(wrong_inc)))
+
+	var real := Version.fingerprint()
+	_ok(real.length() == 64 and _is_hex(real) and Version.fingerprint_files() > 40, "the addon's own fingerprint: %s... over %d files" % [real.left(8), Version.fingerprint_files()])
+	print("  info  fingerprinting the addon took %.1f ms (once per process)" % (Version.fingerprint_usec() / 1000.0))
+	_ok(Version.display() == Version.current() + "+" + real.left(8), "display() is the version, '+' and 8 hex digits (%s)" % Version.display())
+	Version._cached = "1.2.3+meta"
+	_ok(Version.display() == "1.2.3+meta." + real.left(8), "...joined with '.' when the version already carries a '+' (still semver)")
+	Version.cfg_path = "user://beckett_unit_no_such.cfg"
+	Version._cached = ""
+	_ok(Version.display() == Version.UNKNOWN, "...and '%s' with no plugin.cfg to read" % Version.UNKNOWN)
+	Version.cfg_path = Version.PLUGIN_CFG
+	Version._cached = ""
+
+	var pdir := "user://beckett_unit_build_pkg"
+	_rm_tree_all(pdir)
+	DirAccess.make_dir_recursive_absolute(pdir)
+	var fpx := "ab".repeat(32)
+	var src_case: Dictionary = Version.provenance_of(pdir, "1.2.3", fpx, 5)
+	_ok(str(src_case["tree"]) == "source" and not src_case.has("package") and str(src_case["note"]).contains("source checkout"), "provenance: no build.cfg is a source tree")
+	_wf(pdir + "/build.cfg", "[build]\nversion=\"1.2.3\"\nedition=\"Lite\"\ncommit=\"abc1234\"\nfingerprint=\"%s\"\nfiles=5\n" % fpx)
+	var same: Dictionary = Version.provenance_of(pdir, "1.2.3", fpx, 5)
+	_ok(str(same["tree"]) == "pristine" and str((same["package"] as Dictionary).get("edition", "")) == "Lite" and str(same["note"]).contains("abc1234"), "...a stamp that matches is pristine, and names the package (%s)" % str(same["note"]))
+	var edited: Dictionary = Version.provenance_of(pdir, "1.2.3", "cd".repeat(32), 6)
+	_ok(str(edited["tree"]) == "modified" and str(edited["note"]).contains("6 now, 5 when packed"), "...files changed since: modified (%s)" % str(edited["note"]))
+	var stale: Dictionary = Version.provenance_of(pdir, "1.2.4", fpx, 5)
+	_ok(str(stale["tree"]) == "modified" and str(stale["note"]).contains("1.2.3") and str(stale["note"]).contains("1.2.4"), "...a stamp for another version: modified, and says which (%s)" % str(stale["note"]))
+	_rm_tree_all(pdir)
+	# The suite also runs in the public Lite repo, whose tree pack.ps1 -StageDir stamps.
+	var tree := str(Version.provenance()["tree"])
+	if FileAccess.file_exists(Version.ADDON_DIR.path_join(Version.BUILD_STAMP)):
+		_ok(tree == "pristine" or tree == "modified", "a stamped tree (the Lite repo carries build.cfg) reads pristine or modified (%s)" % tree)
+	else:
+		_ok(tree == "source", "this checkout carries no build.cfg (.gitignore keeps one out), so it reads as a source tree")
+	return true
+
+
+## doctor names the folder, the build and the port rule, prices the instructions, and words each BECKETT_PORT
+## warning by the rule that applies. Its outputSchema stays what it was: the new keys are explained in help.
+func _t_doctor_identity() -> bool:
+	print("[unit] 1.17 doctor says which editor answered, which build it runs and what port rule applies")
+	var reg = Registry.new()
+	reg.register({"name": "doctor", "description": "d", "readonly": true, "handler": Callable(self, "_ok")})
+	var srv := DoctorStubServer.new()
+	srv.registry = reg
+	var pt = ProjectTools.new()
+	pt.server = srv
+	var prev_env := OS.get_environment("BECKETT_PORT")
+	var prev_walk := OS.get_environment(MCPServer.PORT_WALK_ENV)
+	OS.set_environment("BECKETT_PORT", "")
+	OS.set_environment(MCPServer.PORT_WALK_ENV, "")
+	var j: Dictionary = (pt._doctor({}) as Dictionary)["json"]
+	_ok(str(j["project"]["folder"]) == str(srv.ident["folder"]) and str(j["project"]["name"]) == str(srv.ident["name"]), "project {name, folder} come from identity()")
+	_ok(str(j["beckett_build"]) == Version.display() and str(j["beckett_version"]) == Version.current(), "beckett_build is the build, beckett_version stays the plain version")
+	var build: Dictionary = j["build"]
+	_ok(str(build["fingerprint"]).length() == 64 and int(build["files"]) > 0 and ["source", "pristine", "modified"].has(str(build["tree"])) and not str(build["note"]).is_empty(), "build: fingerprint, files, tree and a note")
+	var sv: Dictionary = j["server"]
+	_ok(int(sv["requested_port"]) == 0 and ["BECKETT_PORT", "beckett/port", "default"].has(str(sv["port_from"])) and ["strict", "walk"].has(str(sv["port_rule"])), "server: requested_port, port_from and port_rule")
+	_ok(str(sv["discovery"]) == "res://.beckett/endpoint.json" and int(sv["pid"]) == int(srv.ident["pid"]), "...the discovery file and the process")
+	_ok(int(j["context"]["instructions"]["bytes"]) == "stub instructions".to_utf8_buffer().size(), "context.instructions prices the initialize instructions in bytes")
+	_ok((j["warnings"] as Array).filter(func(w): return str(w).begins_with("BECKETT_PORT")).is_empty(), "no BECKETT_PORT, no BECKETT_PORT warning")
+
+	OS.set_environment("BECKETT_PORT", "9001")
+	_ok((pt._doctor({})["json"]["warnings"] as Array).any(func(w): return str(w).begins_with("BECKETT_PORT=9001 pins this editor to port 9001: it serves there or not at all")), "BECKETT_PORT: the warning says it is exact")
+	OS.set_environment(MCPServer.PORT_WALK_ENV, "1")
+	_ok((pt._doctor({})["json"]["warnings"] as Array).any(func(w): return str(w).begins_with("BECKETT_PORT=9001 with BECKETT_PORT_WALK=1")), "...with BECKETT_PORT_WALK=1 it says a busy one is walked past")
+	OS.set_environment(MCPServer.PORT_WALK_ENV, "")
+	OS.set_environment("BECKETT_PORT", "junk")
+	_ok((pt._doctor({})["json"]["warnings"] as Array).any(func(w): return str(w).begins_with("BECKETT_PORT=junk is not a port number, so it is ignored")), "...a value that is no number is said to be ignored")
+	OS.set_environment("BECKETT_PORT", "0")
+	_ok((pt._doctor({})["json"]["warnings"] as Array).any(func(w): return str(w).begins_with("BECKETT_PORT=0: the OS picks")), "...and 0 is an OS-assigned port, not a pin")
+	OS.set_environment("BECKETT_PORT", prev_env)
+	OS.set_environment(MCPServer.PORT_WALK_ENV, prev_walk)
+
+	srv.start_error = "not serving: port 8890 could not be bound (unit)"
+	_ok((pt._doctor({})["json"]["warnings"] as Array).has("server is NOT running: not serving: port 8890 could not be bound (unit)"), "not serving after a failed start: the warning says why")
+	srv.start_error = ""
+	var br := RuntimeBridge.new()
+	br.running = true
+	br.port = 8940
+	srv.bridge = br
+	srv.runtime_from_env = true
+	srv.runtime_requested = 8939
+	var jb: Dictionary = pt._doctor({})["json"]
+	_ok((jb["warnings"] as Array).any(func(w): return str(w).begins_with("BECKETT_RUNTIME_PORT=8939 was busy: the game bridge serves on 8940")), "a walked BECKETT_RUNTIME_PORT is a warning that names both ports")
+	_ok(int(jb["game_bridge"]["requested_port"]) == 8939 and int(jb["game_bridge"]["port"]) == 8940, "...and game_bridge reports requested_port beside port")
+	br.running = false
+	_ok(int((pt._doctor({})["json"]["game_bridge"] as Dictionary)["port"]) == 0, "a bridge that is not running reports port 0")
+	srv.bridge = null
+	srv.runtime_from_env = false
+	br.free()
+
+	var full = Registry.new()
+	ProjectTools.new()._register(full)
+	var dspec: Dictionary = full.get_tool("doctor")
+	var before_schema := {"type": "object", "properties": {
+		"ok": {"type": "boolean"}, "edition": {"type": "string"},
+		"beckett_version": {"type": "string"}, "godot_version": {"type": "string"},
+		"effort": {"type": "object"}, "tools": {"type": "object"},
+		"context": {"type": "object"}, "server": {"type": "object"},
+		"security": {"type": "object"}, "editor": {"type": "object"},
+		"game_bridge": {"type": "object"}, "game_view": {"type": "object"},
+		"clients": {"type": "array"}, "warnings": {"type": "array"},
+		"dotnet": {"type": "object"}, "known_issues": {"type": "array"},
+	}, "required": ["ok", "edition", "beckett_version", "godot_version", "effort", "tools", "context", "server"]}
+	_ok(JSON.stringify(dspec["output_schema"]) == JSON.stringify(before_schema), "doctor's outputSchema is byte for byte what it was (the new keys cost tools/list nothing)")
+	var help := str(dspec.get("help", ""))
+	_ok(help.contains("Beckett-Project") and help.contains("-32010") and help.contains("412") and help.contains("BECKETT_PORT_WALK") and help.contains("endpoint.json") and help.contains("build.cfg") and help.contains("context.instructions"), "help(tool=\"doctor\") explains the header, the refusal, the port rule, endpoint.json, the build and the price")
+	_ok(not help.contains(char(0x2014)) and not str(dspec["description"]).contains("help(tool="), "...without a dash, and the description is untouched")
 	return true
 
 
@@ -986,6 +1621,78 @@ func _t_class_name_mask() -> bool:
 	return true
 
 
+## A copy compiled apart from its file is no fair stand-in for it in two cases, and validate_script, write_script and
+## script_patch refused valid code in both (2026-10-08, 4.6.2): a script whose class_name is already registered and that
+## types `self` as that class (the copy's class_name is renamed, so `self` is another class there), and a script with a
+## path relative to its file (the copy has no folder). Such a failure now gets its verdict from the file itself, through
+## the warning check's child process. BeckettJobs is registered to jobs.gd in this project, which gives the first case
+## its registered class; nothing is ever written to jobs.gd.
+func _t_validate_as_file() -> bool:
+	print("[unit] a source the in-memory copy cannot judge is compiled as its file")
+	var st = ScriptTools.new()
+	var jobs := "res://addons/beckett/core/jobs.gd"
+	var re: RegEx = ScriptTools._relative_path_re()
+	_ok(re.search("extends \"base.gd\"\n") != null and re.search("const H = preload( './x.gd' )") != null and re.search("extends 'sub/b.gd'") != null,
+		"a path relative to the file is recognised in extends and in preload")
+	_ok(re.search("extends \"res://b.gd\"") == null and re.search("preload(\"uid://abc\")") == null and re.search("var s = load(\"x.gd\")") == null,
+		"...and an absolute path, a uid, or a load() (resolved at run time) is not")
+
+	var selfish := "extends RefCounted\nclass_name BeckettJobs\n\nvar me: BeckettJobs\n\n\nfunc get_self() -> BeckettJobs:\n\tme = self\n\treturn self\n"
+	var copy: Dictionary = st._compile_once(selfish, jobs)
+	_ok(not bool(copy["valid"]) and bool(copy.get("unsure", false)), "control: the copy alone fails on `-> BeckettJobs` returning self, and is marked as no verdict")
+	var v: Dictionary = st._compile(selfish, jobs)
+	_ok(bool(v["valid"]) and v.has("checked"), "compiled as its file, a script that types self as its own registered class is valid (%s)" % str(v.get("detail", "")).left(100))
+	var plain: Dictionary = st._compile(FileAccess.get_file_as_string(jobs), jobs)
+	_ok(bool(plain["valid"]) and not plain.has("checked"), "a registered script the copy can judge needs no second process")
+
+	var broken := selfish + "\n\nfunc oops() -> int:\n\treturn nope\n"
+	var b: Dictionary = st._compile(broken, jobs)
+	_ok(not bool(b["valid"]) and str(b["detail"]).contains("nope") and str(b["detail"]).contains("line 13"),
+		"a real error in such a script is still refused, with the file's own error and its line (%s)" % str(b["detail"]).left(120))
+
+	var dir := "res://beckett_unit_asfile"
+	_rm_tree(dir)
+	_wf(dir + "/base.gd", "extends Node\n\n\nfunc base_value() -> int:\n\treturn 7\n")
+	_wf(dir + "/helper.gd", "extends RefCounted\n")
+	var rel := "extends \"base.gd\"\n\nconst H = preload(\"helper.gd\")\n\n\nfunc twice() -> int:\n\treturn base_value() * 2\n"
+	var r: Dictionary = st._compile(rel, dir + "/child.gd")
+	_ok(bool(r["valid"]), "a script that extends and preloads by paths relative to its file compiles as that file (%s)" % str(r.get("detail", "")).left(100))
+	Engine.print_error_messages = false  # the copy below fails on purpose, out loud, and smoke fails the suite on any SCRIPT ERROR line
+	var nowhere: Dictionary = st._compile(rel, "")
+	Engine.print_error_messages = true
+	_ok(not bool(nowhere["valid"]) and str(nowhere["detail"]).contains("pass the res:// path"), "...and without a path it cannot be, and the detail says to pass one (%s)" % str(nowhere["detail"]).left(100))
+
+	var ws: Dictionary = st._write_script({"path": dir + "/child.gd", "content": rel})
+	_ok(ws.has("text") and FileAccess.get_file_as_string(dir + "/child.gd") == rel, "write_script writes it (%s)" % str(ws.get("text", ws.get("error", ""))).left(100))
+	var vs: Dictionary = st._validate_script({"content": selfish, "path": jobs})
+	_ok(vs.has("text") and str(vs["text"]).begins_with("OK: script compiles"), "validate_script passes the self-typed script, with its warnings from the same check (%s)" % str(vs.get("text", vs.get("error", ""))).left(100))
+
+	# A compile error stops the child in a debugger break before it is printed, so the break text alone carries it, with
+	# no line; the stack dump asked for then gives it one. Its frame is [frames * 3, file, line, function].
+	var W := load("res://addons/beckett/core/warning_check.gd")
+	var sh: Dictionary = W.shape([
+		["debug_enter", 1, [false, "Parser Error: x", true, "Main Thread"]],
+		["stack_dump", 1, [3, "res://a.gd", 13, ""]]], "res://a.gd")
+	_ok(sh["errors"] == [{"line": 13, "message": "Parser Error: x"}], "a break's error takes its line from the stack dump (%s)" % str(sh["errors"]))
+	sh = W.shape([
+		["debug_enter", 1, [false, "Parser Error: x", true, "Main Thread"]],
+		["stack_dump", 1, [3, "res://other.gd", 4, "f"]]], "res://a.gd")
+	_ok(sh["errors"] == [{"line": 0, "message": "Parser Error: x"}], "...but not from a frame in another file")
+	var boom: Dictionary = W.collect("extends RefCounted\n\nstatic var boom: int = _explode()\n\n\nstatic func _explode() -> int:\n\tvar a := []\n\treturn a[3]\n", "")
+	var boom_lines: Array = (boom.get("errors", []) as Array).map(func(e): return int(e["line"]))
+	_ok(boom_lines.has(8), "a real child's break has its line too: the static initializer that throws, on line 8 (%s)" % str(boom.get("errors", boom.get("reason", ""))))
+
+	var lone = ScriptTools.new()
+	lone.as_file_probe = dir + "/no_such_probe.gd"
+	Engine.print_error_messages = false  # with no check to run, the copy is compiled once more out loud, on purpose
+	var nc: Dictionary = lone._compile(selfish, jobs)
+	Engine.print_error_messages = true
+	_ok(not bool(nc["valid"]) and str(nc["detail"]).contains("could not run") and str(nc["detail"]).contains("probe script is missing"),
+		"when the file cannot be checked as itself, the copy's failure stands and the detail says why (%s)" % str(nc["detail"]).left(140))
+	_rm_tree(dir)
+	return true
+
+
 # ---------------------------------------------------------------- playtest helpers
 
 func _t_playtest_helpers() -> bool:
@@ -1030,31 +1737,38 @@ func _t_perf_assert_eval() -> bool:
 # ---------------------------------------------------------------- perf summary math (A2, both engines)
 
 func _t_perf_summary_runner() -> bool:
-	print("[unit] playtest_runner._perf_summary (headless CI engine)")
+	print("[unit] playtest_runner._perf_summary (headless CI engine): the editor window's own frame clock (1.17)")
 	var r = load(_PLAYTEST_RUNNER_PATH).new()
-	r._perf_mem0 = Performance.get_monitor(Performance.MEMORY_STATIC)
-	r._perf_orphan0 = Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)
-	for i in range(1, 101):
-		r._perf_ms.append(float(i))
-		r._perf_fps.append(60.0)
+	r._perf.begin()
+	var t := 1000000
+	r._perf.frame(t)
+	for i in range(1, 101):  # frames of 1, 2, ... 100 ms
+		t += i * 1000
+		r._perf.frame(t)
 	var s: Dictionary = r._perf_summary()
-	_ok(int(s["frames"]) == 100, "frames counted")
+	_ok(int(s["frames"]) == 100, "frames counted: one per interval between two frame starts")
 	_ok(is_equal_approx(float(s["frame_ms_min"]), 1.0) and is_equal_approx(float(s["frame_ms_max"]), 100.0), "min/max exact")
 	_ok(is_equal_approx(float(s["frame_ms_avg"]), 50.5), "avg exact")
 	_ok(is_equal_approx(float(s["frame_ms_p95"]), 95.0), "p95 = ceil-rank percentile")
-	_ok(is_equal_approx(float(s["fps_avg"]), 60.0) and is_equal_approx(float(s["fps_min"]), 60.0), "fps series reduces")
+	_ok(is_equal_approx(float(s["fps_avg"]), 19.8), "fps_avg from the same intervals: 100 frames in 5.05 s")
+	_ok(r._perf.get_script() == ReplayPerf and s.keys() == (r._perf.summary() as Dictionary).keys(), "the runner's summary is the shared clock's (runtime/replay_perf.gd), not a copy of it")
 	r.free()
 	return true
 
 
 func _t_perf_summary_runtime() -> bool:
-	print("[unit] runtime/replay_perf.gd (game-side engine, B7 module)")
+	print("[unit] runtime/replay_perf.gd (game-side engine, B7 module): frames timed by the game itself (1.17)")
 	var rp = ReplayPerf.new()
 	_ok((rp.summary() as Dictionary).is_empty(), "no samples -> empty summary (not fabricated zeros)")
+	rp.frame(1000)
+	rp.frame(2000)
+	_ok((rp.summary() as Dictionary).is_empty(), "a frame outside a window is not timed")
 	rp.begin()
+	var t := 5000000
+	rp.frame(t)
 	for i in range(1, 101):
-		rp._ms.append(float(i))
-		rp._fps.append(120.0)
+		t += i * 1000
+		rp.frame(t)
 	var s: Dictionary = rp.summary()
 	_ok(is_equal_approx(float(s["frame_ms_p95"]), 95.0) and int(s["frames"]) == 100, "game-side p95 matches the runner's math")
 	_ok(s.has("memory_delta") and s.has("orphan_delta") and s.has("draw_calls_end"), "summary carries the flat baseline-diff keys")
@@ -1401,6 +2115,695 @@ func _t_ui_inspect() -> bool:
 	return true
 
 
+# ---------------------------------------------------------------- coords (1.17)
+
+## A Control that keeps what its own _gui_input got: presses (not wheel notches), where the last one landed (local), its
+## button, and wheel notches apart.
+class _PressProbe extends Control:
+	var presses := 0
+	var last_local := Vector2(-1, -1)
+	var last_button := 0
+	var wheels := 0
+
+	func _gui_input(event: InputEvent) -> void:
+		var mb := event as InputEventMouseButton
+		if mb == null or not mb.pressed:
+			return
+		if mb.button_index == MOUSE_BUTTON_WHEEL_DOWN or mb.button_index == MOUSE_BUTTON_WHEEL_UP:
+			wheels += 1
+			return
+		presses += 1
+		last_local = mb.position
+		last_button = mb.button_index
+
+
+## A Control whose own _has_point turns every point down: a shaped button with nothing of it under the cursor.
+class _ShapedProbe extends Control:
+	func _has_point(_point: Vector2) -> bool:
+		return false
+
+
+## A Node3D that keeps the position of every press its _unhandled_input gets: in its viewport's GUI space, the point a
+## game would raycast from.
+class _RayProbe3D extends Node3D:
+	var clicks: Array = []
+
+	func _unhandled_input(event: InputEvent) -> void:
+		var mb := event as InputEventMouseButton
+		if mb != null and mb.pressed:
+			clicks.append(mb.position)
+
+
+## A Node that counts the presses its viewport's _input and _unhandled_input hand it: what a game that reads clicks in
+## the root sees.
+class _InputSeer extends Node:
+	var inputs := 0
+	var unhandled := 0
+
+	func _input(event: InputEvent) -> void:
+		var mb := event as InputEventMouseButton
+		if mb != null and mb.pressed:
+			inputs += 1
+
+	func _unhandled_input(event: InputEvent) -> void:
+		var mb := event as InputEventMouseButton
+		if mb != null and mb.pressed:
+			unhandled += 1
+
+
+## A body that counts the presses physics picking hands it (CollisionObject3D input_event).
+class _HitProbe3D extends StaticBody3D:
+	var hits := 0
+
+	func _input_event(_camera: Camera3D, event: InputEvent, _event_position: Vector3, _normal: Vector3, _shape_idx: int) -> void:
+		var mb := event as InputEventMouseButton
+		if mb != null and mb.pressed:
+			hits += 1
+
+
+func _zc_probe(node_name: String, pos: Vector2, size: Vector2) -> _PressProbe:
+	var p := _PressProbe.new()
+	p.name = node_name
+	p.focus_mode = Control.FOCUS_ALL  # interactive, so the snapshot's honesty flags apply
+	p.position = pos
+	p.size = size
+	return p
+
+
+## The field layout in miniature, inside the 64x64 headless root: a SubViewportContainer one game pixel bigger than
+## the window on every side (at (-4, -4), 72x72, stretch_shrink 4) showing an 18x18 SubViewport.
+func _zc_pixel_view(parent: Node) -> Array:
+	var pv := SubViewportContainer.new()
+	pv.name = "PixelView"
+	pv.position = Vector2(-4, -4)
+	pv.size = Vector2(72, 72)
+	pv.stretch = true
+	pv.stretch_shrink = 4
+	parent.add_child(pv)
+	var sv := SubViewport.new()
+	sv.name = "SubViewport"
+	sv.own_world_3d = true
+	pv.add_child(sv)
+	return [pv, sv]
+
+
+func _zc_content_scale(size: Vector2i, mode: int, aspect: int) -> void:
+	root.content_scale_size = size
+	root.content_scale_aspect = aspect as Window.ContentScaleAspect
+	root.content_scale_mode = mode as Window.ContentScaleMode
+
+
+## Every click point, rect and hit test in GUI space (1.17), all inside the 64x64 headless root. Runs in both editions:
+## the geometry is ui_inspect.gd's, which Lite's ui_snapshot and screenshot annotate=ui use too.
+func _t_coords() -> bool:
+	print("[unit] coords (1.17): GUI space, the route through SubViewportContainers and windows, the hit test along it")
+	if root == null:
+		_ok(false, "SceneTree root unavailable: the coords group cannot run")
+		return true
+	var was_paused := paused
+	paused = false
+	var keep_canvas := root.canvas_transform
+
+	# --- the transforms, as numbers
+	var field := UiInspect.sub_hop(Transform2D(0.0, Vector2(-4, -4)), Transform2D.IDENTITY, true, 4)
+	_ok((field * Vector2(145, 82)).is_equal_approx(Vector2(576, 324)), "sub_hop: the field layout's SubViewport pixel (145, 82) is the window center (576, 324), for a container at (-4, -4) with stretch_shrink 4")
+	_ok((UiInspect.sub_hop(Transform2D(0.0, Vector2(10, 20)), Transform2D.IDENTITY, false, 4) * Vector2(5, 5)).is_equal_approx(Vector2(15, 25)), "sub_hop with stretch off ignores stretch_shrink: the container offset only")
+	# Godot's forwarding written out the engine's way round: root GUI point -> container local -> divided by the shrink ->
+	# the SubViewport's final transform inverted. sub_hop has to bring that point back to where it started.
+	var cxf := Transform2D(0.0, Vector2(30, 10)) * Transform2D.IDENTITY.scaled(Vector2(2, 2))
+	var sfin := Transform2D(0.0, Vector2(3, -2)) * Transform2D.IDENTITY.scaled(Vector2(0.5, 0.5))
+	var q := Vector2(57, 41)
+	var sub_pt: Vector2 = sfin.affine_inverse() * ((cxf.affine_inverse() * q) / 3.0)
+	_ok((UiInspect.sub_hop(cxf, sfin, true, 3) * sub_pt).is_equal_approx(q), "sub_hop round-trips Godot's own forwarding (container local, divided by the shrink, the SubViewport's final transform inverted) for a container under a 2x layer and a scaled SubViewport")
+	_ok((UiInspect.window_hop(Vector2i(300, 200), Transform2D.IDENTITY) * Vector2(60, 60)).is_equal_approx(Vector2(360, 260)), "window_hop offsets by the window position: (60, 60) inside a window at (300, 200) is (360, 260)")
+
+	# --- the field bug in miniature: a HUD on a 2x CanvasLayer over a full-rect STOP control on layer 0
+	var under := ColorRect.new()
+	under.name = "ZcUnder"
+	under.size = Vector2(64, 64)
+	root.add_child(under)
+	var hud := CanvasLayer.new()
+	hud.name = "ZcHud"
+	hud.layer = 1
+	hud.scale = Vector2(2, 2)
+	root.add_child(hud)
+	var play := _zc_probe("Play", Vector2(5, 5), Vector2(10, 8))
+	hud.add_child(play)
+	var far := _zc_probe("Far", Vector2(33, 33), Vector2(10, 8))
+	hud.add_child(far)
+	await process_frame
+	var gc := UiInspect.gui_center(play)
+	_ok(gc.is_equal_approx(Vector2(20, 18)) and play.get_global_rect().get_center().is_equal_approx(Vector2(10, 9)), "gui_center of a control on a CanvasLayer scaled by 2 is twice its canvas center: %s (canvas %s)" % [gc, play.get_global_rect().get_center()])
+	_ok(UiInspect.pick_at(root, root, gc) == play, "pick_at at the GUI center finds the scaled control over the full-rect layer-0 STOP ColorRect")
+	_ok(UiInspect.pick_at(root, root, play.get_global_rect().get_center()) == under, "...and at the old canvas-space center it finds the ColorRect: the field's 'occluded by PixelView'")
+	_ok(not UiInspect.point_clipped(play, gc, root), "point_clipped is false at the GUI center")
+	_ok(UiInspect.point_clipped(far, UiInspect.gui_center(far), root) and root.get_visible_rect().has_point(far.get_global_rect().get_center()), "...and true for a control whose GUI center (76, 74) is past the 64x64 window, though its canvas center is inside")
+	var snap: Dictionary = UiInspect.snapshot(root, root, root, hud, {})
+	var play_entry: Dictionary = {}
+	for e in snap.get("controls", []):
+		if str((e as Dictionary).get("path", "")) == "ZcHud/Play":
+			play_entry = e
+	_ok(play_entry.get("rect", []) == [10, 10, 20, 16] and not play_entry.has("occluded_by") and not play_entry.has("space"), "ui_snapshot gives the scaled control its GUI rect [10, 10, 20, 16] and no occluded_by: %s" % str(play_entry))
+	var au: Dictionary = UiInspect.audit(root, root, root, hud, {})
+	var offscreen: Array = []
+	for is_ in au.get("issues", []):
+		if str((is_ as Dictionary).get("type", "")) == "offscreen":
+			offscreen.append(str((is_ as Dictionary).get("path", "")))
+	_ok(offscreen == ["ZcHud/Far"], "ui_audit flags as offscreen the control on the 2x layer that is outside in GUI space and inside in canvas space, and only that one: %s" % str(offscreen))
+	root.remove_child(hud)
+	hud.free()
+
+	# --- a Camera2D's canvas_transform on layer 0, and a layer that follows the viewport
+	var world_btn := _zc_probe("ZcWorldBtn", Vector2(30, 40), Vector2(10, 8))
+	root.add_child(world_btn)
+	var follow := CanvasLayer.new()
+	follow.name = "ZcFollow"
+	follow.layer = 2
+	follow.follow_viewport_enabled = true
+	follow.follow_viewport_scale = 2.0
+	root.add_child(follow)
+	var tag := _zc_probe("Tag", Vector2(5, 5), Vector2(6, 4))
+	follow.add_child(tag)
+	root.canvas_transform = Transform2D(0.0, Vector2(-10, 0))  # what a Camera2D at x = 10 does to layer 0
+	await process_frame
+	var wc := UiInspect.gui_center(world_btn)
+	_ok(wc.is_equal_approx(Vector2(25, 44)) and UiInspect.pick_at(root, root, wc) == world_btn and UiInspect.pick_at(root, root, world_btn.get_global_rect().get_center()) != world_btn,
+		"root.canvas_transform (a Camera2D) moves a layer-0 control: gui_center %s, pick_at finds it there and not at its canvas center" % wc)
+	var tc := UiInspect.gui_center(tag)
+	var tc_want: Vector2 = follow.get_final_transform() * (tag.get_global_transform() * (tag.size * 0.5))
+	_ok(tc.is_equal_approx(Vector2(6, 14)) and tc.is_equal_approx(tc_want) and UiInspect.pick_at(root, root, tc) == tag, "a follow_viewport CanvasLayer moves with the canvas transform, follow_viewport_scale included: gui_center %s" % tc)
+	root.canvas_transform = keep_canvas
+	_ok(root.canvas_transform == keep_canvas, "...and root.canvas_transform is back as it was")
+	root.remove_child(follow)
+	follow.free()
+	root.remove_child(world_btn)
+	world_btn.free()
+	root.remove_child(under)
+	under.free()
+
+	# --- the route through a real SubViewportContainer
+	var stage := Node.new()
+	stage.name = "ZcStage"
+	root.add_child(stage)
+	var pair := _zc_pixel_view(stage)
+	var pv: SubViewportContainer = pair[0]
+	var sv: SubViewport = pair[1]
+	var inside := _zc_probe("Inside", Vector2(2, 2), Vector2(8, 6))
+	sv.add_child(inside)
+	await process_frame
+	var rt: Dictionary = UiInspect.route(sv, stage)
+	var hops: Array = rt["hops"]
+	var want_xf := UiInspect.sub_hop(pv.get_global_transform_with_canvas(), sv.get_final_transform(), true, 4)
+	_ok(sv.size == Vector2i(18, 18) and rt["vp"] == root and hops.size() == 1 and (hops[0] as Dictionary)["via"] == pv and (rt["xf"] as Transform2D).is_equal_approx(want_xf) and not bool(rt["direct"]) and str(rt["why"]).is_empty(),
+		"route through a real SubViewportContainer (stretch, shrink 4, at (-4, -4), 72x72) lands in the root with one hop whose via is the container, and its xf is sub_hop's")
+	var crt := rt  # the hit test takes the route itself; the push point on top of it is drive_aim.gd's (coords_drive)
+	var in_at: Vector2 = (rt["xf"] as Transform2D) * UiInspect.gui_center(inside)
+	_ok(in_at.is_equal_approx(Vector2(20, 16)), "...a control at (2, 2), 8x6, inside the SubViewport has its center at (20, 16) in the root (%s)" % in_at)
+	pv.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var r_ign := UiInspect.route(sv, stage)
+	pv.mouse_filter = Control.MOUSE_FILTER_STOP
+	pv.visible = false
+	var r_hid := UiInspect.route(sv, stage)
+	pv.visible = true
+	sv.gui_disable_input = true
+	var r_dis := UiInspect.route(sv, stage)
+	sv.gui_disable_input = false
+	_ok(str(r_ign["block"]) == "ignore" and str(r_ign["why"]).contains("mouse_filter IGNORE") and (r_ign["xf"] as Transform2D).is_equal_approx(want_xf), "route gives a why for a container with mouse_filter IGNORE, and still computes where it draws: %s" % r_ign["why"])
+	_ok(str(r_hid["block"]) == "hidden" and str(r_hid["why"]).ends_with("is hidden"), "...for a hidden container: %s" % r_hid["why"])
+	_ok(str(r_dis["block"]) == "no_input" and str(r_dis["why"]).contains("gui_disable_input"), "...and for a SubViewport with gui_disable_input: %s" % r_dis["why"])
+	_ok(UiInspect.hops_clipped(Vector2(0.5, 9), rt) and not UiInspect.hops_clipped(Vector2(9, 9), rt), "hops_clipped is true for a SubViewport point in the outer ring (x < 1 game pixel lands left of the window) and false at the center")
+	var snap_sv: Dictionary = UiInspect.snapshot(root, root, stage, pv, {})
+	var in_entry: Dictionary = {}
+	for e2 in snap_sv.get("controls", []):
+		if str((e2 as Dictionary).get("path", "")) == "PixelView/SubViewport/Inside":
+			in_entry = e2
+	_ok(in_entry.get("rect", []) == [4, 4, 32, 24] and not in_entry.has("space") and not in_entry.has("occluded_by"), "ui_snapshot gives a control inside the SubViewport the rect where it is on screen, [4, 4, 32, 24]: %s" % str(in_entry))
+	var sr := UiInspect.screen_rect_of(inside, root)
+	var sr_want: Rect2 = (root.get_final_transform() * (rt["xf"] as Transform2D) * inside.get_global_transform_with_canvas()) * Rect2(Vector2.ZERO, inside.size)
+	_ok(sr.is_equal_approx(sr_want) and sr.position.is_equal_approx(Vector2(4, 4)), "screen_rect_of a control inside the SubViewport is root.get_final_transform() * the route * its transform * its rect: %s" % sr)
+	var marks: Array = UiInspect.marks(root, stage, stage, 40)
+	var inside_mark: Array = []
+	for m in marks:
+		if str((m as Dictionary).get("path", "")) == "PixelView/SubViewport/Inside":
+			inside_mark = (m as Dictionary)["rect"]
+	_ok(inside_mark == [4, 4, 32, 24], "screenshot annotate=ui boxes the control inside the SubViewport where it appears in the window's picture: %s" % str(inside_mark))
+
+	# --- the hit test along the route
+	var cover := CanvasLayer.new()
+	cover.layer = 3
+	root.add_child(cover)
+	var shade := ColorRect.new()
+	shade.name = "Shade"
+	shade.size = Vector2(64, 64)
+	cover.add_child(shade)
+	await process_frame
+	var local_c := UiInspect.gui_center(inside)
+	var h_stop := UiInspect.hit_along(inside, crt, local_c)
+	shade.mouse_filter = Control.MOUSE_FILTER_PASS
+	var h_pass := UiInspect.hit_along(inside, crt, local_c)
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var h_ign := UiInspect.hit_along(inside, crt, local_c)
+	_ok(h_stop["blocker"] == shade and int(h_stop["level"]) == 0, "hit_along: a STOP ColorRect on a higher CanvasLayer over the container blocks it, at level 0 (it keeps the click from the container)")
+	_ok(h_pass["blocker"] == shade, "...so does a PASS one: it hands the click to its own parents, never to the container drawn under it")
+	_ok(h_ign["blocker"] == null and h_ign["receiver"] == inside, "...and an IGNORE one lets the click through to the target")
+	root.remove_child(cover)
+	cover.free()
+	var veil := ColorRect.new()
+	veil.name = "Veil"
+	veil.size = Vector2(18, 18)
+	sv.add_child(veil)
+	await process_frame
+	var h_in := UiInspect.hit_along(inside, crt, local_c)
+	_ok(h_in["blocker"] == veil and int(h_in["level"]) == -1, "...and a STOP control inside the SubViewport covering the target blocks it at the target's own level")
+	sv.remove_child(veil)
+	veil.free()
+
+	# --- a SubViewport no container shows, and an embedded window
+	var holder := Node.new()
+	holder.name = "Holder"
+	stage.add_child(holder)
+	var panel := SubViewport.new()
+	panel.name = "Panel3D"
+	panel.size = Vector2i(32, 32)
+	holder.add_child(panel)
+	var r_dir := UiInspect.route(panel, stage)
+	_ok(bool(r_dir["direct"]) and r_dir["vp"] == panel and (r_dir["hops"] as Array).is_empty() and str(r_dir["why"]).is_empty(), "route from a SubViewport whose parent is a plain Node is direct and lands in that SubViewport")
+	if root.gui_embed_subwindows:
+		var dialog := Window.new()
+		dialog.name = "Dialog"
+		dialog.position = Vector2i(20, 10)
+		dialog.size = Vector2i(30, 30)
+		dialog.visible = false
+		stage.add_child(dialog)
+		dialog.show()
+		await process_frame
+		var r_win := UiInspect.route(dialog, stage)
+		_ok(r_win["vp"] == root and ((r_win["xf"] as Transform2D) * Vector2(5, 5)).is_equal_approx(Vector2(25, 15)) and ((r_win["hops"] as Array)[0] as Dictionary)["via"] == dialog, "route from an embedded window lands in the root at position + local: (5, 5) in a window at (20, 10) is (25, 15)")
+		var dsnap: Dictionary = UiInspect.snapshot(root, root, stage, stage, {})
+		var wins: Array = dsnap.get("windows", [])
+		_ok(wins.size() == 1 and (wins[0] as Dictionary).get("rect", []) == [20, 10, 30, 30] and not (wins[0] as Dictionary).has("native"), "ui_snapshot lists the embedded dialog at its rect in the root's GUI space, not as native: %s" % str(wins))
+		stage.remove_child(dialog)
+		dialog.free()
+		# An OptionButton's open dropdown is an INTERNAL PopupMenu, which get_children() leaves out: collect_windows walks
+		# internal children too, so the hit test sees the dropdown over what it covers.
+		var opt := OptionButton.new()
+		opt.position = Vector2(2, 2)
+		opt.size = Vector2(20, 8)
+		for i in 6:
+			opt.add_item("choice %d" % i)
+		stage.add_child(opt)
+		await process_frame
+		opt.show_popup()
+		await process_frame
+		var drop := opt.get_popup()
+		var drop_mid := Vector2(drop.position) + Vector2(drop.size) * 0.5
+		var drop_pick := UiInspect.pick_at(root, root, drop_mid)
+		_ok(drop.visible and not opt.get_children().has(drop) and UiInspect.collect_windows(root).has(drop) and (drop_pick == drop or (drop_pick != null and drop.is_ancestor_of(drop_pick))),
+			"collect_windows walks internal children: an open OptionButton dropdown (an internal PopupMenu) is listed, and pick_at at its middle %s finds it, not the container under it" % drop_mid)
+		drop.hide()
+		stage.remove_child(opt)
+		opt.free()
+	else:
+		print("  skip  root.gui_embed_subwindows is off on this engine: no embedded window to route through")
+
+	# --- what passes a click up, and what Godot's own hit test reads
+	var tgt := _zc_probe("ZcTarget", Vector2(2, 40), Vector2(20, 20))
+	stage.add_child(tgt)
+	var mid := Control.new()
+	mid.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tgt.add_child(mid)
+	var mid2d := Node2D.new()
+	mid.add_child(mid2d)
+	var leaf := ColorRect.new()
+	leaf.mouse_filter = Control.MOUSE_FILTER_PASS
+	leaf.size = Vector2(5, 5)
+	mid2d.add_child(leaf)
+	_ok(UiInspect.click_reaches(leaf, tgt), "click_reaches walks a PASS receiver's parents the way Viewport._gui_call_input does, through an IGNORE control and a Node2D, up to the target")
+	tgt.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ok(not UiInspect.click_reaches(leaf, tgt), "...and never counts an IGNORE target as reached: it would not get the event")
+	tgt.mouse_filter = Control.MOUSE_FILTER_STOP
+	var zero := _zc_probe("ZcZero", Vector2(30, 50), Vector2(10, 10))
+	zero.scale = Vector2.ZERO
+	stage.add_child(zero)
+	var shaped := _ShapedProbe.new()
+	shaped.position = Vector2(45, 50)
+	shaped.size = Vector2(10, 10)
+	stage.add_child(shaped)
+	await process_frame
+	_ok(not UiInspect.gui_has_point(zero, Vector2(30, 50)) and UiInspect.pick_at(root, root, Vector2(30, 50)) != zero, "a control scaled to zero holds no point and pick_at skips it, as Godot's pick does")
+	_ok(not UiInspect.gui_has_point(shaped, Vector2(50, 55)) and UiInspect.pick_at(root, root, Vector2(50, 55)) != shaped, "a script's own _has_point is asked, as Godot asks it: a shaped control that turns the point down is not picked")
+	if ClassDB.class_has_method("Control", "get_mouse_filter_with_override"):
+		var dis := Control.new()
+		dis.position = Vector2(40, 2)
+		dis.size = Vector2(20, 20)
+		dis.set("mouse_behavior_recursive", 1)  # Disabled; set() so the script still parses on 4.4 and older
+		stage.add_child(dis)
+		var dis_child := _zc_probe("DisChild", Vector2.ZERO, Vector2(10, 10))
+		dis.add_child(dis_child)
+		await process_frame
+		_ok(UiInspect.mouse_filter_of(dis_child) == Control.MOUSE_FILTER_IGNORE and dis_child.mouse_filter == Control.MOUSE_FILTER_STOP and UiInspect.pick_at(root, root, Vector2(45, 7)) != dis_child,
+			"4.5+: mouse_filter_of reads IGNORE under a parent whose mouse_behavior_recursive is Disabled (mouse_filter itself says STOP), and pick_at skips the child, as Godot does")
+	else:
+		print("  skip  mouse_behavior_recursive is 4.5+: this engine reads mouse_filter alone")
+
+	# --- window pixels and image pixels under a content scale (the root is set back right after)
+	var keep_size := root.content_scale_size
+	var keep_mode := int(root.content_scale_mode)
+	var keep_aspect := int(root.content_scale_aspect)
+	_zc_content_scale(Vector2i(32, 16), Window.CONTENT_SCALE_MODE_CANVAS_ITEMS, Window.CONTENT_SCALE_ASPECT_KEEP)
+	var fin := root.get_final_transform()
+	var ixf := UiInspect.image_xf(root)
+	_zc_content_scale(Vector2i(32, 16), Window.CONTENT_SCALE_MODE_VIEWPORT, Window.CONTENT_SCALE_ASPECT_KEEP)
+	var ixf_vp := UiInspect.image_xf(root)
+	_zc_content_scale(keep_size, keep_mode, keep_aspect)
+	_ok(fin.origin.is_equal_approx(Vector2(0, 16)) and fin.get_scale().is_equal_approx(Vector2(2, 2)), "a 64x64 window over a 32x16 design (canvas_items, KEEP) has a final transform of x2 with a 16 px margin: %s" % fin)
+	_ok(ixf.get_scale().is_equal_approx(Vector2(2, 2)) and ixf.origin.is_equal_approx(Vector2.ZERO), "image_xf keeps the stretch and drops the margin: the window's texture has no bars (measured on real captures)")
+	_ok(ixf_vp.is_equal_approx(Transform2D.IDENTITY), "...and in viewport mode the picture is the design size itself: image_xf is the identity")
+	_ok(root.content_scale_mode == keep_mode and root.content_scale_size == keep_size and root.get_final_transform() == Transform2D.IDENTITY, "...and the root's content scale is back as it was")
+
+	root.remove_child(stage)
+	stage.free()
+	root.canvas_transform = keep_canvas
+	paused = was_paused
+	return true
+
+
+## The coords group, driven: real clicks pushed through MCPRuntime and the 3D flow, inside the 64x64 headless root.
+## Full edition only: click_control, scroll, simulate_input and the 3D clicks are Full tools, and the 3D flow
+## (runtime/world_click.gd) and where the drive tools aim (runtime/drive_aim.gd) are trimmed from Lite.
+func _t_coords_drive() -> bool:
+	print("[unit] coords (1.17), driven: clicks pushed through the runtime land on what they aim at")
+	await process_frame
+	var WC = load(_WORLD_CLICK_PATH)
+	var DA = load(_DRIVE_AIM_PATH)
+	var was_paused := paused
+	paused = false
+	var keep_canvas := root.canvas_transform
+	var keep_scene := current_scene
+	var game := Node.new()
+	game.name = "ZcGame"
+	root.add_child(game)
+	var rt = MCPRuntime.new()
+	root.add_child(rt)
+	current_scene = game
+
+	# --- the pure parts of the 3D flow
+	_ok(WC.picking_note("x", true, false) == "", "picking_note is empty when picking is on and the mouse is free")
+	_ok(str(WC.picking_note("PixelView/SubViewport", false, false)).contains("physics_object_picking is off in PixelView/SubViewport"), "...names physics_object_picking when it is off")
+	_ok(str(WC.picking_note("x", true, true)).contains("captured"), "...and names the capture when the mouse is captured")
+	_ok(WC.camera_view(root, null).is_empty(), "camera_view returns {} when no viewport has a current Camera3D")
+
+	# --- a 2x HUD, the SubViewport, a dialog
+	var hud := CanvasLayer.new()
+	hud.name = "Hud"
+	hud.layer = 1
+	hud.scale = Vector2(2, 2)
+	game.add_child(hud)
+	var pair := _zc_pixel_view(game)
+	var pv: SubViewportContainer = pair[0]
+	var sv: SubViewport = pair[1]
+	var play := _zc_probe("Play", Vector2(5, 5), Vector2(10, 8))
+	hud.add_child(play)
+	var inside := _zc_probe("Inside", Vector2(10, 10), Vector2(6, 4))
+	sv.add_child(inside)
+	await process_frame
+	var r1: Dictionary = rt._click_control({"path": "Hud/Play"})
+	_ok(bool(r1.get("clicked", false)) and play.presses == 1 and play.last_local.is_equal_approx(Vector2(5, 4)) and r1.get("at", []) == [20.0, 18.0], "_click_control presses a probe under a 2x CanvasLayer once, at its own center, and at is the GUI center: %s" % str(r1))
+	var r2: Dictionary = rt._click_control({"path": "PixelView/SubViewport/Inside"})
+	_ok(bool(r2.get("clicked", false)) and inside.presses == 1 and inside.last_local.is_equal_approx(Vector2(3, 2)) and r2.get("at", []) == [48.0, 44.0] and not r2.has("space"), "_click_control presses a probe inside the SubViewport, through the container: %s" % str(r2))
+	var r_scroll: Dictionary = rt._scroll_cmd({"path": "PixelView/SubViewport/Inside", "amount": 1})
+	_ok(bool(r_scroll.get("ok", false)) and inside.wheels == 1 and r_scroll.get("at", []) == [48.0, 44.0], "scroll at a target inside the SubViewport reaches it the same way: %s" % str(r_scroll))
+	pv.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var r_ign: Dictionary = rt._click_control({"path": "PixelView/SubViewport/Inside"})
+	pv.mouse_filter = Control.MOUSE_FILTER_STOP
+	_ok(not bool(r_ign.get("clicked", true)) and str(r_ign.get("warning", "")).contains("mouse_filter IGNORE") and inside.presses == 1, "behind a container with mouse_filter IGNORE the click is refused with the reason, and nothing was pressed: %s" % str(r_ign.get("warning", "")))
+	if root.gui_embed_subwindows:
+		var dialog := Window.new()
+		dialog.name = "Dialog"
+		dialog.position = Vector2i(34, 2)  # clear of the HUD's Play: the right click below is about focus, not cover
+		dialog.size = Vector2i(28, 28)
+		dialog.visible = false
+		game.add_child(dialog)
+		var ok_btn := _zc_probe("Ok", Vector2(5, 5), Vector2(10, 10))
+		dialog.add_child(ok_btn)
+		dialog.show()
+		await process_frame
+		var r_right: Dictionary = rt._click_control({"path": "Hud/Play", "button": 2})
+		_ok(not bool(r_right.get("clicked", true)) and str(r_right.get("warning", "")).contains("has focus") and play.presses == 1, "a right click on the HUD while the dialog has focus is refused (Godot would hand it to the dialog): %s" % str(r_right.get("warning", "")))
+		var r3: Dictionary = rt._click_control({"path": "Dialog/Ok"})
+		_ok(bool(r3.get("clicked", false)) and ok_btn.presses == 1 and ok_btn.last_local.is_equal_approx(Vector2(5, 5)) and r3.get("at", []) == [44.0, 12.0], "_click_control presses a probe inside an embedded window at the window's position + its center: %s" % str(r3))
+		var root_rt: Dictionary = UiInspect.route(root, game)
+		var win_rt: Dictionary = UiInspect.route(dialog, game)
+		_ok(DA.focused_window(root) == dialog and str(DA.press_focus_refusal(root_rt, MOUSE_BUTTON_RIGHT, game)).contains("has focus") and str(DA.press_focus_refusal(root_rt, MOUSE_BUTTON_LEFT, game)).is_empty() and str(DA.press_focus_refusal(win_rt, MOUSE_BUTTON_RIGHT, game)).is_empty(),
+			"focused_window finds the dialog; a right press aimed at the root canvas is refused (Godot hands it to the dialog), a left one moves focus and is not, and a right press for a control inside the dialog is fine")
+		# scroll position= is a bare point: the focused dialog gets the notch where it is aimed, so a point inside the dialog
+		# reaches what is drawn there (1.16 scrolled it too), and a point outside reaches nothing: refused.
+		var s_in: Dictionary = rt._scroll_cmd({"position": [44, 12], "amount": 1})
+		var s_out: Dictionary = rt._scroll_cmd({"position": [20, 18], "amount": 1})
+		_ok(bool(s_in.get("ok", false)) and ok_btn.wheels == 1 and dialog.has_focus(), "scroll position= inside the focused dialog reaches the control drawn there: %s (wheels %d)" % [str(s_in), ok_btn.wheels])
+		_ok(not bool(s_out.get("ok", true)) and str(s_out.get("error", "")).begins_with("Dialog has focus") and play.wheels == 0 and ok_btn.wheels == 1, "...and a position outside it is refused naming the dialog, with nothing scrolled: %s" % str(s_out.get("error", "")))
+		game.remove_child(dialog)
+		dialog.free()
+		await process_frame
+		# An OptionButton's open dropdown is an internal PopupMenu with focus: a wheel notch or a right press goes to it
+		# wherever it is aimed, so a scroll at the HUD's Play is refused naming it.
+		var pick := OptionButton.new()
+		pick.name = "Pick"
+		pick.position = Vector2(40, 40)
+		pick.size = Vector2(20, 8)
+		for i in 6:
+			pick.add_item("choice %d" % i)
+		game.add_child(pick)
+		await process_frame
+		pick.show_popup()
+		await process_frame
+		var s_drop: Dictionary = rt._scroll_cmd({"path": "Hud/Play", "amount": 1})
+		var c_drop: Dictionary = rt._click_control({"path": "Hud/Play", "button": 2})
+		var drop_focused: bool = DA.focused_window(root) == pick.get_popup()
+		pick.get_popup().hide()
+		game.remove_child(pick)
+		pick.free()
+		await process_frame
+		_ok(drop_focused and not bool(s_drop.get("ok", true)) and str(s_drop.get("error", "")).contains("has focus") and not bool(c_drop.get("clicked", true)) and play.wheels == 0 and play.presses == 1,
+			"with an OptionButton's dropdown open (an internal PopupMenu) focused_window finds it, and a scroll or a right click at the HUD's Play is refused: %s | %s" % [str(s_drop.get("error", "")), str(c_drop.get("warning", ""))])
+	else:
+		print("  skip  root.gui_embed_subwindows is off on this engine: no embedded window to click into")
+	var world_btn := _zc_probe("WorldBtn", Vector2(30, 40), Vector2(10, 8))
+	game.add_child(world_btn)
+	root.canvas_transform = Transform2D(0.0, Vector2(-10, 0))
+	await process_frame
+	var r4: Dictionary = rt._click_control({"path": "WorldBtn"})
+	root.canvas_transform = keep_canvas
+	_ok(bool(r4.get("clicked", false)) and world_btn.presses == 1 and r4.get("at", []) == [25.0, 44.0], "_click_control presses a layer-0 probe moved by root.canvas_transform (a Camera2D), at its GUI center: %s" % str(r4))
+
+	# --- the standalone test's twin aims at the same points
+	if ResourceLoader.exists(_STANDALONE_PATH):
+		var T = load(_STANDALONE_PATH)
+		var holder := Node.new()
+		holder.name = "Holder"
+		game.add_child(holder)
+		var panel := SubViewport.new()
+		panel.name = "Panel3D"
+		panel.size = Vector2i(16, 16)
+		holder.add_child(panel)
+		var on_panel := _zc_probe("OnPanel", Vector2(2, 2), Vector2(4, 4))
+		panel.add_child(on_panel)
+		root.canvas_transform = Transform2D(0.0, Vector2(-10, 0))
+		await process_frame
+		var bad: Array = []
+		for c in [play, world_btn, inside, on_panel]:
+			var a: Dictionary = DA.click_route(c, game)
+			var b: Dictionary = T.click_point(c)
+			if bool(b["ok"]) != str(a["why"]).is_empty() or bool(b["direct"]) != bool(a["direct"]) or b["vp"] != a["vp"] or not (b["at"] as Vector2).is_equal_approx(a["at"]):
+				bad.append("%s: %s vs %s" % [c.name, str(a["at"]), str(b["at"])])
+		pv.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var t_ign: Dictionary = T.click_point(inside)
+		var u_ign: Dictionary = DA.click_route(inside, game)
+		pv.mouse_filter = Control.MOUSE_FILTER_STOP
+		root.canvas_transform = keep_canvas
+		_ok(bad.is_empty() and not bool(t_ign["ok"]) and not str(u_ign["why"]).is_empty(), "the standalone test's click_point agrees with drive_aim.gd's click_route on a 2x layer, a Camera2D, a SubViewport and an unshown SubViewport (ok, direct, the viewport, the point), and both refuse behind an IGNORE container%s" % ("" if bad.is_empty() else ": " + str(bad)))
+		var ev := InputEventMouseMotion.new()
+		ev.position = Vector2(3, 4)
+		ev.relative = Vector2(1, -1)
+		var scaled := SubViewport.new()
+		scaled.size = Vector2i(32, 32)
+		scaled.size_2d_override = Vector2i(16, 16)
+		scaled.size_2d_override_stretch = true
+		holder.add_child(scaled)
+		var e1 := DA.gui_to_window(ev, scaled) as InputEventMouseMotion
+		var e2 := T.to_window(ev, scaled) as InputEventMouseMotion
+		_ok(e1.position.is_equal_approx(Vector2(6, 8)) and e1.position.is_equal_approx(e2.position) and e1.relative.is_equal_approx(e2.relative) and e1.global_position.is_equal_approx(e2.global_position), "the standalone test's to_window and drive_aim.gd's gui_to_window carry an event to window pixels alike: %s" % e1.position)
+		game.remove_child(holder)
+		holder.free()
+	else:
+		print("  skip  playtest_standalone.gd is not in this build")
+
+	# --- simulate_input positions are GUI space: under a content scale they still land where they are aimed
+	pv.visible = false
+	hud.visible = false
+	var keep_size := root.content_scale_size
+	var keep_mode := int(root.content_scale_mode)
+	var keep_aspect := int(root.content_scale_aspect)
+	_zc_content_scale(Vector2i(32, 16), Window.CONTENT_SCALE_MODE_CANVAS_ITEMS, Window.CONTENT_SCALE_ASPECT_KEEP)
+	var mb := InputEventMouseButton.new()
+	mb.position = Vector2(5, 5)
+	var mbw := DA.gui_to_window(mb, root) as InputEventMouseButton
+	var mm := InputEventMouseMotion.new()
+	mm.position = Vector2(5, 5)
+	mm.relative = Vector2(1, 1)
+	var mmw := DA.gui_to_window(mm, root) as InputEventMouseMotion
+	_ok(mbw.position.is_equal_approx(Vector2(10, 26)) and mbw.global_position.is_equal_approx(mbw.position) and mmw.relative.is_equal_approx(Vector2(2, 2)), "gui_to_window carries a GUI point to window pixels under a x2 stretch with a 16 px KEEP margin: (5, 5) -> %s, global_position with it, and a motion's relative scaled" % mbw.position)
+	_zc_content_scale(Vector2i(32, 32), Window.CONTENT_SCALE_MODE_CANVAS_ITEMS, Window.CONTENT_SCALE_ASPECT_KEEP)
+	var aim := _zc_probe("Aim", Vector2(4, 6), Vector2(10, 10))
+	game.add_child(aim)
+	await process_frame
+	var ri: Dictionary = rt._run_input([{"type": "mouse_button", "button": 1, "position": [9, 11], "pressed": true}, {"type": "mouse_button", "button": 1, "position": [9, 11], "pressed": false}])
+	Input.flush_buffered_events()
+	await process_frame
+	_zc_content_scale(keep_size, keep_mode, keep_aspect)
+	_ok(int(ri.get("dispatched", 0)) == 2 and aim.presses == 1 and aim.last_local.is_equal_approx(Vector2(5, 5)), "simulate_input's position is GUI space: under a x2 content scale a press aimed at (9, 11) lands at the probe's center (got %d press(es), local %s)" % [aim.presses, aim.last_local])
+	pv.visible = true
+	hud.visible = true
+	game.remove_child(aim)
+	aim.free()
+
+	# --- 3D through the SubViewport's camera
+	var cam := Camera3D.new()
+	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+	cam.size = 6.0
+	cam.position = Vector3(0, 0, 5)
+	sv.add_child(cam)
+	cam.current = true
+	var body := _HitProbe3D.new()
+	body.name = "Target"
+	var shape := CollisionShape3D.new()
+	shape.shape = BoxShape3D.new()
+	body.add_child(shape)
+	sv.add_child(body)
+	var ray := _RayProbe3D.new()
+	sv.add_child(ray)
+	sv.physics_object_picking = true
+	await process_frame
+	var cam_view: Dictionary = WC.camera_view(root, sv)
+	var wk: Dictionary = rt._world_click(Vector3.ZERO, 1, "world", sv)
+	var want: Vector2 = cam.unproject_position(Vector3.ZERO)
+	_ok(cam_view.get("cam") == cam and bool(wk.get("clicked", false)) and str(wk.get("via", "")) == "PixelView/SubViewport" and ray.clicks.size() == 1 and (ray.clicks[0] as Vector2).distance_to(want) < 0.001,
+		"_world_click through the SubViewport's camera reaches _unhandled_input in the SubViewport at cam.unproject_position(world) %s, via PixelView/SubViewport: %s" % [want, str(wk)])
+	var routed := Vector2(-4, -4) + 4.0 * want
+	_ok(Vector2(float((wk.get("at", [0, 0]) as Array)[0]), float((wk.get("at", [0, 0]) as Array)[1])).distance_to(routed) < 0.001, "...and at is where the container shows that pixel in the root, %s: %s" % [routed, str(wk.get("at", []))])
+	for i in 4:
+		await physics_frame
+	_ok(body.hits == 1, "...and physics picking hands the body the press on a later physics frame (%d hit)" % body.hits)
+	_ok(WC.camera_view(root, null).get("cam") == cam, "camera_view with no root camera finds the shown SubViewport's camera")
+	var root_cam := Camera3D.new()
+	root.add_child(root_cam)
+	root_cam.current = true
+	var with_root: Dictionary = WC.camera_view(root, null)
+	var own_first: Dictionary = WC.camera_view(root, sv)
+	root.remove_child(root_cam)
+	root_cam.free()
+	_ok(with_root.get("cam") == root_cam and own_first.get("cam") == cam, "camera_view prefers the root's camera for click_world, and the node's own viewport's camera for click_node3d")
+	var mini := SubViewportContainer.new()
+	mini.position = Vector2(0, 0)
+	mini.size = Vector2(8, 8)
+	mini.stretch = true
+	game.add_child(mini)
+	var mini_sv := SubViewport.new()
+	mini_sv.own_world_3d = true
+	mini.add_child(mini_sv)
+	var mini_cam := Camera3D.new()
+	mini_sv.add_child(mini_cam)
+	mini_cam.current = true
+	await process_frame
+	_ok(WC.camera_view(root, null).get("cam") == cam, "...and among two shown SubViewports with cameras, the one that covers more of the screen (the main view, not the minimap)")
+	game.remove_child(mini)
+	mini.free()
+	sv.physics_object_picking = false
+	var wk_off: Dictionary = rt._world_click(Vector3.ZERO, 1, "world", sv)
+	sv.physics_object_picking = true
+	_ok(bool(wk_off.get("clicked", false)) and str(wk_off.get("note", "")).contains("physics_object_picking is off") and ray.clicks.size() == 2, "with picking off the click still lands, with a note that names physics_object_picking: %s" % str(wk_off.get("note", "")))
+	var cover := CanvasLayer.new()
+	cover.layer = 3
+	game.add_child(cover)
+	var shade := ColorRect.new()
+	shade.name = "Shade"
+	shade.size = Vector2(64, 64)
+	cover.add_child(shade)
+	await process_frame
+	var wk_cov: Dictionary = rt._world_click(Vector3.ZERO, 1, "world", sv)
+	_ok(bool(wk_cov.get("clicked", false)) and str(wk_cov.get("occluded_by", "")).ends_with("Shade") and str(wk_cov.get("note", "")).contains("covers") and ray.clicks.size() == 2, "a STOP ColorRect over the container takes the click: it is sent (the root's _input sees it), occluded_by names it, the note says the SubViewport does not get it, and nothing in the SubViewport did: %s" % str(wk_cov.get("note", "")))
+	game.remove_child(cover)
+	cover.free()
+	# A SubViewport that takes no input: the click is sent with a note, and the note names only the root handlers that
+	# really see it. A STOP container takes the press and ends it there, so _unhandled_input never sees it; PASS hands it on.
+	var seer := _InputSeer.new()
+	game.add_child(seer)
+	sv.gui_disable_input = true
+	var wk_noin: Dictionary = rt._world_click(Vector3.ZERO, 1, "world", sv)
+	var seen_stop := [seer.inputs, seer.unhandled]
+	pv.mouse_filter = Control.MOUSE_FILTER_PASS
+	var wk_noin_pass: Dictionary = rt._world_click(Vector3.ZERO, 1, "world", sv)
+	var seen_pass := [seer.inputs, seer.unhandled]
+	pv.mouse_filter = Control.MOUSE_FILTER_STOP
+	sv.gui_disable_input = false
+	game.remove_child(seer)
+	seer.free()
+	var note_stop := str(wk_noin.get("note", ""))
+	var note_pass := str(wk_noin_pass.get("note", ""))
+	_ok(bool(wk_noin.get("clicked", false)) and note_stop.contains("gui_disable_input") and note_stop.contains("only the root viewport's _input sees this click") and seen_stop == [1, 0] and ray.clicks.size() == 2,
+		"gui_disable_input behind a STOP container: the click is sent, and the note names _input alone, as the root saw it (_input, _unhandled_input = %s): %s" % [str(seen_stop), note_stop])
+	_ok(bool(wk_noin_pass.get("clicked", false)) and note_pass.contains("_input and _unhandled_input see this click") and seen_pass == [2, 1] and ray.clicks.size() == 2,
+		"...behind a PASS container it names _unhandled_input too, as the root saw it (%s): %s" % [str(seen_pass), note_pass])
+	if root.gui_embed_subwindows:
+		var over := Window.new()
+		over.name = "Over3D"
+		over.position = Vector2i(20, 20)
+		over.size = Vector2i(30, 30)
+		over.visible = false
+		game.add_child(over)
+		over.show()
+		await process_frame
+		var wk_win: Dictionary = rt._world_click(Vector3.ZERO, 1, "world", sv)
+		_ok(not bool(wk_win.get("clicked", true)) and str(wk_win.get("occluded_by", "")) == "Over3D" and ray.clicks.size() == 2, "a window over the point takes the click before the root's _input could see it: refused with occluded_by, nothing sent: %s" % str(wk_win.get("warning", "")))
+		over.position = Vector2i(20, 34)  # the point is now on its title bar, where a press drags the window
+		await process_frame
+		var wk_bar: Dictionary = rt._world_click(Vector3.ZERO, 1, "world", sv)
+		_ok(UiInspect.window_frame(over).has_point(Vector2(32, 32)) and not bool(wk_bar.get("clicked", true)) and str(wk_bar.get("occluded_by", "")) == "Over3D" and ray.clicks.size() == 2, "...and so does its title bar: %s" % str(wk_bar.get("warning", "")))
+		over.position = Vector2i(44, 46)  # clear of the point, frame included, and still the window with focus
+		await process_frame
+		var wk_right: Dictionary = rt._world_click(Vector3.ZERO, 2, "world", sv)
+		var wk_left: Dictionary = rt._world_click(Vector3.ZERO, 1, "world", sv)
+		_ok(not bool(wk_right.get("clicked", true)) and str(wk_right.get("warning", "")).contains("has focus") and bool(wk_left.get("clicked", false)) and str(wk_left.get("note", "")).contains("had focus") and ray.clicks.size() == 3,
+			"with a dialog focused elsewhere a right click is refused (Godot hands it to the dialog), and a left one lands, with a note that the dialog took the hover: %s | %s | %d" % [str(wk_right.get("warning", "")), str(wk_left.get("note", "")), ray.clicks.size()])
+		game.remove_child(over)
+		over.free()
+		await process_frame
+	var stopper := ColorRect.new()
+	stopper.size = Vector2(18, 18)
+	sv.add_child(stopper)
+	_ok(WC.stop_owner(stopper) == stopper, "stop_owner returns a STOP receiver")
+	var pass_kid := ColorRect.new()
+	pass_kid.mouse_filter = Control.MOUSE_FILTER_PASS
+	stopper.add_child(pass_kid)
+	_ok(WC.stop_owner(pass_kid) == stopper, "...the STOP parent of a PASS child")
+	stopper.mouse_filter = Control.MOUSE_FILTER_PASS
+	_ok(WC.stop_owner(pass_kid) == null, "...and null for an all-PASS chain")
+	stopper.mouse_filter = Control.MOUSE_FILTER_STOP
+	pass_kid.top_level = true
+	_ok(WC.stop_owner(pass_kid) == null, "...and a top_level control ends the chain")
+	sv.remove_child(stopper)
+	stopper.free()
+
+	current_scene = keep_scene
+	root.canvas_transform = keep_canvas
+	root.remove_child(rt)
+	rt.free()
+	root.remove_child(game)
+	game.free()
+	paused = was_paused
+	return true
+
+
 func _t_bridge_compare() -> bool:
 	print("[unit] runtime_bridge handshake compare (v1.9.1)")
 	_ok(RuntimeBridge._secure_equals("tok-abc", "tok-abc"), "matching hello accepted")
@@ -1484,6 +2887,123 @@ func _t_call_args() -> bool:
 	c = CallArgs.coerce([255, 128, 0], TYPE_PACKED_INT32_ARRAY)
 	_ok(bool(c.get("ok", false)) and c["value"] is PackedInt32Array, "int array coerces to PackedInt32Array")
 	return true
+
+
+# ---------------------------------------------------------------- NodePath and StringName from text (2026-10-08)
+
+## The editor's stand-in for a script that is not @tool, cut down to what matters here. The editor gives such a node a
+## PlaceHolderScriptInstance: it lists the script's exported variables with their declared types, and keeps a value
+## written to one only when it can compare it with the declared default. A String does not compare with NodePath(""),
+## so that write was dropped. The suite runs outside the editor, where every script is a real instance, so this plays
+## the stand-in here; the live check drives the real one.
+class _PlaceholderLike extends Resource:
+	var _values := {}
+
+	func _get_property_list() -> Array[Dictionary]:
+		var out: Array[Dictionary] = [{"name": "follow", "type": TYPE_NODE_PATH, "usage": PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_SCRIPT_VARIABLE}]
+		return out
+
+	func _set(property: StringName, value: Variant) -> bool:
+		if property != &"follow":
+			return false
+		if value is NodePath:
+			_values[property] = value
+		return true  # handled, kept or not: what the stand-in answers
+
+	func _get(property: StringName) -> Variant:
+		if property == &"follow":
+			return _values.get(property, NodePath(""))
+		return null
+
+
+## A method with a NodePath parameter, for call_method. (_set_property's stand-in server is _NoUndoServer, with the
+## property-writes group.)
+class _NodePathArgProbe extends RefCounted:
+	func aim(at: NodePath) -> String:
+		return var_to_str(at)
+
+
+## A NodePath export set from text (2026-10-08, 4.6.2). A script that is not @tool, on a Camera3D, declared
+## `@export var follow: NodePath`; set_property value="../Barbarian" answered "set", and describe_object and the saved
+## scene still had NodePath(""). The text went on as a String: coerce_to_type had no NodePath case and str_to_var cannot
+## read a path. A native setter and a script's typed variable convert a String, the editor's stand-in does not. Only
+## the literal NodePath("../Barbarian") worked. A property now takes the spellings a call_method argument takes.
+func _t_node_path_values() -> bool:
+	print("[unit] NodePath and StringName properties set from text (set_property, 2026-10-08)")
+	var path := NodePath("../Barbarian")
+	for spelled in ["../Barbarian", "NodePath(\"../Barbarian\")", "^\"../Barbarian\"", "\"../Barbarian\""]:
+		var c: Dictionary = CallArgs.coerce(spelled, TYPE_NODE_PATH)
+		_ok(bool(c.get("ok", false)) and c["value"] is NodePath and c["value"] == path, "%s reads as NodePath(\"../Barbarian\")" % spelled)
+	var empty: Dictionary = CallArgs.coerce("NodePath()", TYPE_NODE_PATH)
+	_ok(bool(empty.get("ok", false)) and (empty["value"] as NodePath).is_empty() and (CallArgs.coerce("NodePath(\"\")", TYPE_NODE_PATH)["value"] as NodePath).is_empty(),
+		"NodePath() and NodePath(\"\") read as the empty path")
+	var sub: NodePath = CallArgs.coerce("Body:position", TYPE_NODE_PATH)["value"]
+	_ok(sub.get_subname_count() == 1 and str(sub.get_concatenated_subnames()) == "position", "a property path keeps its subname (Body:position)")
+	_ok(str(CallArgs.coerce("%Health", TYPE_NODE_PATH)["value"]) == "%Health" and (CallArgs.coerce("/root/Main", TYPE_NODE_PATH)["value"] as NodePath).is_absolute(),
+		"a unique name and an absolute path come through as they are")
+	_ok(CallArgs.coerce(&"Barbarian", TYPE_NODE_PATH)["value"] == NodePath("Barbarian"), "a StringName reads as a NodePath")
+	for spelled in ["run", "&\"run\"", "StringName(\"run\")"]:
+		var n: Dictionary = CallArgs.coerce(spelled, TYPE_STRING_NAME)
+		_ok(bool(n.get("ok", false)) and typeof(n["value"]) == TYPE_STRING_NAME and n["value"] == &"run", "%s reads as &\"run\"" % spelled)
+	_ok(not bool(CallArgs.coerce(5, TYPE_NODE_PATH).get("ok", true)) and not bool(CallArgs.coerce(null, TYPE_NODE_PATH).get("ok", true)),
+		"a number or null is still no NodePath argument")
+
+	# Through the handlers, on a resource a node's property holds: a node target asks EditorInterface for the edited
+	# scene, and a plain engine run has none (calling it is a SCRIPT ERROR here).
+	var stand_in := _PlaceholderLike.new()
+	stand_in.set("follow", "../Barbarian")
+	_ok(stand_in.get("follow") == NodePath(""), "the stand-in drops a String written to its NodePath export, as the editor's does")
+	var scene := Node.new()
+	scene.name = "ZzNpScene"
+	var holder := _OffProbe.new()
+	holder.name = "ZzNpHolder"
+	scene.add_child(holder)
+	Reflect.scene_root_override = scene
+	var rt := ReflectionTools.new()
+	rt.server = _NoUndoServer.new()
+	var plain := Resource.new()
+	plain.set_script(_np_script(false))
+	var tooled := Resource.new()
+	tooled.set_script(_np_script(true))
+	for row in [["the editor's stand-in for a script that is not @tool", stand_in], ["a script that is not @tool (outside the editor, a real instance)", plain], ["a @tool script", tooled]]:
+		var obj: Object = row[1]
+		holder.held = obj
+		var r: Dictionary = rt._set_property({"target": "ZzNpHolder/held", "property": "follow", "value": "../Barbarian"})
+		var got: Variant = obj.get("follow")
+		_ok(not r.has("error") and got is NodePath and got == path, "set_property follow=\"../Barbarian\" lands on %s: %s" % [row[0], var_to_str(got)])
+	holder.held = stand_in
+	var lit: Dictionary = rt._set_property({"target": "ZzNpHolder/held", "property": "follow", "value": "NodePath(\"../PixelView\")"})
+	_ok(not lit.has("error") and stand_in.get("follow") == NodePath("../PixelView"), "...and the literal NodePath(\"../PixelView\") still does")
+	for obj in [plain, tooled]:
+		holder.held = obj
+		var r2: Dictionary = rt._set_property({"target": "ZzNpHolder/held", "property": "anim", "value": "run"})
+		_ok(not r2.has("error") and typeof(obj.get("anim")) == TYPE_STRING_NAME and obj.get("anim") == &"run", "set_property anim=\"run\" stores &\"run\" in a StringName export")
+	var vt := ViewportTexture.new()
+	holder.held = vt
+	var rv: Dictionary = rt._set_property({"target": "ZzNpHolder/held", "property": "viewport_path", "value": "../PixelView/SubViewport"})
+	_ok(not rv.has("error") and vt.viewport_path == NodePath("../PixelView/SubViewport"), "a native NodePath property (ViewportTexture.viewport_path) takes the plain path")
+	var nav := NavigationMesh.new()
+	holder.held = nav
+	var rn: Dictionary = rt._set_property({"target": "ZzNpHolder/held", "property": "geometry_source_group_name", "value": "&\"walkable\""})
+	_ok(not rn.has("error") and nav.geometry_source_group_name == &"walkable", "a native StringName property takes &\"walkable\" as the name walkable, not as those eleven characters")
+	holder.held = _NodePathArgProbe.new()
+	var rc: Dictionary = rt._call_method({"target": "ZzNpHolder/held", "method": "aim", "args": ["NodePath(\"../Barbarian\")"]})
+	_ok(str((rc.get("json", {}) as Dictionary).get("result", "")) == var_to_str(path), "call_method hands a NodePath parameter the path its literal spells: %s" % str(rc.get("json", rc)))
+	# On a node: what set_property now writes is what RemoteTransform3D.remote_path holds.
+	var remote := RemoteTransform3D.new()
+	remote.set("remote_path", CallArgs.coerce("../Barbarian", TYPE_NODE_PATH)["value"])
+	_ok(remote.remote_path == path, "RemoteTransform3D.remote_path holds it")
+	remote.free()
+	Reflect.scene_root_override = null
+	scene.free()
+	return true
+
+
+func _np_script(tool: bool) -> GDScript:
+	var gd := GDScript.new()
+	gd.source_code = ("@tool\n" if tool else "") + "extends Resource\n@export var follow: NodePath\n@export var anim: StringName\n"
+	gd.reload()
+	return gd
 
 
 # ---------------------------------------------------------------- error echo (v1.11)
@@ -1709,12 +3229,11 @@ func _t_property_owner() -> bool:
 	# Godot's set() accepts garbage for a typed property and stores the type's DEFAULT, so
 	# `global_transform = "nonsense"` used to ZERO the transform and report success. Found
 	# live while probing the fix itself; refusing beats destroying data.
-	_ok(rt._coercion_error(Transform3D.IDENTITY, "nonsense") != "", "an uncoercible value for a typed property is refused")
-	_ok(rt._coercion_error(0.0, 1.5) == "", "a matching type passes")
-	_ok(rt._coercion_error(null, "anything") == "", "a null current value cannot pin a type, so nothing is refused")
-	_ok(rt._coercion_error(Vector3.ZERO, Vector3.ONE) == "", "same-type struct passes")
 	var n3b := Node3D.new()
 	n3b.position = Vector3(3, 0, 0)
+	_ok(not bool(rt._coerce_write(rt._property_owner(n3b, "transform"), n3b.transform, "nonsense").get("ok", true)), "an uncoercible value for a typed property is refused")
+	_ok(rt._coerce_write(rt._property_owner(n3b, "position:x"), 3.0, 1.5).get("value") == 1.5, "a matching type passes")
+	_ok(rt._coerce_write(rt._property_owner(n3b, "position"), n3b.position, Vector3.ONE).get("value") == Vector3.ONE, "same-type struct passes")
 	var wreck: Dictionary = rt._set_cmd(n3b, {"prop": "transform", "value": "nonsense"})
 	_ok(not bool(wreck.get("ok", true)), "THE data-loss regression: garbage for a Transform3D is refused")
 	_ok(n3b.position == Vector3(3, 0, 0), "...and the original transform is left intact")
@@ -1724,6 +3243,681 @@ func _t_property_owner() -> bool:
 	nulled.free()
 	we.free()
 	rt.free()
+	return true
+
+
+## What the value-spelling checks write to: one variable of each kind a game declares.
+class _SetProbe extends Node3D:
+	var hp: int = 3
+	var speed = 200
+	var anything
+	var aim = Vector3(1, 2, 3)
+	var anim: StringName = &"idle"
+	var target: NodePath = NodePath("A/B")
+	var tex: Texture2D
+	@export_enum("Walk", "Run:5", "Fly") var gait: int = 0
+
+
+## A runtime write takes the spellings a call takes, held to the type the property DECLARES. Found live on 4.6.2
+## (2026-10-08): "0 6 11" for a Camera3D's position collapsed to Vector3.ZERO and the reply said nothing had changed,
+## "Vector3(0, 6, 11)" zeroed a camera that sat elsewhere, and a shader uniform at its default stored "#ff0000" as
+## text. runtime_call's set / set_deferred / set_indexed reached the same zero through Object.set.
+func _t_runtime_set_values() -> bool:
+	print("[unit] runtime writes take a call's value spellings, held to the declared type (2026-10-08 zero-vector report)")
+	await process_frame  # the tree runs from the first frame on, and set_deferred below needs frames
+	var rt = MCPRuntime.new()
+	root.add_child(rt)
+	var cam := Camera3D.new()
+	cam.name = "SetCam"
+	root.add_child(cam)
+
+	# --- the report: every spelling lands on (0, 6, 11), from a camera that starts somewhere else
+	var spellings: Array = ["0 6 11", "0, 6, 11", "0,6,11", "Vector3(0, 6, 11)", "Vector3i(0, 6, 11)", "(0.0, 6.0, 11.0)", "(0, 6, 11)",
+		[0, 6, 11], [0.0, 6.0, 11.0], "[0, 6, 11]", {"x": 0, "y": 6, "z": 11}]
+	var missed: Array = []
+	for v in spellings:
+		cam.position = Vector3(5, 5, 5)
+		var w: Dictionary = rt._set_cmd(cam, {"prop": "position", "value": v})
+		if not bool(w.get("ok", false)) or cam.position != Vector3(0, 6, 11) or not bool(w.get("changed", false)) or str(w.get("after")) != str(Vector3(0, 6, 11)):
+			missed.append("%s -> %s" % [var_to_str(v), str(w).left(120)])
+	_ok(missed.is_empty(), "a Camera3D's position takes all %d spellings, and the reply says it changed%s" % [spellings.size(), "" if missed.is_empty() else ": " + str(missed)])
+	var garbage: Array = ["abc", "0 6", "0 6 11 4", "a b c", "(0, 6, 11", [0, 6], ["0", 6, 11], true, "Vector2(1, 2)", {"x": 1}]
+	var wrote: Array = []
+	for v in garbage:
+		cam.position = Vector3(5, 5, 5)
+		var w: Dictionary = rt._set_cmd(cam, {"prop": "position", "value": v})
+		if bool(w.get("ok", true)) or not str(w.get("error", "")).begins_with("Camera3D.position: expected Vector3") or str(w.get("suggestion", "")).is_empty() or cam.position != Vector3(5, 5, 5):
+			wrote.append("%s -> %s at %s" % [var_to_str(v), str(w).left(120), str(cam.position)])
+	_ok(wrote.is_empty(), "%d values that are no Vector3 are refused as 'Camera3D.position: expected Vector3 ...', and the camera stays where it was%s" % [garbage.size(), "" if wrote.is_empty() else ": " + str(wrote)])
+	cam.position = Vector3(0, 6, 11)
+	var same: Dictionary = rt._set_cmd(cam, {"prop": "position", "value": "0 6 11"})
+	_ok(bool(same.get("ok", false)) and not same.has("changed"), "a value the property already holds is ok and not 'changed' (the reply's 'nothing changed' is now true when it says so)")
+	cam.position = Vector3(1, 2, 3)
+	var yw: Dictionary = rt._set_cmd(cam, {"prop": "position:y", "value": "6"})
+	_ok(bool(yw.get("ok", false)) and cam.position == Vector3(1, 6, 3), "a struct member (position:y) takes \"6\" by the type it holds (set_indexed refused the string)")
+
+	# --- 2D and colors went through the same local converter
+	var spr := Node2D.new()
+	root.add_child(spr)
+	var w2: Dictionary = rt._set_cmd(spr, {"prop": "position", "value": "100 200"})
+	_ok(bool(w2.get("ok", false)) and spr.position == Vector2(100, 200), "a Vector2 takes \"x y\" (it fell to Vector2.ZERO the same way): %s" % str(spr.position))
+	var colors: Array = [["#ff0000", Color(1, 0, 0)], ["red", Color(1, 0, 0)], [[0, 1, 0], Color(0, 1, 0)], [[0, 0, 1, 0.5], Color(0, 0, 1, 0.5)],
+		[{"r": 1, "g": 1, "b": 0}, Color(1, 1, 0)], ["Color(0, 1, 1, 1)", Color(0, 1, 1)], ["(1.0, 0.0, 1.0, 1.0)", Color(1, 0, 1)], ["0.5 0.5 0.5", Color(0.5, 0.5, 0.5)],
+		["Color(1, 0.5, 0)", Color(1, 0.5, 0)], ["Color.GOLD", Color.GOLD]]
+	var cbad: Array = []
+	for row in colors:
+		spr.modulate = Color.WHITE
+		var wc: Dictionary = rt._set_cmd(spr, {"prop": "modulate", "value": row[0]})
+		if not bool(wc.get("ok", false)) or not spr.modulate.is_equal_approx(row[1]):
+			cbad.append("%s -> %s" % [var_to_str(row[0]), str(spr.modulate)])
+	_ok(cbad.is_empty(), "a Color takes hex, a name, [r,g,b(,a)], {r,g,b}, Color(...) and the (r, g, b, a) a read prints%s" % ("" if cbad.is_empty() else ": " + str(cbad)))
+	spr.modulate = Color(0.2, 0.4, 0.6)
+	var cno: Dictionary = rt._set_cmd(spr, {"prop": "modulate", "value": "notacolor"})
+	_ok(not bool(cno.get("ok", true)) and str(cno.get("error", "")).begins_with("Node2D.modulate: expected Color") and spr.modulate.is_equal_approx(Color(0.2, 0.4, 0.6)), "a string that is no color is refused instead of turning the node black: %s" % str(cno.get("error", "")))
+
+	# --- scalars, enums, names and paths: a failed conversion used to write the type's zero
+	var p := _SetProbe.new()
+	root.add_child(p)
+	var hp5: Dictionary = rt._set_cmd(p, {"prop": "hp", "value": "5"})
+	var hp_abc: Dictionary = rt._set_cmd(p, {"prop": "hp", "value": "abc"})
+	var hp_frac: Dictionary = rt._set_cmd(p, {"prop": "hp", "value": 2.5})
+	_ok(bool(hp5.get("ok", false)) and not bool(hp_abc.get("ok", true)) and not bool(hp_frac.get("ok", true)) and p.hp == 5,
+		"an int takes \"5\", and \"abc\" (it wrote 0) and 2.5 (it wrote 2) are refused: %s | %s" % [str(hp_abc.get("error", "")), str(hp_frac.get("error", ""))])
+	var vis: Dictionary = rt._set_cmd(p, {"prop": "visible", "value": "false"})
+	var vis_landed := bool(vis.get("ok", false)) and not p.visible
+	p.visible = true
+	var vis_bad: Dictionary = rt._set_cmd(p, {"prop": "visible", "value": "maybe"})
+	_ok(vis_landed and not bool(vis_bad.get("ok", true)) and p.visible, "a bool takes \"false\", and \"maybe\" is refused instead of read as false")
+	var mode_name: Dictionary = rt._set_cmd(p, {"prop": "process_mode", "value": "Always"})
+	var mode_num: Dictionary = rt._set_cmd(p, {"prop": "process_mode", "value": 3})
+	_ok(not bool(mode_name.get("ok", true)) and str(mode_name.get("suggestion", "")).contains("3 Always") and bool(mode_num.get("ok", false)) and p.process_mode == Node.PROCESS_MODE_ALWAYS,
+		"an enum refuses its name (it wrote 0, Inherit) and the suggestion lists the numbers: %s" % str(mode_name.get("suggestion", "")))
+	var gait: Dictionary = rt._set_cmd(p, {"prop": "gait", "value": "Run"})
+	_ok(str(gait.get("suggestion", "")).contains("0 Walk, 5 Run, 6 Fly"), "a script enum with explicit values is numbered the way the engine numbers it: %s" % str(gait.get("suggestion", "")))
+	var anim: Dictionary = rt._set_cmd(p, {"prop": "anim", "value": "run"})
+	_ok(bool(anim.get("ok", false)) and typeof(p.anim) == TYPE_STRING_NAME and p.anim == &"run", "a StringName property takes a string (it was refused as 'cannot store String in a StringName property')")
+	var tgt: Dictionary = rt._set_cmd(p, {"prop": "target", "value": "C/D"})
+	var tgt_set := p.target
+	var tgt_clear: Dictionary = rt._set_cmd(p, {"prop": "target", "value": null})
+	_ok(bool(tgt.get("ok", false)) and tgt_set == NodePath("C/D") and bool(tgt_clear.get("ok", false)) and p.target.is_empty(), "a NodePath takes a string, and null clears it")
+
+	# --- untyped variables: the value they hold decides
+	var sp: Dictionary = rt._set_cmd(p, {"prop": "speed", "value": 250.5})
+	_ok(bool(sp.get("ok", false)) and typeof(p.speed) == TYPE_FLOAT and is_equal_approx(p.speed, 250.5), "an untyped variable holding an int takes a fraction (it was cut to 250)")
+	var aim: Dictionary = rt._set_cmd(p, {"prop": "aim", "value": "0 6 11"})
+	var aim_bad: Dictionary = rt._set_cmd(p, {"prop": "aim", "value": "abc"})
+	_ok(bool(aim.get("ok", false)) and p.aim == Vector3(0, 6, 11) and not bool(aim_bad.get("ok", true)), "an untyped variable holding a Vector3 takes \"0 6 11\" and refuses \"abc\"")
+	var anyw: Dictionary = rt._set_cmd(p, {"prop": "anything", "value": "free text"})
+	_ok(bool(anyw.get("ok", false)) and p.anything == "free text", "an untyped variable at null has no type to hold a value to, so it takes it as sent")
+
+	# --- a declared type holds even where the value reads null
+	var tex_bad: Dictionary = rt._set_cmd(p, {"prop": "tex", "value": "res://icon.svg"})
+	_ok(not bool(tex_bad.get("ok", true)) and str(tex_bad.get("error", "")).contains("expected an object"), "an object property at null refuses a string up front: %s" % str(tex_bad.get("error", "")))
+	p.tex = ImageTexture.new()
+	var tex_clear: Dictionary = rt._set_cmd(p, {"prop": "tex", "value": null})
+	_ok(bool(tex_clear.get("ok", false)) and p.tex == null, "null clears an object property")
+	var box := MeshInstance3D.new()
+	box.mesh = BoxMesh.new()
+	var sm := ShaderMaterial.new()
+	var sh := Shader.new()
+	sh.code = "shader_type spatial;\nuniform vec4 tint : source_color = vec4(1.0);\nuniform vec3 dir;\n"
+	sm.shader = sh
+	box.material_override = sm
+	root.add_child(box)
+	var tint_before: Variant = sm.get("shader_parameter/tint")
+	var tint: Dictionary = rt._set_cmd(box, {"prop": "material_override:shader_parameter/tint", "value": "#ff0000"})
+	var tint_now: Variant = sm.get("shader_parameter/tint")
+	_ok(tint_before == null and bool(tint.get("ok", false)) and tint_now is Color and (tint_now as Color).is_equal_approx(Color(1, 0, 0)),
+		"a shader uniform at its default reads null, and \"#ff0000\" is stored as the Color it declares, not as the string: %s" % var_to_str(tint_now))
+	var dir: Dictionary = rt._set_cmd(box, {"prop": "material_override:shader_parameter/dir", "value": "0 6 11"})
+	var dir_bad: Dictionary = rt._set_cmd(box, {"prop": "material_override:shader_parameter/dir", "value": "up"})
+	_ok(bool(dir.get("ok", false)) and sm.get("shader_parameter/dir") == Vector3(0, 6, 11) and str(dir_bad.get("error", "")).begins_with("ShaderMaterial.shader_parameter/dir: expected Vector3"),
+		"...a vec3 uniform takes \"0 6 11\", and a value that is no Vector3 is refused, naming the uniform: %s" % str(dir_bad.get("error", "")))
+	var label := Label.new()
+	root.add_child(label)
+	var t1: Dictionary = rt._set_cmd(label, {"prop": "text", "value": "[1, 2]"})
+	var t1_text := label.text
+	var t2: Dictionary = rt._set_cmd(label, {"prop": "text", "value": "[Press Start]"})
+	_ok(bool(t1.get("ok", false)) and t1_text == "[1, 2]" and bool(t2.get("ok", false)) and label.text == "[Press Start]", "a text property keeps bracketed text as written (\"[1, 2]\" came back as \"[1.0, 2.0]\")")
+
+	# --- runtime "call": set / set_deferred / set_indexed hold the value to the property's type too
+	cam.position = Vector3(5, 5, 5)
+	var c_set: Dictionary = rt._call_cmd(cam, {"method": "set", "args": ["position", "0 6 11"]})
+	_ok(bool(c_set.get("ok", false)) and cam.position == Vector3(0, 6, 11), "call set(\"position\", \"0 6 11\") lands the vector (Object.set stored Vector3.ZERO for the string): %s" % str(cam.position))
+	cam.position = Vector3(5, 5, 5)
+	var c_bad: Dictionary = rt._call_cmd(cam, {"method": "set", "args": ["position", "abc"]})
+	_ok(not bool(c_bad.get("ok", true)) and str(c_bad.get("error", "")).begins_with("Camera3D.set: arg 1 (value): expected Vector3") and cam.position == Vector3(5, 5, 5),
+		"...and a value that is no Vector3 is an error with the camera left alone: %s" % str(c_bad.get("error", "")))
+	var c_idx: Dictionary = rt._call_cmd(cam, {"method": "set_indexed", "args": ["position:y", "7"]})
+	_ok(bool(c_idx.get("ok", false)) and is_equal_approx(cam.position.y, 7.0), "call set_indexed(\"position:y\", \"7\") lands")
+	var c_def: Dictionary = rt._call_cmd(cam, {"method": "set_deferred", "args": ["position", "(1.0, 2.0, 3.0)"]})
+	await process_frame
+	await process_frame
+	_ok(bool(c_def.get("ok", false)) and cam.position == Vector3(1, 2, 3), "call set_deferred lands the converted vector once the frame flushes: %s" % str(cam.position))
+	var c_typed: Dictionary = rt._call_cmd(cam, {"method": "set_position", "args": ["4 5 6"]})
+	_ok(bool(c_typed.get("ok", false)) and cam.position == Vector3(4, 5, 6), "a typed parameter still takes \"x y z\" (CallArgs, as before)")
+	var c_unknown: Dictionary = rt._call_cmd(cam, {"method": "set", "args": ["no_such_prop", "abc"]})
+	_ok(bool(c_unknown.get("ok", false)) and cam.position == Vector3(4, 5, 6), "set on a name that does not resolve is passed through as before (Object.set ignores it)")
+	var tuple: Dictionary = CallArgs.coerce("(1.0, 2.0, 3.0)", TYPE_VECTOR3)
+	var bracket: Dictionary = CallArgs.coerce("[1, 2, 3]", TYPE_VECTOR3)
+	var ctuple: Dictionary = CallArgs.coerce("(1.0, 0.0, 0.0, 0.5)", TYPE_COLOR)
+	_ok(tuple.get("value") == Vector3(1, 2, 3) and bracket.get("value") == Vector3(1, 2, 3) and ctuple.get("value") == Color(1, 0, 0, 0.5),
+		"CallArgs reads the (x, y, z) a runtime read prints and a JSON array sent as text, for a call's arguments as for a write")
+
+	for n in [label, box, p, spr, cam, rt]:
+		root.remove_child(n)
+		n.free()
+	return true
+
+
+## Values read off the running game keep their types (1.17): a vector is an array, an int stays an int, a transform is
+## [[x axis], [y axis], [z axis], [origin]], each float32 component the shortest decimal that is still that float32. And
+## whatever a read returns, CallArgs writes back as the same value, nested as it came or flat.
+func _t_typed_values() -> bool:
+	print("[unit] 1.17 typed values: the shape a client reads, and a value read can be written straight back")
+	var rot := Basis.from_euler(Vector3(deg_to_rad(30.0), deg_to_rad(45.0), 0.0))
+	var pose := Transform3D(rot, Vector3(1.5, 0.58, -3.4))
+	var rows := [
+		[12, "12"], [12.5, "12.5"], [true, "true"], ["hi", "\"hi\""], [null, "null"], [&"run", "\"run\""], [NodePath("A/B"), "\"A/B\""],
+		[9007199254740993, "9007199254740993"], [Vector2(1.5, 2), "[1.5,2]"], [Vector2i(3, -4), "[3,-4]"], [Vector3(0, 6, 11), "[0,6,11]"],
+		[Vector3(-3.4, 0.58, 4.6), "[-3.4,0.58,4.6]"], [Vector3i(1, 2, 3), "[1,2,3]"], [Vector4(1, 2, 3, 4.5), "[1,2,3,4.5]"],
+		[Vector4i(-1, 0, 1, 2), "[-1,0,1,2]"], [Color(1, 0.5, 0, 1), "[1,0.5,0,1]"], [Quaternion(0, 0, 0, 1), "[0,0,0,1]"],
+		[Rect2(1, 2, 3, 4), "[[1,2],[3,4]]"], [Rect2i(-1, -2, 3, 4), "[[-1,-2],[3,4]]"], [AABB(Vector3(1, 2, 3), Vector3(4, 5, 6)), "[[1,2,3],[4,5,6]]"],
+		[Plane(Vector3(0, 1, 0), 2), "[[0,1,0],2]"], [Transform2D(Vector2(1, 0), Vector2(0, 1), Vector2(5, 6)), "[[1,0],[0,1],[5,6]]"],
+		[Basis.IDENTITY, "[[1,0,0],[0,1,0],[0,0,1]]"], [Transform3D(Basis.IDENTITY, Vector3(7, 8, 9)), "[[1,0,0],[0,1,0],[0,0,1],[7,8,9]]"],
+		[Projection.IDENTITY, "[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]"],
+		[PackedFloat32Array([0.58, 2.0]), "[0.58,2]"], [PackedVector3Array([Vector3(1, 2, 3)]), "[[1,2,3]]"], [PackedInt64Array([9007199254740993]), "[9007199254740993]"],
+		[PackedColorArray([Color(0, 1, 0)]), "[[0,1,0,1]]"], [PackedStringArray(["a", "b"]), "[\"a\",\"b\"]"],
+		[[Vector3(1, 2, 3), 12, "hi", {"k": Vector2(1.5, 2)}], "[[1,2,3],12,\"hi\",{\"k\":[1.5,2]}]"],
+		[{1: "a", Vector2i(1, 2): "b"}, "{\"(1, 2)\":\"b\",\"1\":\"a\"}"],
+		[NAN, "\"nan\""], [INF, "\"inf\""], [-INF, "\"-inf\""], [Vector2(INF, 0), "[\"inf\",0]"],
+	]
+	var off: Array = []
+	for row in rows:
+		var got := JSON.stringify(TypedJson.render(row[0]))
+		if got != str(row[1]):
+			off.append("%s -> %s (want %s)" % [var_to_str(row[0]), got, row[1]])
+	_ok(off.is_empty(), "render gives %d values their client shape: an int as an int, a vector or a color as an array, the matrix family nested, a float32 component short, nan and inf as text%s" % [rows.size(), "" if off.is_empty() else ": " + "; ".join(PackedStringArray(off))])
+	var vec: Array = TypedJson.render(Vector3(0, 6, 11))
+	_ok(typeof(TypedJson.render(12)) == TYPE_INT and typeof(vec[1]) == TYPE_INT and typeof(TypedJson.render(12.5)) == TYPE_FLOAT and typeof((TypedJson.render(Vector2(1.5, 2)) as Array)[0]) == TYPE_FLOAT,
+		"an int stays an int, a whole component is one too, and a fraction stays a float")
+	var shown := JSON.stringify(TypedJson.render(pose))
+	_ok(shown.contains(",0.58,") and shown.contains("-3.4]") and not shown.contains("0.5799") and not shown.contains("3.4000") and shown.length() < str(pose).length(),
+		"a bone pose reads short: %s (%d characters; str() printed %d)" % [shown, shown.length(), str(pose).length()])
+	_ok(TypedJson.short_float(0.1) == 0.1 and TypedJson.short_float(PackedFloat32Array([0.1])[0]) == 0.1 and str(TypedJson.short_float(PackedFloat32Array([0.58])[0])) == "0.58",
+		"a float32 comes back as its shortest decimal, and a plain double is left as it is")
+	var obj := Node.new()
+	obj.name = "ZzTypedObj"
+	_ok(TypedJson.render(obj) == str(obj) and TypedJson.render([obj]) == [str(obj)] and TypedJson.render(Callable(obj, "queue_free")) == str(Callable(obj, "queue_free")), "an object or a Callable reads as its text")
+	obj.free()
+
+	# --- read back, write back: every value type, nested as a read returns it, and the same numbers flat
+	var structs := [Vector2(1.5, -2), Vector2i(3, -4), Vector3(-3.4, 0.58, 4.6), Vector3i(1, 2, 3), Vector4(1, 2, 3, 4.5), Vector4i(-1, 0, 1, 2),
+		Color(0.2, 0.4, 0.6, 0.8), Quaternion(0.1, 0.2, 0.3, 0.9), Rect2(1.5, 2, 3, 4), Rect2i(-1, -2, 3, 4), AABB(Vector3(1, 2, 3), Vector3(4, 5, 6.5)),
+		Plane(Vector3(0, 1, 0), 2.25), Transform2D(0.5, Vector2(5, 6)), rot, pose, Projection.create_perspective(60, 1.5, 0.1, 100)]
+	var lost: Array = []
+	for v in structs:
+		var shaped: Variant = TypedJson.render(v)
+		var nested: Dictionary = CallArgs.coerce(shaped, typeof(v))
+		var flat: Dictionary = CallArgs.coerce(TypedJson.numbers_of(shaped), typeof(v))
+		var as_text: Dictionary = CallArgs.coerce_write(JSON.stringify(shaped), {"name": "p", "type": typeof(v)}, v)
+		if not bool(nested.get("ok", false)) or nested["value"] != v or not bool(flat.get("ok", false)) or flat["value"] != v or not bool(as_text.get("ok", false)) or as_text["value"] != v:
+			lost.append("%s: %s / %s / %s" % [var_to_str(v), str(nested).left(70), str(flat).left(70), str(as_text).left(70)])
+	_ok(lost.is_empty(), "%d value types read back write back as the very same value: nested as a read returns them, flat, and as JSON text%s" % [structs.size(), "" if lost.is_empty() else ": " + str(lost)])
+	var literal: Dictionary = CallArgs.coerce(var_to_str(pose), TYPE_TRANSFORM3D)
+	var rows_flat: Dictionary = CallArgs.coerce(Array(var_to_str(pose).trim_prefix("Transform3D(").trim_suffix(")").split_floats(",")), TYPE_TRANSFORM3D)
+	# Approximately: 4.4.1's var_to_str writes six digits, so its literal is near the pose, not the same float32s.
+	_ok(bool(literal.get("ok", false)) and (literal["value"] as Transform3D).is_equal_approx(pose) and bool(rows_flat.get("ok", false)) and not (rows_flat["value"] as Transform3D).is_equal_approx(pose),
+		"a flat array lists each axis and then the origin, as a read returns it: the Transform3D(...) literal (written row by row) still lands as the engine reads it, and its numbers taken as a flat array are another transform")
+	var no_origin: Dictionary = CallArgs.coerce([[1, 0, 0], [0, 1, 0], [0, 0, 1]], TYPE_TRANSFORM3D)
+	var eleven: Dictionary = CallArgs.coerce([1, 0, 0, 0, 1, 0, 0, 0, 1, 7, 8], TYPE_TRANSFORM3D)
+	var no_d: Dictionary = CallArgs.coerce([[0, 1, 0]], TYPE_PLANE)
+	var word: Dictionary = CallArgs.coerce([["a", 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]], TYPE_TRANSFORM3D)
+	var hint: Dictionary = CallArgs.coerce_write("nonsense", {"name": "transform", "type": TYPE_TRANSFORM3D}, Transform3D())
+	_ok(not bool(no_origin.get("ok", true)) and str(no_origin.get("error", "")).contains("[[x axis], [y axis], [z axis], [origin]]") and not bool(eleven.get("ok", true)) and str(eleven.get("error", "")).contains("12 numbers flat")
+		and not bool(no_d.get("ok", true)) and not bool(word.get("ok", true)) and str(hint.get("suggestion", "")).contains("[[x axis], [y axis], [z axis], [origin]]"),
+		"a transform with no origin, eleven numbers, a plane with no d and a word among the numbers are refused, and the error spells the shape a read returns: %s" % str(hint.get("suggestion", "")))
+	if ResourceLoader.exists(_STANDALONE_PATH):
+		var T = load(_STANDALONE_PATH)
+		var drift: Array = []
+		for row in rows:
+			if JSON.stringify(T.render_value(row[0])) != JSON.stringify(TypedJson.render(row[0])):
+				drift.append(var_to_str(row[0]))
+		for v in structs:
+			if JSON.stringify(T.render_value(v)) != JSON.stringify(TypedJson.render(v)):
+				drift.append(var_to_str(v))
+		_ok(drift.is_empty(), "the exported test's copy renders all %d values as TypedJson does%s" % [rows.size() + structs.size(), "" if drift.is_empty() else ": " + str(drift)])
+		# Its inject step writes what a read returned too: the same spellings land the same value, and the same are refused.
+		var spellings: Array = []
+		for v in structs:
+			spellings.append([TypedJson.render(v), typeof(v)])
+			spellings.append([TypedJson.numbers_of(TypedJson.render(v)), typeof(v)])
+		spellings.append_array([[var_to_str(pose), TYPE_TRANSFORM3D], [[[1, 0, 0], [0, 1, 0], [0, 0, 1]], TYPE_TRANSFORM3D], [[1, 0, 0, 0, 1, 0, 0, 0, 1, 7, 8], TYPE_TRANSFORM3D],
+			[[[0, 1, 0]], TYPE_PLANE], [[1, 2], TYPE_PLANE], [[["a", 0], [0, 1]], TYPE_RECT2], [[], TYPE_AABB], ["Rect2(1, 2, 3, 4)", TYPE_RECT2]])
+		var co_drift: Array = []
+		for s in spellings:
+			var x: Dictionary = CallArgs.coerce(s[0], s[1])
+			var y: Dictionary = T.coerce(s[0], s[1])
+			if bool(x.get("ok", false)) != bool(y.get("ok", false)) or (bool(x.get("ok", false)) and var_to_str(x["value"]) != var_to_str(y["value"])):
+				co_drift.append("%s -> %s" % [JSON.stringify(s[0]).left(60), type_string(s[1])])
+		_ok(co_drift.is_empty(), "the exported test's coerce agrees with CallArgs on %d spellings: every value type as a read returns it and flat, and the transform, plane, rect and box refusals%s" % [spellings.size(), "" if co_drift.is_empty() else ": " + str(co_drift)])
+	else:
+		print("  skip  playtest_standalone.gd is not in this build (Lite trims it)")
+	return true
+
+
+## What the typed wire is tried on: an int above 2^53 (where a double drops a digit), one big enough that a relative
+## tolerance would take its neighbour for it, a vector of float32 components, a method that returns a nested list and
+## one that changes the game, and the two containers var_to_bytes would carry an object id in (a dictionary keyed by a
+## node, an Array[Node]).
+class _TypedProbe extends Node:
+	var hp: int = 12
+	var big: int = 9007199254740993
+	var score: int = 123456
+	var aim := Vector3(-3.4, 0.58, 4.6)
+	var by_node := {}
+	var nodes: Array[Node] = []
+	var bumps := 0
+
+	func trio() -> Array:
+		return [Vector3(1, 2, 3), 12, "hi"]
+
+	func bump() -> int:
+		bumps += 1
+		return bumps
+
+
+## The editor's half of the game channel with the socket swapped for a runtime in this process: a command is tagged as
+## send_command tags it, crosses as the JSON line the game writes, and comes back through the same decode (1.17).
+## `legacy` plays an editor that does not ask for the binary reply, and `unknown` names the commands a runtime from before
+## 1.17 does not know: it answers them as its dispatch does, and runs nothing.
+class _WireBridge extends RefCounted:
+	const TJ := preload("res://addons/beckett/core/typed_json.gd")
+	var rt: Node = null
+	var legacy := false
+	var unknown: Array = []
+	var sent: Array = []
+
+	func is_game_connected() -> bool:
+		return true
+
+	func send_command(cmd: Dictionary, _timeout_ms: int = 4000) -> Dictionary:
+		sent.append(cmd.duplicate(true))
+		if unknown.has(str(cmd.get("cmd", ""))):
+			return {"ok": false, "error": "unknown cmd"}
+		var msg: Dictionary = JSON.parse_string(JSON.stringify(cmd))  # what the game parses: every number a float
+		msg["_id"] = 1.0
+		if not legacy:
+			msg[TJ.ASK] = 1.0
+		return TJ.decode_reply(JSON.parse_string(rt.reply_line(msg)))
+
+
+## One reply as the bridge reads it, through _WireBridge.
+func _wire(rt: Node, cmd: Dictionary, legacy := false) -> Dictionary:
+	var br := _WireBridge.new()
+	br.rt = rt
+	br.legacy = legacy
+	return br.send_command(cmd)
+
+
+## The game answers in the engine's binary form when the editor asks, in JSON when it does not, and the editor reads
+## both (1.17). An int over 2^53 crosses exactly, objects and callables arrive as the game's own text, and the game's
+## own callers (ui_do's inject step) keep the text they always had.
+func _t_typed_wire() -> bool:
+	print("[unit] 1.17 typed replies: binary when the editor asks, JSON when not, and the editor reads both")
+	await process_frame
+	var game := Node3D.new()
+	game.name = "ZzTypedGame"
+	root.add_child(game)
+	var cam := Camera3D.new()
+	cam.name = "ZzTypedCam"
+	cam.position = Vector3(0, 6, 11)
+	game.add_child(cam)
+	var probe := _TypedProbe.new()
+	probe.name = "ZzTyped"
+	game.add_child(probe)
+	probe.by_node = {cam: 1.5}
+	probe.nodes = [cam]
+	var rt = MCPRuntime.new()
+	root.add_child(rt)
+	current_scene = game
+
+	# --- an editor from before 1.17 against this game: no flag, so the JSON reply it always read
+	var legacy_line: String = rt.reply_line({"cmd": "get", "path": "ZzTypedCam", "prop": "position", "_id": 3.0})
+	var legacy: Dictionary = JSON.parse_string(legacy_line)
+	_ok(not legacy.has(TypedJson.MARK) and str(legacy.get("value")) == str(Vector3(0, 6, 11)) and int(legacy.get("_id", 0)) == 3, "an editor that does not ask gets the JSON reply it always read: %s" % legacy_line)
+	# --- this editor and this game
+	var pos: Dictionary = _wire(rt, {"cmd": "get", "path": "ZzTypedCam", "prop": "position"})
+	_ok(pos.get("value") == [0, 6, 11] and typeof((pos["value"] as Array)[1]) == TYPE_INT and int(pos.get("_id", 0)) == 1, "an editor that asks reads position as [0, 6, 11]: %s" % str(pos))
+	var raw: Dictionary = JSON.parse_string(rt.reply_line({"cmd": "get", "path": "ZzTypedCam", "prop": "position", "_id": 8.0, "tv": 1.0}))
+	_ok(raw.size() == 3 and raw.has(TypedJson.MARK) and raw.has("b") and int(raw.get("_id", 0)) == 8, "...over a line that is {_id, __bk, b}: %s" % JSON.stringify(raw).left(80))
+	# --- this editor against a game from before 1.17: a reply with no marker comes back untouched
+	var old_reply := {"ok": true, "value": "(0.0, 6.0, 11.0)", "_id": 9.0}
+	_ok(TypedJson.decode_reply(old_reply) == old_reply, "a reply from a game that predates the binary reply passes through as it is")
+	_ok(TypedJson.decode_reply({"__bk": 2, "b": "x"}).get("__bk") == 2 and str(TypedJson.decode_reply({"__bk": 1.0, "b": ""}).get("error", "")).contains("does not decode"),
+		"a reply of another version passes through, and a binary reply that does not decode is an error that says what to do")
+
+	# --- ints exact, nested values typed
+	var big: Dictionary = _wire(rt, {"cmd": "get", "path": "ZzTyped", "prop": "big"})
+	var big_json: Dictionary = _wire(rt, {"cmd": "get", "path": "ZzTyped", "prop": "big"}, true)
+	_ok(typeof(big.get("value")) == TYPE_INT and big.get("value") == 9007199254740993 and JSON.stringify(big).contains(":9007199254740993"), "an int above 2^53 (an instance id) crosses exactly: %s" % str(big.get("value")))
+	_ok(typeof(big_json.get("value")) == TYPE_FLOAT and int(big_json.get("value")) != 9007199254740993, "...where the JSON reply reads it as a double, another number (%s)" % str(big_json.get("value")))
+	var hp: Dictionary = _wire(rt, {"cmd": "get", "path": "ZzTyped", "prop": "hp"})
+	_ok(typeof(hp.get("value")) == TYPE_INT and JSON.stringify(hp.get("value")) == "12", "an int property reads 12, never 12.0")
+	var trio: Dictionary = _wire(rt, {"cmd": "call", "path": "ZzTyped", "method": "trio"})
+	_ok(trio.get("result") == [[1, 2, 3], 12, "hi"] and typeof((trio["result"] as Array)[1]) == TYPE_INT, "a method returning [Vector3, int, String] comes back typed and nested: %s" % JSON.stringify(trio.get("result")))
+	var aim: Dictionary = _wire(rt, {"cmd": "get", "path": "ZzTyped", "prop": "aim"})
+	_ok(JSON.stringify(aim.get("value")) == "[-3.4,0.58,4.6]", "float32 components come back short: %s" % JSON.stringify(aim.get("value")))
+	var set_r: Dictionary = _wire(rt, {"cmd": "set", "path": "ZzTypedCam", "prop": "position", "value": [1, 2, 3]})
+	_ok(set_r.get("before") == [0, 6, 11] and set_r.get("after") == [1, 2, 3] and cam.position == Vector3(1, 2, 3), "a write's before and after are typed too: %s -> %s" % [str(set_r.get("before")), str(set_r.get("after"))])
+	var back: Dictionary = _wire(rt, {"cmd": "set", "path": "ZzTypedCam", "prop": "position", "value": pos.get("value")})
+	_ok(bool(back.get("ok", false)) and cam.position == Vector3(0, 6, 11), "...and the value a read returned writes straight back")
+
+	# --- what var_to_bytes cannot carry is text, written in the game
+	var keyed: Dictionary = _wire(rt, {"cmd": "get", "path": "ZzTyped", "prop": "by_node"})
+	var listed: Dictionary = _wire(rt, {"cmd": "get", "path": "ZzTyped", "prop": "nodes"})
+	_ok(keyed.get("value") == {str(cam): 1.5} and listed.get("value") == [str(cam)], "a node used as a key, and the nodes of an Array[Node], arrive as the text the game prints for them: %s / %s" % [str(keyed.get("value")), str(listed.get("value"))])
+	var plain: Dictionary = TypedJson.to_plain({"c": Callable(probe, "bump"), "s": probe.ready, "r": RID(), "o": [probe]})
+	_ok(plain["c"] == str(Callable(probe, "bump")) and plain["s"] == str(probe.ready) and plain["r"] == str(RID()) and plain["o"] == [str(probe)], "a Callable, a Signal and an RID are their text too, read where they live")
+	var ints: Array[int] = [1, 2]
+	var sent_ints: Variant = (TypedJson.to_plain({"k": ints}) as Dictionary)["k"]
+	_ok(ints.is_typed() and not (sent_ints as Array).is_typed() and sent_ints == [1, 2], "a typed array (an Array[int]) goes plain: no type a script declared rides along with the bytes")
+	if int(Engine.get_version_info().get("hex", 0)) >= 0x040400:
+		# Typed dictionaries are 4.4+: one is written in a script compiled here, so this suite parses where they do not exist.
+		var gs := GDScript.new()
+		gs.source_code = "extends RefCounted\nvar d: Dictionary[String, int] = {\"a\": 1}\n"
+		if gs.reload() == OK:
+			var td: Variant = gs.new().get("d")
+			var sent_d: Variant = (TypedJson.to_plain({"k": td}) as Dictionary)["k"]
+			_ok(td.is_typed() and not sent_d.is_typed() and sent_d == {"a": 1}, "...and so does a typed dictionary (4.4+)")
+	var inf_r: Dictionary = _wire(rt, {"cmd": "eval", "expr": "Vector2(INF, 0)", "bare": true})
+	_ok(inf_r.get("value") == ["inf", 0], "an infinity crosses as text, inside a line that stays JSON (a bare inf made the reply unreadable on 4.4)")
+
+	# --- a screenshot stays JSON, and outside a reply the game's own callers get what they always did
+	var shot: Dictionary = JSON.parse_string(rt.reply_line({"cmd": "screenshot", "viewport": "ZzNoSuchViewport", "_id": 10.0, "tv": 1.0}))
+	_ok(not shot.has(TypedJson.MARK) and shot.has("error"), "a screenshot reply is never packed: its picture is base64 already")
+	var read: Dictionary = rt._get_cmd(cam, {"prop": "position"})
+	var wrote: Dictionary = rt._set_cmd(cam, {"prop": "position", "value": [1, 2, 3]})
+	_ok(read.get("value") is String and str(read.get("value")) == str(Vector3(0, 6, 11)) and wrote.get("before") is String and str(wrote.get("after")) == str(Vector3(1, 2, 3)),
+		"outside a reply (ui_do's inject step prints before and after) a struct is the text it always was")
+	cam.position = Vector3(0, 6, 11)
+	# A step_until condition that comes true on a later frame is judged on a physics tick, between replies: the reply
+	# that carries its value still makes it typed, as for one true at once. The tick clock is Full-only.
+	var clock: Variant = rt._step_clock()
+	if clock != null:
+		var cond_ex := Expression.new()
+		cond_ex.parse("get_node('ZzTypedCam').position")
+		clock._expr = cond_ex
+		clock._base = Callable(rt, "_root")
+		clock._safe = Callable(rt, "_safe")
+		clock._kind = "until"
+		clock._terminator = "condition"
+		clock._eval()
+		var st_new: Dictionary = _wire(rt, {"cmd": "tc_step_status"})
+		var st_old: Dictionary = _wire(rt, {"cmd": "tc_step_status"}, true)
+		clock._expr = null
+		clock._base = Callable()
+		clock._safe = Callable()
+		clock._kind = ""
+		clock._terminator = ""
+		clock._cond_value = null
+		_ok(st_new.get("condition_value") == [0, 6, 11] and str(st_old.get("condition_value")) == str(Vector3(0, 6, 11)),
+			"step_until's condition_value from a later frame reads [0, 6, 11], and an editor that does not ask still gets its text: %s / %s" % [str(st_new.get("condition_value")), str(st_old.get("condition_value"))])
+	else:
+		print("  skip  a later step_until condition (Lite trims runtime/step_clock.gd)")
+
+	# --- the real thing: send_command asks over a socket and decodes what the game wrote
+	var srv := TCPServer.new()
+	if srv.listen(0, "127.0.0.1") == OK:
+		var bridge = RuntimeBridge.new()
+		bridge.lite = false
+		var client := StreamPeerTCP.new()
+		client.connect_to_host("127.0.0.1", srv.get_local_port())
+		var peer: StreamPeerTCP = null
+		var t0 := Time.get_ticks_msec()
+		while Time.get_ticks_msec() - t0 < 3000:
+			client.poll()
+			if peer == null and srv.is_connection_available():
+				peer = srv.take_connection()
+			if peer != null and client.get_status() == StreamPeerTCP.STATUS_CONNECTED:
+				break
+			OS.delay_msec(5)
+		if peer != null and client.get_status() == StreamPeerTCP.STATUS_CONNECTED:
+			bridge._peer = client
+			var next := {"cmd": "get", "path": "ZzTyped", "prop": "big", "_id": float(int(bridge._seq) + 1), "tv": 1.0}
+			peer.put_data((rt.reply_line(next) + "\n").to_utf8_buffer())
+			var got: Dictionary = bridge.send_command({"cmd": "get", "path": "ZzTyped", "prop": "big"}, 2000)
+			peer.poll()
+			var asked := peer.get_utf8_string(peer.get_available_bytes())
+			_ok(typeof(got.get("value")) == TYPE_INT and got.get("value") == 9007199254740993 and asked.contains("\"tv\":1") and not got.has("b"),
+				"over a real socket, send_command asks with tv=1 and hands its caller the decoded value (%s; sent %s)" % [str(got.get("value")), asked.strip_edges().left(90)])
+			peer.disconnect_from_host()
+		else:
+			print("  skip  the loopback pair did not connect")
+		client.disconnect_from_host()
+		srv.stop()
+		bridge.free()
+	else:
+		print("  skip  no loopback listener on this machine")
+	for n in [rt, game]:
+		root.remove_child(n)
+		n.free()
+	return true
+
+
+## One node_state rule (1.17): the editor's playtest run (against this game, and against one from before 1.17), the
+## headless runner, the exported test, ui_do's assert step and assert_node_state runtime=true judge every spelling of a
+## vector or an int expectation alike, so a suite gets one verdict wherever it runs, and a suite saved with the text a
+## read printed before 1.17 still passes.
+func _t_node_state_one_rule() -> bool:
+	print("[unit] 1.17 one node_state rule: every path gives a vector or an int assert the same verdict, however it is spelled")
+	await process_frame
+	var game := Node3D.new()
+	game.name = "ZzNsGame"
+	root.add_child(game)
+	var player := _TypedProbe.new()
+	player.name = "ZzNsPlayer"
+	game.add_child(player)
+	var body := Node3D.new()
+	body.name = "ZzNsBody"
+	body.position = Vector3(0, 6, 11)
+	game.add_child(body)
+	var rt = MCPRuntime.new()
+	root.add_child(rt)
+	current_scene = game
+	var rows := [
+		["ZzNsBody", "position", "(0.0, 6.0, 11.0)", true], ["ZzNsBody", "position", "(0, 6, 11)", true], ["ZzNsBody", "position", [0, 6, 11], true],
+		["ZzNsBody", "position", "0 6 11", true], ["ZzNsBody", "position", "Vector3(0, 6, 11)", true], ["ZzNsBody", "position", {"x": 0, "y": 6, "z": 11}, true],
+		["ZzNsBody", "position", "[0, 6, 11]", true], ["ZzNsBody", "position", [0, 6, 12], false], ["ZzNsBody", "position", "(0.0, 6.0, 12.0)", false],
+		["ZzNsBody", "position", "0 6", false], ["ZzNsBody", "position", [0, 6], false], ["ZzNsBody", "position", "abc", false],
+		["ZzNsPlayer", "hp", 12, true], ["ZzNsPlayer", "hp", "12", true], ["ZzNsPlayer", "hp", 13, false], ["ZzNsPlayer", "hp", "12.5", false],
+		["ZzNsPlayer", "aim", "(-3.4, 0.58, 4.6)", true], ["ZzNsPlayer", "aim", [-3.4, 0.58, 4.6], true], ["ZzNsPlayer", "aim", [-3.4, 0.58, 4.7], false],
+		["ZzNsPlayer", "score", 123456, true], ["ZzNsPlayer", "score", 123457, false], ["ZzNsPlayer", "score", "123457", false],
+	]
+	var full := ResourceLoader.exists(_PLAYTEST_TOOLS_PATH) and ResourceLoader.exists(_PLAYTEST_RUNNER_PATH) and ResourceLoader.exists(_STANDALONE_PATH) and ResourceLoader.exists(_QA_TOOLS_PATH)
+	var fs := _FakeServer.new()
+	var br := _WireBridge.new()
+	br.rt = rt
+	fs.bridge = br
+	var old_fs := _FakeServer.new()
+	var old_br := _WireBridge.new()
+	old_br.rt = rt
+	old_br.legacy = true
+	old_fs.bridge = old_br
+	var pt = null
+	var old_pt = null
+	var runner = null
+	var T = null
+	var qa = null
+	if full:
+		pt = load(_PLAYTEST_TOOLS_PATH).new()
+		pt.server = fs
+		old_pt = load(_PLAYTEST_TOOLS_PATH).new()
+		old_pt.server = old_fs
+		runner = load(_PLAYTEST_RUNNER_PATH).new()
+		runner._scene = game
+		T = load(_STANDALONE_PATH)
+		qa = load(_QA_TOOLS_PATH).new()
+		qa.server = fs
+	var split: Array = []
+	var worded: Array = []
+	for row in rows:
+		var equals: Variant = JSON.parse_string(JSON.stringify([row[2]]))[0]  # as a suite file or a tool call carries it: every number a float
+		var live: Variant = game.get_node(str(row[0])).get(str(row[1]))
+		var want: bool = row[3]
+		var verdicts := {"same": TypedJson.same(live, equals), "ui_do": UiDo._values_equal(live, equals)}
+		if full:
+			var a := {"type": "node_state", "target": str(row[0]), "property": str(row[1]), "equals": equals}
+			var ed: Dictionary = pt._eval_assert(a)
+			var ex: Dictionary = T.eval_assert(a, game)
+			verdicts["editor"] = str(ed["status"]) == "pass"
+			verdicts["editor, old game"] = str(old_pt._eval_assert(a)["status"]) == "pass"
+			verdicts["runner"] = str(runner._eval_assert(a)["status"]) == "pass"
+			verdicts["exported"] = str(ex["status"]) == "pass"
+			if str(ed["detail"]) != str(ex["detail"]):
+				worded.append("%s / %s" % [str(ed["detail"]), str(ex["detail"])])
+			verdicts["assert_node_state"] = qa._assert_node_state({"target": str(row[0]), "property": str(row[1]), "equals": equals, "runtime": true}).has("text")
+			verdicts["exported same_value"] = T.same_value(live, equals)
+		for k in verdicts:
+			if verdicts[k] != want:
+				split.append("%s.%s == %s: %s says %s" % [row[0], row[1], JSON.stringify(equals), k, str(verdicts[k])])
+	_ok(split.is_empty(), "%d expectations (a vector as an array, as text old and new, as {x, y, z}; an int as 12, 12.0 and \"12\", and 123457 apart from 123456), %d paths: one verdict each%s" % [rows.size(), 8 if full else 2, "" if split.is_empty() else ": " + "; ".join(PackedStringArray(split))])
+	if full:
+		var twelve: Dictionary = qa._assert_node_state({"target": "ZzNsPlayer", "property": "hp", "equals": 12.0, "runtime": true})
+		_ok(str(twelve.get("text", "")).begins_with("PASS"), "assert_node_state runtime=true equals=12 on an int property passes (the text compare said 12 is not 12.0): %s" % str(twelve))
+		_ok(worded.is_empty(), "...and the exported test words each verdict as the editor's run does, a vector read as [0, 6, 11]%s" % ("" if worded.is_empty() else ": " + "; ".join(PackedStringArray(worded))))
+	else:
+		print("  skip  the Full-only paths (playtest, the runner, the exported test, assert_node_state) are not in this build")
+	# The rule itself, on the shapes a suite holds from before 1.17 and on a few that must stay apart.
+	var rot := Basis.from_euler(Vector3(0.3, 0.2, 0.1))
+	var pose := Transform3D(rot, Vector3(7, 8, 9))
+	var pairs := [
+		[pose, str(pose), true], [pose, var_to_str(pose), true], [pose, TypedJson.render(pose), true], [pose, TypedJson.numbers_of(TypedJson.render(pose)), true],
+		[pose, Array(var_to_str(pose).trim_prefix("Transform3D(").trim_suffix(")").split_floats(",")), false],
+		[Rect2(1, 2, 3, 4), str(Rect2(1, 2, 3, 4)), true], [Plane(Vector3(0, 1, 0), 2), str(Plane(Vector3(0, 1, 0), 2)), true],
+		[Color(1, 0.5, 0, 1), "(1.0, 0.5, 0.0, 1.0)", true], [Color(1, 0.5, 0, 1), "Color(1, 0.5, 0)", true], [Color(1, 0.5, 0, 1), [1, 0.5, 0], false],
+		[{"hp": 3}, {"hp": 3.0}, true], [[1, "a"], [1.0, "a"], true], [null, null, true], [true, "true", true], [1, true, false], ["Score: 12", 12, false],
+		[Vector2(INF, 0), ["inf", 0], true], ["label", "label", true], ["label", "Label", false],
+		# Whole numbers exactly, a fraction within float tolerance.
+		[123456, 123457.0, false], [123456, 123456.0, true], [1000000, 1000009.0, false], [123456.0, 123457.0, false], [Vector2i(200000, 5), [200001, 5], false],
+		[0.1 + 0.2, 0.3, true], [12, "12.0", true],
+		# The numbers in order only where the value read is a vector, a color or a matrix in some spelling.
+		[12, [12], false], ["1 2 3", [1, 2, 3], false], [[1, 2, 3, 4], [[1, 2], [3, 4]], false], [Rect2(1, 2, 3, 4), [1, 2, 3, 4], true], ["(0.0, 6.0, 11.0)", [0, 6, 11], true],
+	]
+	var wrong: Array = []
+	for p in pairs:
+		var got: bool = TypedJson.same(p[0], p[1])
+		if got != bool(p[2]) or (T != null and bool(T.same_value(p[0], p[1])) != got):
+			wrong.append("%s vs %s: %s" % [var_to_str(p[0]).left(40), var_to_str(p[1]).left(40), str(got)])
+	_ok(wrong.is_empty(), "same() on %d pairs: str() and var_to_str prints of a transform, a rect, a plane and a color match, a transposed transform does not, whole numbers match only exactly, 12 is not [12] nor a flat list a nested one, dictionaries and lists match entry by entry, and the exported copy agrees%s" % [pairs.size(), "" if wrong.is_empty() else ": " + "; ".join(PackedStringArray(wrong))])
+	if runner != null:
+		runner.free()
+	for n in [rt, game]:
+		root.remove_child(n)
+		n.free()
+	return true
+
+
+## runtime_call expr= (1.17): one GDScript expression evaluated in the running game, the node a call names as self,
+## inputs bound by name, its value back typed in one call, its errors quoting it, and a value too big for a reply cut
+## with a note. It can change the game, which is why it sits on a Full drive tool.
+func _t_runtime_call_expr() -> bool:
+	print("[unit] 1.17 runtime_call expr=: one expression, its value typed, its errors quoting it")
+	await process_frame
+	var game := Node3D.new()
+	game.name = "ZzExprGame"
+	root.add_child(game)
+	var cam := Camera3D.new()
+	cam.name = "ZzExprCam"
+	cam.position = Vector3(0, 6, 11)
+	game.add_child(cam)
+	var probe := _TypedProbe.new()
+	probe.name = "ZzExprProbe"
+	game.add_child(probe)
+	var rt = MCPRuntime.new()
+	root.add_child(rt)
+	current_scene = game
+
+	# --- the game's eval: on the scene root, as before 1.17
+	var sum: Dictionary = _wire(rt, {"cmd": "eval", "expr": "1 + 2", "bare": true})
+	_ok(sum.get("value") == 3 and typeof(sum.get("value")) == TYPE_INT and not sum.has("resolved"), "1 + 2 is the int 3, run on the scene root: %s" % str(sum))
+	# --- eval_at: on the node the command names, its inputs bound (runtime/expr_scope.gd, Full: pack.ps1 trims it from Lite)
+	var unsafe: Dictionary = _wire(rt, {"cmd": "eval_at", "expr": "str_to_var(\"1\")", "path": "ZzNope"})
+	_ok(str(unsafe.get("error", "")).begins_with("expr refused"), "str_to_var is refused before anything is resolved: %s" % str(unsafe.get("error", "")).left(80))
+	probe.bumps = 0
+	if ResourceLoader.exists(MCPRuntime.EXPR_SCOPE_PATH):
+		var on_node: Dictionary = _wire(rt, {"cmd": "eval_at", "expr": "position", "path": "ZzExprCam", "bare": true})
+		_ok(on_node.get("value") == [0, 6, 11] and str(on_node.get("resolved")) == "ZzExprCam", "path= makes the node self: position reads [0, 6, 11] on ZzExprCam: %s" % str(on_node))
+		var bound: Dictionary = _wire(rt, {"cmd": "eval_at", "expr": "get_node(n).hp + k", "inputs": {"n": "ZzExprProbe", "k": 1}, "bare": true})
+		_ok(bound.get("value") == 13 and str(bound.get("resolved")) == ".", "inputs bind the names the expression reads (get_node(n).hp + k = 13): %s" % str(bound))
+		var missing: Dictionary = _wire(rt, {"cmd": "eval_at", "expr": "1", "path": "ZzNope"})
+		var own: Dictionary = _wire(rt, {"cmd": "eval_at", "expr": "1", "path": str(rt.get_path())})
+		_ok(str(missing.get("error", "")).begins_with("node not found: ZzNope") and str(own.get("error", "")).contains("off limits"),
+			"a target that is not there is a miss, and Beckett's own runtime is refused as for a call: %s" % str(own.get("error", "")).left(80))
+	else:
+		var lite_at: Dictionary = _wire(rt, {"cmd": "eval_at", "expr": "bump()", "path": "ZzExprProbe"})
+		_ok(str(lite_at.get("error", "")).contains("Full-edition feature") and probe.bumps == 0, "without runtime/expr_scope.gd (Lite) eval_at is a Full-edition feature and runs nothing: %s" % str(lite_at.get("error", "")))
+	var changed: Dictionary = _wire(rt, {"cmd": "eval", "expr": "get_node('ZzExprProbe').bump()", "bare": true})
+	_ok(changed.get("value") == 1 and probe.bumps == 1, "an expression can call a method that changes the game, once: a drive tool, not a read")
+	var no_os: Dictionary = _wire(rt, {"cmd": "eval", "expr": "OS.get_name()"})
+	_ok(str(no_os.get("error", "")).begins_with("expr exec error"), "an engine singleton is not a name an expression knows: %s" % str(no_os.get("error", "")).left(80))
+	var zero_bare: Dictionary = _wire(rt, {"cmd": "eval", "expr": "get_node('ZzExprProbe').hp - 12", "bare": true})
+	var zero_reads: Dictionary = _wire(rt, {"cmd": "eval", "expr": "get_node('ZzExprProbe').hp - 12"})
+	_ok(zero_bare.get("value") == 0 and not zero_bare.has("reads") and zero_reads.has("reads"), "bare skips the second evaluation a false-looking value gets; a playtest expr assert still gets its reads")
+
+	# --- the tool
+	if not ResourceLoader.exists(RuntimeBridge.FULL_SENTINEL):
+		print("  skip  runtime_tools.gd is not in this build (Lite trims it)")
+		for n in [rt, game]:
+			root.remove_child(n)
+			n.free()
+		return true
+	var RT = load(RuntimeBridge.FULL_SENTINEL)
+	var tools = RT.new()
+	var br := _WireBridge.new()
+	br.rt = rt
+	var fs := _FakeServer.new()
+	fs.bridge = br
+	tools.server = fs
+	var one: Dictionary = tools._runtime_call({"expr": "1 + 2"})
+	_ok(one.has("json") and typeof(one["json"]["result"]) == TYPE_INT and JSON.stringify(one["json"]) == "{\"resolved\":\".\",\"result\":3}" and str(br.sent[-1].get("cmd")) == "eval",
+		"runtime_call expr=\"1 + 2\" returns the int 3, through the game's plain eval: %s" % JSON.stringify(one.get("json")))
+	var pose: Dictionary = tools._runtime_call({"path": "ZzExprCam", "expr": "global_transform"})
+	_ok(pose.has("json") and pose["json"]["result"] == [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 6, 11]] and str(pose["json"]["resolved"]) == "ZzExprCam" and str(br.sent[-1].get("cmd")) == "eval_at",
+		"a transform in one call, nested, through eval_at: %s" % JSON.stringify(pose.get("json")))
+	var by_name: Dictionary = tools._runtime_call({"expr": "get_node(n).hp", "inputs": {"n": "ZzExprProbe"}})
+	_ok(by_name.has("json") and by_name["json"]["result"] == 12 and str(br.sent[-1].get("cmd")) == "eval_at" and br.sent[-1].get("inputs") == {"n": "ZzExprProbe"} and bool(br.sent[-1].get("bare", false)),
+		"inputs={\"n\": ...} binds n through eval_at, and the command asks for the value alone")
+	var sent_before := br.sent.size()
+	var let_through: Array = []
+	for nm in ["max", "str", "Color", "PI", "self", "true", "INF", "1x", "a b", ""]:
+		if not tools._runtime_call({"expr": "1", "inputs": {nm: 1}}).has("error"):
+			let_through.append(nm)
+	_ok(let_through.is_empty() and br.sent.size() == sent_before and RT.input_name_error("step").is_empty() and RT.input_name_error("max").contains("already means"),
+		"an input named like a built-in (max, str, Color, PI, self, true, INF) or not a name at all is refused before anything is sent%s" % ("" if let_through.is_empty() else ": let through " + str(let_through)))
+	var parse_bad: Dictionary = tools._runtime_call({"expr": "get_node("})
+	var exec_bad: Dictionary = tools._runtime_call({"expr": "get_node('ZzNope').hp"})
+	var unsafe_bad: Dictionary = tools._runtime_call({"expr": "str_to_var('1')"})
+	_ok(str(parse_bad.get("error", "")).begins_with("expr parse error") and str(parse_bad["error"]).ends_with("(in: get_node()") and str(exec_bad.get("error", "")).begins_with("expr exec error") and str(exec_bad["error"]).ends_with("(in: get_node('ZzNope').hp)")
+		and str(unsafe_bad.get("error", "")).begins_with("expr refused") and str(unsafe_bad["error"]).ends_with("(in: str_to_var('1'))"),
+		"an expression that does not parse, fails to run or calls a refused function is an error that quotes it: %s" % str(exec_bad.get("error", "")))
+	_ok(str(tools._runtime_call({"expr": "1", "method": "hide"}).get("error", "")).contains("not both") and str(tools._runtime_call({}).get("error", "")).contains("method=<name>"),
+		"method and expr together, or neither, is an error that says which to pass")
+	var many: Dictionary = (tools._runtime_call({"expr": "','.repeat(4999).split(',')"}) as Dictionary).get("json", {})
+	var long_text: Dictionary = (tools._runtime_call({"expr": "'x'.repeat(20000)"}) as Dictionary).get("json", {})
+	_ok(many.get("result") is Array and (many["result"] as Array).size() < 5000 and JSON.stringify(many["result"]).length() <= RT.EXPR_RESULT_MAX and str(many.get("note", "")).contains("of 5000 entries")
+		and str(long_text.get("result", "")).length() == RT.EXPR_RESULT_MAX and str(long_text.get("note", "")).contains("cut to its first"),
+		"a value over %d characters of JSON is cut, with a note: %s" % [RT.EXPR_RESULT_MAX, str(many.get("note", ""))])
+	br.unknown = ["eval_at"]
+	var skew: Dictionary = tools._runtime_call({"path": "ZzExprCam", "expr": "position"})
+	var skew_in: Dictionary = tools._runtime_call({"expr": "get_node(n).hp", "inputs": {"n": "ZzExprProbe"}})
+	var skew_plain: Dictionary = tools._runtime_call({"expr": "1 + 2"})
+	br.unknown = []
+	_ok(str(skew.get("error", "")).contains("started before this Beckett") and str(skew.get("error", "")).contains("ran nothing") and str(skew_in.get("error", "")).contains("started before this Beckett") and skew_plain.has("json"),
+		"a runtime from before 1.17 does not know eval_at, so an expression meant for a node or given inputs runs nowhere and the call says to restart the game; a plain one still runs: %s" % str(skew.get("error", "")))
+	for n in [rt, game]:
+		root.remove_child(n)
+		n.free()
 	return true
 
 
@@ -1886,6 +4080,659 @@ func _t_compare_downscale_chain() -> bool:
 	return true
 
 
+# ---------------------------------------------------------------- capture sources (1.17: viewport=, compare counts)
+
+## The sizing math every capture uses: the 200 px floor game pixels are enlarged to in whole steps, its 8x and max_dim
+## limits, and the scale cap, which moved into capture_source.gd (mcp_runtime._capped_scale calls it now).
+func _t_capture_upscale() -> bool:
+	print("[unit] capture_source: whole-step enlargement of game pixels, and the scale cap both targets share")
+	_ok(CaptureSource.MIN_EDGE == 200 and CaptureSource.MAX_UPSCALE == 8, "the floor is 200 px and the steps stop at 8x")
+	var cases := [
+		[288, 162, 1280, 2, "288x162 (the pixel-art-3d frame) comes back 2x"],
+		[290, 164, 1280, 2, "290x164 still 2x"],
+		[480, 270, 1280, 1, "480x270 is readable as it is: 1x"],
+		[320, 180, 0, 2, "320x180 with no cap: 2x"],
+		[48, 27, 0, 8, "a 48x27 region stops at 8x"],
+		[48, 27, 200, 4, "...and max_dim=200 holds it to 4x (192 px)"],
+		[1000, 150, 1280, 1, "a 1000x150 strip: the cap leaves no room for 2x"],
+		[0, 0, 0, 1, "an empty frame: 1x"],
+		[199, 199, 0, 2, "199x199: 2x"],
+		[200, 200, 0, 1, "200x200: 1x"],
+		[8, 4, 0, 8, "an 8x4 region: 8x"],
+		[288, 10, 0, 4, "a 288x10 strip region with no max_dim: 4x, inside the 1280 px of a bare capture (8x was 2304x80)"],
+		[288, 10, 2000, 6, "...and a max_dim=2000 of its own lets it reach 6x (1728 px)"],
+		[1920, 20, 0, 1, "a 1920x20 strip: native, never enlarged past 1280"],
+	]
+	var wrong: Array = []
+	for c in cases:
+		var got: int = CaptureSource.pixel_upscale(int(c[0]), int(c[1]), int(c[2]))
+		if got != int(c[3]):
+			wrong.append("%s: got %d" % [str(c[4]), got])
+	_ok(wrong.is_empty(), "pixel_upscale holds %d cases%s" % [cases.size(), "" if wrong.is_empty() else ", wrong: " + "; ".join(PackedStringArray(wrong))])
+	var Obs = load("res://addons/beckett/tools/runtime_observe_tools.gd")
+	_ok(CaptureSource.BARE_MAX_DIM == int(Obs.DEFAULT_MAX_DIM), "the enlargement's own cap is the bare call's 1280 (%d and %d)" % [CaptureSource.BARE_MAX_DIM, int(Obs.DEFAULT_MAX_DIM)])
+	var shares := [
+		[1152, 648, 288, 162, 4, "a 1152x648 window over 288x162 game pixels (576x324 at 2x): about 1/4"],
+		[576, 324, 288, 162, 1, "that window at scale=0.5: 1, the game pixels cost as much"],
+		[600, 338, 288, 162, 1, "...or at max_dim=600: 1"],
+		[1280, 720, 480, 270, 7, "480x270 game pixels (1x) under a 1280x720 capture: about 1/7"],
+		[400, 300, 200, 150, 1, "200x150 game pixels come back 400x300: 1"],
+		[0, 0, 288, 162, 0, "an empty picture: 0"],
+		[1152, 648, 0, 0, 0, "an empty SubViewport: 0"],
+	]
+	var off_share: Array = []
+	for c in shares:
+		var got: int = CaptureSource.hint_share(int(c[0]), int(c[1]), int(c[2]), int(c[3]))
+		if got != int(c[4]):
+			off_share.append("%s: got %d" % [str(c[5]), got])
+	_ok(off_share.is_empty(), "hint_share, the test both halves word the hint by, holds %d cases%s" % [shares.size(), "" if off_share.is_empty() else ", wrong: " + "; ".join(PackedStringArray(off_share))])
+	var same := true
+	for c in [[1.0, 2560, 1440, 1280], [0.25, 2560, 1440, 1280], [9.0, 2560, 1440, 0], [0.0, 640, 360, 0], [0.8, 1440, 2560, 1280]]:
+		if not is_equal_approx(MCPRuntime._capped_scale(float(c[0]), int(c[1]), int(c[2]), int(c[3])), CaptureSource.capped_scale(float(c[0]), int(c[1]), int(c[2]), int(c[3]))):
+			same = false
+	_ok(same and is_equal_approx(CaptureSource.capped_scale(9.0, 100, 100, 0), 1.0), "the runtime's _capped_scale is capture_source's capped_scale, and scale still never enlarges")
+	_ok(CaptureSource.picture_point(Vector2(12.5, 7.2), Vector2(8, 4), 8.0, Vector2i(64, 32)) == Vector2i(36, 25), "a game-pixel point lands in a zoomed region's picture: (12.5, 7.2) in region [8, 4] at 8x is (36, 25)")
+	_ok(CaptureSource.picture_point(Vector2(7.9, 5.0), Vector2(8, 4), 8.0, Vector2i(64, 32)) == Vector2i(-1, -1) and CaptureSource.picture_point(Vector2(16.0, 5.0), Vector2(8, 4), 8.0, Vector2i(64, 32)) == Vector2i(-1, -1), "...and a point left of the region or past it is in no picture")
+	return true
+
+
+## The OS-cursor clause of a viewport capture (pure: cursor_point is what cursor_in_picture decides with). The layout is
+## the live test's: a 1152x648 window showing 288x162 game pixels at 4 GUI px each, returned at 2x as 576x324. The
+## cursor comes in as Viewport.get_mouse_position gives it, in GUI space, the space shown_by measures in.
+func _t_capture_cursor() -> bool:
+	print("[unit] capture_source: the OS cursor a viewport capture reports, and when it says nothing")
+	var game := DisplayServer.MAIN_WINDOW_ID
+	var other := game + 1
+	var shown := {"rect": Rect2(0, 0, 1152, 648), "factor": 4.0}
+	var pic := Vector2i(576, 324)
+	var none := Vector2i(-1, -1)
+	var visible := CaptureSource.cursor_point(Input.MOUSE_MODE_VISIBLE, game, game, Vector2(100, 60), shown, Vector2.ZERO, 2.0, pic)
+	var confined := CaptureSource.cursor_point(Input.MOUSE_MODE_CONFINED, game, game, Vector2(100, 60), shown, Vector2.ZERO, 2.0, pic)
+	_ok(visible == Vector2i(50, 30) and confined == Vector2i(50, 30), "a cursor the player sees (VISIBLE or CONFINED) at GUI (100, 60) is game pixel (25, 15), picture (50, 30): %s, %s" % [str(visible), str(confined)])
+	var unseen: Array = []
+	for mode in [Input.MOUSE_MODE_HIDDEN, Input.MOUSE_MODE_CAPTURED, Input.MOUSE_MODE_CONFINED_HIDDEN]:
+		if CaptureSource.cursor_point(mode, game, game, Vector2(576, 324), shown, Vector2.ZERO, 2.0, pic) != none:
+			unseen.append(mode)
+	_ok(unseen.is_empty(), "HIDDEN, CAPTURED (mouse-look parks it unseen at the centre) and CONFINED_HIDDEN report nothing%s" % ("" if unseen.is_empty() else ": modes " + str(unseen)))
+	var covered := CaptureSource.cursor_point(Input.MOUSE_MODE_VISIBLE, other, game, Vector2(100, 60), shown, Vector2.ZERO, 2.0, pic)
+	var outside := CaptureSource.cursor_point(Input.MOUSE_MODE_VISIBLE, DisplayServer.INVALID_WINDOW_ID, game, Vector2(100, 60), shown, Vector2.ZERO, 2.0, pic)
+	_ok(covered == none and outside == none, "another window under the cursor, or none of the game's, reports nothing: %s, %s" % [str(covered), str(outside)])
+	_ok(CaptureSource.cursor_point(Input.MOUSE_MODE_VISIBLE, game, game, Vector2(100, 60), {}, Vector2.ZERO, 2.0, pic) == none, "a SubViewport nothing shows in the window has no cursor to map")
+	var layer := CaptureSource.cursor_point(Input.MOUSE_MODE_VISIBLE, game, game, Vector2(200, 120), {"rect": Rect2(0, 0, 2304, 1296), "factor": 8.0}, Vector2.ZERO, 2.0, pic)
+	_ok(layer == Vector2i(50, 30), "a container drawn twice as big (on a CanvasLayer at scale 2) is measured in the same GUI space: (200, 120) is game pixel (25, 15): %s" % str(layer))
+	var inset := CaptureSource.cursor_point(Input.MOUSE_MODE_VISIBLE, game, game, Vector2(140, 90), {"rect": Rect2(100, 50, 576, 324), "factor": 2.0}, Vector2.ZERO, 1.0, Vector2i(288, 162))
+	_ok(inset == Vector2i(20, 20), "a container inset at (100, 50) is measured from its corner: GUI (140, 90) is game pixel (20, 20): %s" % str(inset))
+	var zoom := CaptureSource.cursor_point(Input.MOUSE_MODE_VISIBLE, game, game, Vector2(50, 29), shown, Vector2(8, 4), 8.0, Vector2i(64, 32))
+	_ok(zoom == Vector2i(36, 26), "in a region [8, 4, 8, 4] at 8x, GUI (50, 29), game pixel (12.5, 7.25), is picture (36, 26): %s" % str(zoom))
+	var past := CaptureSource.cursor_point(Input.MOUSE_MODE_VISIBLE, game, game, Vector2(1200, 10), shown, Vector2.ZERO, 2.0, pic)
+	_ok(past == none, "a cursor past the picture's edge reports nothing: %s" % str(past))
+	return true
+
+
+## The window capture's hint finds its layout on real nodes (the headless window is 64x64), and the one stale rule.
+func _t_capture_layout() -> bool:
+	print("[unit] capture_source: the pixel-art layout a window capture names, and when a SubViewport's frame may be old")
+	var host := Node.new()
+	host.name = "ZzCapLayout"
+	root.add_child(host)
+	var view := SubViewportContainer.new()
+	view.name = "ZzPixelView"
+	view.stretch = true
+	view.stretch_shrink = 4
+	view.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	view.set_anchors_preset(Control.PRESET_FULL_RECT)
+	host.add_child(view)
+	var sv := SubViewport.new()
+	sv.name = "ZzSub"
+	view.add_child(sv)
+	await process_frame
+	var win := Vector2i(root.size)
+	_ok(sv.size == win / 4, "the container sized its SubViewport to the window / 4: %s for a %s window" % [str(sv.size), str(win)])
+	_ok(CaptureSource.subviewport_of(view) == sv and CaptureSource.subviewport_of(sv) == sv and CaptureSource.subviewport_of(host) == null, "subviewport_of: the container's SubViewport, the SubViewport itself, nothing for another node")
+	_ok(CaptureSource.pixel_layout(root) == sv, "a full-window stretch container at shrink 4 is the layout (built in code, so owner-less: find_children sees it)")
+	var shown := CaptureSource.shown_by(sv, root)
+	_ok(not shown.is_empty() and is_equal_approx(float(shown.get("factor", 0.0)), 4.0) and (shown["rect"] as Rect2).position == Vector2.ZERO, "shown_by: 4 GUI px per game px, from the window's corner (%s)" % str(shown))
+	_ok(CaptureSource.stale_reason(sv) == "", "a SubViewport on show is redrawing: no stale reason")
+	view.hide()
+	_ok(CaptureSource.pixel_layout(root) == null, "a hidden container is no layout")
+	_ok(CaptureSource.stale_reason(sv) == "its container is hidden", "...its SubViewport may hold an old frame (%s)" % CaptureSource.stale_reason(sv))
+	_ok(CaptureSource.shown_by(sv, root).is_empty(), "...and with nothing showing it there is no window mapping")
+	view.show()
+	sv.render_target_update_mode = SubViewport.UPDATE_ONCE
+	var once := CaptureSource.stale_reason(sv)
+	sv.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	var disabled := CaptureSource.stale_reason(sv)
+	sv.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_ok(once == "update mode Once" and disabled == "update mode Disabled", "update mode Once or Disabled may be an old frame too (%s, %s)" % [once, disabled])
+	view.stretch_shrink = 1
+	await process_frame
+	_ok(CaptureSource.pixel_layout(root) == null, "stretch_shrink 1 is no pixel-art layout")
+	view.stretch_shrink = 4
+	view.stretch = false
+	await process_frame
+	_ok(CaptureSource.pixel_layout(root) == null, "nor is a container with stretch off")
+	view.stretch = true
+	view.anchor_right = 0.6
+	view.anchor_bottom = 0.6
+	await process_frame
+	_ok(CaptureSource.pixel_layout(root) == null, "nor one over less than half the window (%s of %s)" % [str(view.size), str(win)])
+	view.anchor_right = 1.0
+	view.anchor_bottom = 1.0
+
+	# Under a content scale the mapping stays in GUI space, where simulate_input, drag and scroll aim (the root is set back
+	# right after). A 64x64 window over a 32x16 design, canvas_items KEEP: x2 with a 16 px bar above and below. In window
+	# pixels the same container would read 8 px per game pixel from (0, 16), and its bars would count as window it does not
+	# cover.
+	var keep_size := root.content_scale_size
+	var keep_mode := int(root.content_scale_mode)
+	var keep_aspect := int(root.content_scale_aspect)
+	_zc_content_scale(Vector2i(32, 16), Window.CONTENT_SCALE_MODE_CANVAS_ITEMS, Window.CONTENT_SCALE_ASPECT_KEEP)
+	await process_frame
+	var scaled := CaptureSource.shown_by(sv, root)
+	var scaled_rect: Rect2 = scaled.get("rect", Rect2())
+	_ok(is_equal_approx(float(scaled.get("factor", 0.0)), 4.0) and scaled_rect.is_equal_approx(Rect2(0, 0, 32, 16)) and CaptureSource.pixel_layout(root) == sv,
+		"under a x2 content scale with KEEP bars, shown_by still says 4 GUI px per game px from (0, 0), and the container is the layout (%s)" % str(scaled))
+	view.anchor_left = 0.48
+	await process_frame
+	_ok(CaptureSource.pixel_layout(root) == sv, "...a container over the right 52%% of what the window shows is the layout too: the bars are not window it leaves out (%s)" % str(view.size))
+	view.anchor_left = 0.0
+	view.anchor_right = 0.3
+	_zc_content_scale(Vector2i(32, 16), Window.CONTENT_SCALE_MODE_VIEWPORT, Window.CONTENT_SCALE_ASPECT_KEEP)
+	await process_frame
+	_ok(CaptureSource.pixel_layout(root) == null, "...and in viewport mode one over the left 30%% is not, whatever the stretch (%s)" % str(view.size))
+	_zc_content_scale(keep_size, keep_mode, keep_aspect)
+	view.anchor_right = 1.0
+	await process_frame
+	_ok(root.get_final_transform() == Transform2D.IDENTITY and view.size == Vector2(root.size), "...and the root's content scale and the container are back as they were")
+	var inner := SubViewportContainer.new()
+	inner.name = "ZzInner"
+	inner.stretch = true
+	inner.stretch_shrink = 2
+	inner.set_anchors_preset(Control.PRESET_FULL_RECT)
+	sv.add_child(inner)
+	var inner_sv := SubViewport.new()
+	inner.add_child(inner_sv)
+	await process_frame
+	_ok(CaptureSource.pixel_layout(root) == sv, "a container inside the SubViewport draws into it, not into the window: the outer one is still the layout")
+	view.hide()
+	_ok(CaptureSource.pixel_layout(root) == null, "...and it never stands in for the outer one when that is hidden")
+	root.remove_child(host)
+	host.free()
+	return true
+
+
+## What screenshot viewport= takes in the running game, and the words for what it refuses.
+func _t_capture_resolve() -> bool:
+	print("[unit] runtime: screenshot viewport= takes a SubViewport or its container, and says what else it got")
+	await process_frame
+	var game := Node.new()
+	game.name = "ZzCapGame"
+	root.add_child(game)
+	var view := SubViewportContainer.new()
+	view.name = "ZzCapView"
+	view.stretch = true
+	view.stretch_shrink = 4
+	view.set_anchors_preset(Control.PRESET_FULL_RECT)
+	game.add_child(view)
+	var sv := SubViewport.new()
+	sv.name = "ZzCapSub"
+	view.add_child(sv)
+	var hud := CanvasLayer.new()
+	hud.name = "ZzCapHud"
+	game.add_child(hud)
+	var empty := SubViewportContainer.new()
+	empty.name = "ZzCapEmpty"
+	game.add_child(empty)
+	var rt = MCPRuntime.new()
+	root.add_child(rt)
+	current_scene = game
+	await process_frame
+	var a: Dictionary = rt._capture_subviewport("ZzCapView")
+	var b: Dictionary = rt._capture_subviewport("ZzCapView/ZzCapSub")
+	var c: Dictionary = rt._capture_subviewport("/root/ZzCapGame/ZzCapView/ZzCapSub")
+	_ok(a.get("sv") == sv and b.get("sv") == sv and c.get("sv") == sv, "the container, the SubViewport and its /root path all name the SubViewport")
+	var words: Array = []
+	var hud_r := str(rt._capture_subviewport("ZzCapHud").get("error", ""))
+	words.append(hud_r)
+	_ok(hud_r.contains("ZzCapHud is a CanvasLayer, not a SubViewport") and hud_r.contains("find_nodes class=SubViewport"), "another node is named with its class, and the way to find one: %s" % hud_r)
+	var nope := str(rt._capture_subviewport("ZzCapNope").get("error", ""))
+	words.append(nope)
+	_ok(nope.begins_with("viewport: no node 'ZzCapNope' in the running game") and not RuntimeBridge.is_target_missing(nope), "a miss says so, and never reads as a node not there yet: %s" % nope)
+	var colon := str(rt._capture_subviewport("ZzCapView:size").get("error", ""))
+	words.append(colon)
+	_ok(colon.contains(MCPRuntime.PROPERTY_PATH) and colon.ends_with("Pass viewport=ZzCapView"), "a ':' path is the property-path refusal: %s" % colon)
+	var bare_view := str(rt._capture_subviewport("ZzCapEmpty").get("error", ""))
+	words.append(bare_view)
+	_ok(bare_view == "viewport: ZzCapEmpty holds no SubViewport", "a container with no SubViewport says so: %s" % bare_view)
+	var dashed: Array = words.filter(func(w): return str(w).contains(char(0x2014)) or str(w).contains(char(0x2013)))
+	_ok(dashed.is_empty(), "none of those words has an em dash or an en dash")
+	# Only the refusal is driven through the command: a SubViewport it found has no image to read in a headless run
+	# (the dummy renderer), so the reads are tests/live-capture.ps1's to prove.
+	var miss: Dictionary = rt._dispatch({"cmd": "screenshot", "viewport": "ZzCapNope"})
+	_ok(not bool(miss.get("ok", true)) and str(miss.get("error", "")) == nope and not rt._pixel_hint_given, "the screenshot command answers with that refusal, and spends no hint")
+	# The once-per-run hint is spent only on a picture the editor words it for: a window capture scaled down to about
+	# the game pixels' size first (scale=0.5, max_dim=600) must leave it for the next full-size one.
+	var Obs = load("res://addons/beckett/tools/runtime_observe_tools.gd")
+	var k := CaptureSource.pixel_upscale(sv.size.x, sv.size.y, CaptureSource.BARE_MAX_DIM)
+	var as_big := Vector2i(sv.size.x * k, sv.size.y * k)
+	var small: Dictionary = rt._pixel_hint(as_big)
+	_ok(small.is_empty() and not rt._pixel_hint_given, "a window picture the size the game pixels come back at (%s) gets no hint, and does not spend it" % str(as_big))
+	var first: Dictionary = rt._pixel_hint(as_big * 4)
+	_ok(first == {"path": "ZzCapView/ZzCapSub", "w": sv.size.x, "h": sv.size.y} and rt._pixel_hint_given, "a picture 16 times their size gets it: %s" % str(first))
+	_ok(rt._pixel_hint(as_big * 4).is_empty(), "...once per game run")
+	var shows := str(Obs.hint_line({"w": as_big.x * 4, "h": as_big.y * 4, "pixel_hint": first}))
+	var hides := str(Obs.hint_line({"w": as_big.x, "h": as_big.y, "pixel_hint": first}))
+	_ok(shows.begins_with("; game pixels: viewport=ZzCapView/ZzCapSub") and hides.is_empty(), "the editor words the line for the picture the game spent it on, and for no smaller one: %s" % shows)
+	current_scene = null
+	root.remove_child(rt)
+	rt.free()
+	root.remove_child(game)
+	game.free()
+	return true
+
+
+## The lines the screenshot tool words from the runtime's facts (pure).
+func _t_capture_line() -> bool:
+	print("[unit] screenshot: the game-pixel line and the once-per-run hint")
+	var Obs = load("res://addons/beckett/tools/runtime_observe_tools.gd")
+	var base := {"src": "PixelView/SubViewport", "full_w": 288, "full_h": 162, "w": 576, "h": 324, "mime": "image/png", "k": 2, "px": 2.0}
+	var l1: String = Obs.pixels_line(base)
+	_ok(l1 == "game pixels of PixelView/SubViewport (288x162) at 2x: 576x324 (image/png); 1 px here = 2 GUI px", "a bare viewport capture says the source, the step, the picture and the mapping in GUI px (the space simulate_input takes): %s" % l1)
+	var zoom := base.duplicate()
+	zoom.merge({"region": [8, 4, 8, 4], "k": 8, "w": 64, "h": 32, "px": 0.5, "px_from": [32, 16]}, true)
+	var l2: String = Obs.pixels_line(zoom)
+	_ok(l2 == "game pixels of PixelView/SubViewport (288x162) region [8, 4, 8, 4] at 8x: 64x32 (image/png); 1 px here = 0.5 GUI px from (32, 16)", "a region is a zoom, and the mapping says where the picture starts: %s" % l2)
+	var native := {"src": "PixelView/SubViewport", "full_w": 288, "full_h": 162, "w": 288, "h": 162, "mime": "image/png", "px": 4.0}
+	var l3: String = Obs.pixels_line(native)
+	_ok(l3 == "game pixels of PixelView/SubViewport (288x162): 288x162 (image/png); 1 px here = 4 GUI px", "native game pixels name no step: %s" % l3)
+	var notes := native.duplicate()
+	notes.merge({"stale": "its container is hidden", "hdr": true, "cursor": [12, 30]}, true)
+	notes.erase("px")
+	var l4: String = Obs.pixels_line(notes)
+	_ok(l4.ends_with("(image/png); may be an old frame (its container is hidden); HDR frame converted to 8 bits; OS cursor at (12, 30) here, not drawn") and not l4.contains("GUI px"), "the notes ride the same line, and a SubViewport nothing shows has no window mapping: %s" % l4)
+	_ok(Obs._num(4.0) == "4" and Obs._num(0.5) == "0.5" and Obs._num(4.0083) == "4.01" and Obs._num(1.25) == "1.25", "factors print short: 4, 0.5, 4.01, 1.25")
+	var win := {"w": 1152, "h": 648, "pixel_hint": {"path": "PixelView/SubViewport", "w": 288, "h": 162}}
+	var h1: String = Obs.hint_line(win)
+	_ok(h1 == "; game pixels: viewport=PixelView/SubViewport (288x162 as 576x324, about 1/4 the image tokens; leaves out anything drawn outside it)", "the hint names the viewport=, the size it comes back at and its share: %s" % h1)
+	_ok(h1.length() - "PixelView/SubViewport".length() <= 120, "...in at most 120 characters besides the path (%d)" % (h1.length() - "PixelView/SubViewport".length()))
+	var capped := {"w": 1280, "h": 720, "pixel_hint": {"path": "PixelView/SubViewport", "w": 480, "h": 270}}
+	_ok(Obs.hint_line(capped) == "; game pixels: viewport=PixelView/SubViewport (480x270, about 1/7 the image tokens; leaves out anything drawn outside it)", "a 480x270 frame under a 1280x720 capture: 1x, about 1/7: %s" % Obs.hint_line(capped))
+	_ok(Obs.hint_line({"w": 400, "h": 300, "pixel_hint": {"path": "V", "w": 200, "h": 150}}) == "", "no hint when the game pixels would cost as much as the window (200x150 comes back 400x300)")
+	_ok(Obs.hint_line({"w": 1152, "h": 648}) == "" and Obs.hint_line({"w": 1152, "h": 648, "pixel_hint": "x"}) == "", "no hint without the game's report")
+	var odd: String = Obs.hint_line({"w": 1152, "h": 648, "pixel_hint": {"path": "A\nB" + "c".repeat(400), "w": 288, "h": 162}})
+	_ok(not odd.contains("\n") and odd.length() < 340, "a path from the game is held to one line and 200 characters (%d)" % odd.length())
+	return true
+
+
+## A bridge that keeps the last command it was sent and answers with a set reply.
+class _ShotBridgeStub extends RefCounted:
+	var last_cmd := {}
+	var reply := {}
+	var timeout := 0
+	func send_command(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
+		last_cmd = cmd.duplicate(true)
+		timeout = timeout_ms
+		return reply.duplicate(true)
+
+
+## The game's answer to a capture of `img`: the PNG the runtime sends, plus `extra` (src, k, px, pixel_hint ...).
+func _shot_reply(img: Image, extra: Dictionary = {}) -> Dictionary:
+	var r := {"ok": true, "data": Marshalls.raw_to_base64(img.save_png_to_buffer()), "mime": "image/png",
+		"w": img.get_width(), "h": img.get_height(), "full_w": img.get_width(), "full_h": img.get_height()}
+	r.merge(extra, true)
+	return r
+
+
+## What the screenshot tool sends for viewport=, and a bare capture that stays exactly what 1.16 returned.
+func _t_screenshot_viewport_wiring() -> bool:
+	print("[unit] screenshot: what viewport= sends, and a bare capture that stays what it was")
+	var mod = load("res://addons/beckett/tools/runtime_observe_tools.gd").new()
+	var bridge := _ShotBridgeStub.new()
+	var srv := _CaptureServerStub.new()
+	srv.bridge = bridge
+	mod.server = srv
+	var window := {"ok": true, "data": "QUJD", "mime": "image/png", "w": 1152, "h": 648, "full_w": 1152, "full_h": 648}
+	bridge.reply = window
+	var bare: Dictionary = mod._screenshot({})
+	_ok(bridge.last_cmd == {"cmd": "screenshot", "max_dim": 1280, "hint": true}, "a bare call sends 1.16's command plus hint, nothing else: %s" % str(bridge.last_cmd))
+	_ok(str(bare.get("text", "")) == "game screenshot 1152x648 (image/png)" and str(bare.get("image_base64", "")) == "QUJD" and not bare.has("json"), "...and returns 1.16's line and picture, byte for byte: %s" % str(bare.get("text", "")))
+	bridge.reply = {"ok": true, "data": "QUJD", "mime": "image/png", "w": 1280, "h": 720, "full_w": 2560, "full_h": 1440}
+	_ok(str(mod._screenshot({}).get("text", "")) == "game screenshot 1280x720 (image/png) (from 2560x1440)", "a capped window capture keeps its (from WxH)")
+	var hinted := window.duplicate(true)
+	hinted["pixel_hint"] = {"path": "PixelView/SubViewport", "w": 288, "h": 162}
+	bridge.reply = hinted
+	var ht := str(mod._screenshot({}).get("text", ""))
+	_ok(ht == "game screenshot 1152x648 (image/png); game pixels: viewport=PixelView/SubViewport (288x162 as 576x324, about 1/4 the image tokens; leaves out anything drawn outside it)", "the game's pixel-art report adds the one hint line, and nothing else changes: %s" % ht)
+	bridge.reply = window
+	var window_cmds: Array = []
+	for v in ["window", " WINDOW ", "", null]:
+		mod._screenshot({"viewport": v})
+		if bridge.last_cmd != {"cmd": "screenshot", "max_dim": 1280, "hint": true}:
+			window_cmds.append(str(bridge.last_cmd))
+	_ok(window_cmds.is_empty(), "viewport=window (any case), empty or null is the window, with the same command%s" % ("" if window_cmds.is_empty() else ": " + ", ".join(PackedStringArray(window_cmds))))
+	var px := _shot_reply(Image.create(4, 4, false, Image.FORMAT_RGBA8), {"src": "PixelView/SubViewport", "full_w": 288, "full_h": 162, "w": 576, "h": 324, "k": 2, "px": 2.0})
+	bridge.reply = px
+	var p1: Dictionary = mod._screenshot({"viewport": "PixelView/SubViewport"})
+	_ok(bridge.last_cmd == {"cmd": "screenshot", "max_dim": 1280, "viewport": "PixelView/SubViewport", "fit": true}, "viewport=<path> sends the path, fit and the 1280 cap, and no hint: %s" % str(bridge.last_cmd))
+	_ok(str(p1.get("text", "")).begins_with("game pixels of PixelView/SubViewport (288x162) at 2x: 576x324 (image/png); 1 px here = 2 GUI px"), "...and the reply is worded as game pixels, with the mapping in GUI px: %s" % str(p1.get("text", "")))
+	mod._screenshot({"viewport": "PixelView", "scale": 1})
+	_ok(not bridge.last_cmd.has("fit") and not bridge.last_cmd.has("max_dim") and bridge.last_cmd.get("scale") == 1, "scale=1 asks for native game pixels: no enlargement and no cap (%s)" % str(bridge.last_cmd))
+	var saved_path := "user://beckett_unit_px_save.png"
+	DirAccess.remove_absolute(saved_path)
+	mod._screenshot({"viewport": "PixelView", "save_to": saved_path})
+	_ok(not bridge.last_cmd.has("fit") and not bridge.last_cmd.has("max_dim") and FileAccess.file_exists(saved_path), "save_to writes the native frame: no enlargement and no cap (%s)" % str(bridge.last_cmd))
+	DirAccess.remove_absolute(saved_path)
+	mod._screenshot({"viewport": "PixelView", "region": [8, 4, 8, 4]})
+	_ok(bool(bridge.last_cmd.get("fit", false)) and not bridge.last_cmd.has("max_dim") and bridge.last_cmd.get("region") == [8, 4, 8, 4], "region keeps the enlargement (a small region is a zoom) and, as before, opts out of the cap (%s)" % str(bridge.last_cmd))
+	bridge.reply = window
+	var old_game: Dictionary = mod._screenshot({"viewport": "PixelView"})
+	_ok(str(old_game.get("error", "")).contains("started before this Beckett") and str(old_game.get("error", "")).contains("stop_scene, then play_scene") and not old_game.has("image_base64"), "a game whose runtime ignored viewport= sent the window: an error, never a window passed off as game pixels")
+	bridge.reply = px
+	var linked: Dictionary = mod._screenshot({"viewport": "PixelView/SubViewport", "deliver": "link"})
+	var lt := str(linked.get("text", ""))
+	_ok(linked.has("resource_links") and not linked.has("image_base64") and lt.begins_with("game pixels of") and lt.contains("capture://"), "deliver=link carries game pixels like any capture: %s" % lt.left(160))
+	for rl in linked.get("resource_links", []):
+		DirAccess.remove_absolute(Captures.DIR + "/" + str((rl as Dictionary)["uri"]).substr(10))
+	return true
+
+
+## Which editor view target=editor reads, and the error for a screen with none (pure).
+func _t_editor_view_pick() -> bool:
+	print("[unit] screenshot target=editor: the 2D view, the 3D view on screen, or an error naming the screen")
+	var Obs = load("res://addons/beckett/tools/runtime_observe_tools.gd")
+	_ok(Obs.editor_view_pick(true, [true, false, false, false], "CanvasItemEditor") == {"kind": "2D"}, "the 2D view when it is on screen")
+	_ok(Obs.editor_view_pick(false, [true, false, false, false], "Node3DEditor") == {"kind": "3D", "index": 0, "of": 1}, "else the 3D view on screen")
+	_ok(Obs.editor_view_pick(false, [false, true, true, false], "Node3DEditor") == {"kind": "3D", "index": 1, "of": 2}, "in a split layout, the first view shown, and how many are")
+	var script_e := str(Obs.editor_view_pick(false, [false, false, false, false], "ScriptEditor").get("error", ""))
+	_ok(script_e.contains("shows its Script screen") and script_e.contains("Ask the user to switch the editor to 2D or 3D") and script_e.contains("target=game"), "the Script screen is named, with what to do: %s" % script_e)
+	var names := {"GameView": "Game", "EditorAssetLibrary": "AssetLib", "": "current", "ZzPluginScreen": "ZzPluginScreen"}
+	var off: Array = []
+	for k in names:
+		var e := str(Obs.editor_view_pick(false, [], str(k)).get("error", ""))
+		if not e.contains("shows its %s screen" % str(names[k])):
+			off.append(e)
+	_ok(off.is_empty(), "the Game and AssetLib screens are named, an unknown one by its class, an unreadable one as current%s" % ("" if off.is_empty() else ": " + str(off)))
+	var caps := {"bare": [{}, 1280], "format=jpeg": [{"format": "jpeg"}, 1280], "format=png": [{"format": "png"}, 1280],
+		"max_dim=600": [{"max_dim": 600}, 600], "max_dim=0": [{"max_dim": 0}, 0], "scale": [{"scale": 0.5}, 0],
+		"region": [{"region": [0, 0, 64, 64]}, 0], "save_to": [{"save_to": "user://zz_editor.png"}, 0], "deliver": [{"deliver": "link"}, 1280]}
+	var off_caps: Array = []
+	for k in caps:
+		var got := int(Obs.editor_max_dim(caps[k][0]))
+		if got != int(caps[k][1]):
+			off_caps.append("%s: %d" % [k, got])
+	_ok(off_caps.is_empty(), "target=editor keeps the 1280 cap on a bare call and with format (it is always PNG, and format is named as ignored); scale, region, max_dim and save_to size it as on the game%s" % ("" if off_caps.is_empty() else ": " + str(off_caps)))
+	return true
+
+
+## No em dash or en dash in what screenshot and compare_screenshots say (schema, long form and the new lines).
+func _t_capture_no_dashes() -> bool:
+	print("[unit] capture text: no em dash or en dash in the screenshot and compare_screenshots words")
+	var Obs = load("res://addons/beckett/tools/runtime_observe_tools.gd")
+	var texts: Array = []
+	for t in _all_tool_specs():
+		if not (str(t["name"]) in ["screenshot", "compare_screenshots"]):
+			continue
+		texts.append(str(t.get("description", "")))
+		texts.append(str(t.get("help", "")))
+		var props: Dictionary = (t.get("input_schema", {}) as Dictionary).get("properties", {})
+		for k in props:
+			texts.append(str((props[k] as Dictionary).get("description", "")))
+	texts.append(Obs.pixels_line({"src": "V", "full_w": 2, "full_h": 2, "w": 4, "h": 4, "k": 2, "region": [0, 0, 2, 2], "px": 1.5, "px_from": [3, 4], "stale": "update mode Once", "hdr": true, "cursor": [1, 1]}))
+	texts.append(Obs.hint_line({"w": 1152, "h": 648, "pixel_hint": {"path": "V", "w": 288, "h": 162}}))
+	texts.append(str(Obs.PREDATES_VIEWPORT))
+	texts.append(str(Obs.editor_view_pick(false, [], "ScriptEditor").get("error", "")))
+	if ResourceLoader.exists(_IMAGE_DIFF_PATH):
+		var ImageDiff = load(_IMAGE_DIFF_PATH)
+		for bad in ["abc", 300, 0.5]:
+			texts.append(str(ImageDiff.threshold_of({"threshold": bad}).get("error", "")))
+	var dashed: Array = []
+	for tx in texts:
+		if str(tx).contains(char(0x2014)) or str(tx).contains(char(0x2013)):
+			dashed.append(str(tx).left(80))
+	# screenshot alone gives 17 texts (Lite trims compare_screenshots and its pixel math, Full adds them).
+	_ok(texts.size() >= 17 and dashed.is_empty(), "%d texts, none with an em dash or an en dash%s" % [texts.size(), "" if dashed.is_empty() else ": " + str(dashed)])
+	return true
+
+
+## A deterministic RGBA8 test frame that differs from tile to tile.
+func _diff_frame(w: int, h: int) -> Image:
+	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	for y in h:
+		for x in w:
+			img.set_pixel(x, y, Color8((x * 37) % 220, (y * 23) % 200, 128, 255))
+	return img
+
+
+func _t_image_diff_changed() -> bool:
+	print("[unit] image_diff: every changed pixel counted, with its box and the largest move (compare_screenshots, 1.17)")
+	var ImageDiff = load(_IMAGE_DIFF_PATH)
+	var a := _diff_frame(64, 48)
+	a.set_pixel(10, 7, Color8(20, 40, 60, 255))
+	a.set_pixel(3, 3, Color8(100, 100, 100, 255))
+	var same: Dictionary = ImageDiff.changed_pixels(a, a.duplicate(), 8)
+	_ok(int(same["changed"]) == 0 and int(same["total"]) == 3072 and int(same["max_delta"]) == 0 and (same["bbox"] as Array).is_empty() and same["mask"] == null, "identical frames: 0 changed of 3072, max_delta 0, no box and no mask")
+	var one := a.duplicate() as Image
+	one.set_pixel(10, 7, Color8(220, 40, 60, 255))
+	var d1: Dictionary = ImageDiff.changed_pixels(one, a, 8, true)
+	_ok(int(d1["changed"]) == 1 and d1["bbox"] == [10, 7, 1, 1] and int(d1["max_delta"]) == 200, "one pixel +200 on red: 1 changed, box [10, 7, 1, 1], max_delta 200 (%s)" % str([d1["changed"], d1["bbox"], d1["max_delta"]]))
+	var m1: Image = d1["mask"]
+	var md := m1.get_data()
+	var opaque := 0
+	for i in range(1, md.size(), 2):
+		if md[i] > 0:
+			opaque += 1
+	_ok(m1.get_format() == Image.FORMAT_LA8 and opaque == 1 and m1.get_pixel(10, 7).a > 0.99 and m1.get_used_rect() == Rect2i(10, 7, 1, 1), "the mask is opaque on that pixel and nowhere else")
+	var at := func(img: Image, x: int, y: int, c: Color) -> Image:
+		var copy := img.duplicate() as Image
+		copy.set_pixel(x, y, c)
+		return copy
+	var by8: Image = at.call(a, 3, 3, Color8(108, 100, 100, 255))
+	var by9: Image = at.call(a, 3, 3, Color8(109, 100, 100, 255))
+	var by1: Image = at.call(a, 3, 3, Color8(101, 100, 100, 255))
+	var alpha: Image = at.call(a, 3, 3, Color8(100, 100, 100, 250))
+	var t8: Dictionary = ImageDiff.changed_pixels(by8, a, 8)
+	_ok(int(t8["changed"]) == 0 and int(t8["max_delta"]) == 8, "a move of 8 does not count at threshold 8, and max_delta still shows it")
+	_ok(int(ImageDiff.changed_pixels(by9, a, 8)["changed"]) == 1, "...a move of 9 does")
+	_ok(int(ImageDiff.changed_pixels(by1, a, 0)["changed"]) == 1 and int(ImageDiff.changed_pixels(by1, a, 1)["changed"]) == 0, "threshold 0 counts a move of 1; threshold 1 does not")
+	_ok(int(ImageDiff.changed_pixels(alpha, a, 4)["changed"]) == 1, "an alpha-only change counts")
+	var soft := a.duplicate() as Image
+	for y in 48:
+		for x in 64:
+			var c := a.get_pixel(x, y)
+			soft.set_pixel(x, y, Color8(c.r8 + 5, c.g8 + 5, c.b8 + 5, c.a8))
+	var s8: Dictionary = ImageDiff.changed_pixels(soft, a, 8)
+	var s4: Dictionary = ImageDiff.changed_pixels(soft, a, 4)
+	_ok(int(s8["changed"]) == 0 and int(s8["max_delta"]) == 5, "soft light (+5 everywhere) at threshold 8: nothing changed, max_delta 5")
+	_ok(int(s4["changed"]) == 3072 and s4["bbox"] == [0, 0, 64, 48], "...at threshold 4: every pixel, box [0, 0, 64, 48]")
+	var rgb := a.duplicate() as Image
+	rgb.convert(Image.FORMAT_RGB8)
+	var drgb: Dictionary = ImageDiff.changed_pixels(one, rgb, 8)
+	_ok(int(drgb["changed"]) == 1 and drgb["bbox"] == [10, 7, 1, 1] and int(drgb["max_delta"]) == 200, "an RGB baseline against an RGBA frame reads as alpha 255: the same answer")
+	_ok(ImageDiff.changed_pixels(a, _diff_frame(32, 24), 8).has("error"), "frames of different sizes are an error, not a count")
+	var big := Image.create(1152, 648, false, Image.FORMAT_RGBA8)
+	big.fill(Color8(24, 24, 77, 255))
+	var block := big.duplicate() as Image
+	block.fill_rect(Rect2i(30, 60, 20, 15), Color8(0, 255, 0, 255))
+	var t0 := Time.get_ticks_msec()
+	var dbig: Dictionary = ImageDiff.changed_pixels(block, big, 8, true)
+	var t_block := Time.get_ticks_msec() - t0
+	_ok(int(dbig["changed"]) == 300 and dbig["bbox"] == [30, 60, 20, 15], "a 20x15 block across 32 px tile edges of a 1152x648 frame: 300 changed, box [30, 60, 20, 15] (%s)" % str([dbig["changed"], dbig["bbox"]]))
+	_ok((dbig["mask"] as Image).get_used_rect() == Rect2i(30, 60, 20, 15), "...and the mask covers exactly that box")
+	t0 = Time.get_ticks_msec()
+	ImageDiff.changed_pixels(big, big.duplicate(), 8)
+	var t_same := Time.get_ticks_msec() - t0
+	var all := Image.create(1152, 648, false, Image.FORMAT_RGBA8)
+	all.fill(Color8(200, 30, 30, 255))
+	t0 = Time.get_ticks_msec()
+	var dall: Dictionary = ImageDiff.changed_pixels(all, big, 0)
+	var t_all := Time.get_ticks_msec() - t0
+	_ok(int(dall["changed"]) == 1152 * 648, "every pixel changed: all %d counted" % int(dall["changed"]))
+	print("  note  1152x648 on this machine: identical %d ms, a 20x15 block %d ms, every pixel over threshold 0 %d ms" % [t_same, t_block, t_all])
+	return true
+
+
+## 1.16's compare, step by step: the game shrank the frame to a quarter (mcp_runtime, scale=0.25), its PNG crossed the
+## bridge, and the editor sent the baseline down the same chain before both went to 64x64 (qa_tools).
+func _old_compare_pct(native: Image, baseline: Image) -> float:
+	var shrunk := native.duplicate() as Image
+	var s: float = MCPRuntime._capped_scale(0.25, shrunk.get_width(), shrunk.get_height(), 0)
+	shrunk.resize(maxi(1, roundi(shrunk.get_width() * s)), maxi(1, roundi(shrunk.get_height() * s)), Image.INTERPOLATE_BILINEAR)
+	var cur := Image.new()
+	cur.load_png_from_buffer(shrunk.save_png_to_buffer())
+	var base := baseline.duplicate() as Image
+	if base.get_width() > cur.get_width() or base.get_height() > cur.get_height():
+		base.resize(cur.get_width(), cur.get_height(), Image.INTERPOLATE_BILINEAR)
+	cur.resize(64, 64)
+	base.resize(64, 64)
+	cur.convert(Image.FORMAT_RGBA8)
+	base.convert(Image.FORMAT_RGBA8)
+	return _img_diff_pct(cur, base)
+
+
+func _t_image_diff_legacy() -> bool:
+	print("[unit] image_diff: diff_pct is 1.16's number, now computed from the full frame, and the threshold argument")
+	var ImageDiff = load(_IMAGE_DIFF_PATH)
+	var src := Image.create(512, 288, false, Image.FORMAT_RGBA8)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7  # fixed: the comparison below must not be able to flake
+	for y in 288:
+		for x in 512:
+			var v := 1.0 if (x % 17 == 0 or y % 23 == 0) else rng.randf()
+			src.set_pixel(x, y, Color(v, v * 0.6, 1.0 - v))
+	var moved := src.duplicate() as Image
+	moved.fill_rect(Rect2i(100, 50, 40, 30), Color(1, 0, 0))
+	var small := src.duplicate() as Image
+	small.resize(100, 60, Image.INTERPOLATE_BILINEAR)
+	var off: Array = []
+	for pair in [[src, src], [moved, src], [src, moved], [moved, small]]:
+		var wire := Image.new()
+		wire.load_png_from_buffer((pair[0] as Image).save_png_to_buffer())  # the native frame, as it now crosses the bridge
+		var old := _old_compare_pct(pair[0], pair[1])
+		var now: float = ImageDiff.diff_pct_64(wire, pair[1])
+		if absf(old - now) > 1e-9:
+			off.append("%f vs %f" % [old, now])
+	_ok(off.is_empty(), "diff_pct_64 on the native frame equals 1.16's two-process chain: unchanged, moved, reversed, and a baseline smaller than the quarter frame%s" % ("" if off.is_empty() else ": " + str(off)))
+	_ok(ImageDiff.diff_pct_64(src, src) == 0.0 and ImageDiff.diff_pct_64(moved, src) > 0.0, "...0 for the same frame, more for a changed one")
+	var ok_cases := {"absent": [{}, 8], "null": [{"threshold": null}, 8], "zero": [{"threshold": 0}, 0], "top": [{"threshold": 255}, 255], "float whole": [{"threshold": 8.0}, 8], "text": [{"threshold": "12"}, 12], "spaced text": [{"threshold": " 7 "}, 7]}
+	var wrong: Array = []
+	for k in ok_cases:
+		var got: Dictionary = ImageDiff.threshold_of(ok_cases[k][0])
+		if int(got.get("value", -1)) != int(ok_cases[k][1]):
+			wrong.append("%s: %s" % [k, str(got)])
+	_ok(wrong.is_empty(), "threshold takes a whole number 0..255, as a number or as text, and defaults to 8%s" % ("" if wrong.is_empty() else ": " + str(wrong)))
+	var refused: Array = []
+	for bad in [0.1, 7.5, 256, -3, "abc", "", true, [8]]:
+		var got: Dictionary = ImageDiff.threshold_of({"threshold": bad})
+		if not str(got.get("error", "")).contains("threshold"):
+			refused.append("%s -> %s" % [str(bad), str(got)])
+	_ok(refused.is_empty(), "a fraction, a value out of range, a word, a bool or a list is refused, never read as the default%s" % ("" if refused.is_empty() else ": " + str(refused)))
+	return true
+
+
+func _t_image_diff_picture() -> bool:
+	print("[unit] image_diff: the diff picture (the frame in dim gray, the change in magenta)")
+	var ImageDiff = load(_IMAGE_DIFF_PATH)
+	var frame := Image.create(16, 16, false, Image.FORMAT_RGBA8)
+	frame.fill(Color8(200, 120, 40, 255))
+	var changed := frame.duplicate() as Image
+	changed.fill_rect(Rect2i(5, 3, 2, 2), Color8(0, 0, 255, 255))
+	var d: Dictionary = ImageDiff.changed_pixels(changed, frame, 8, true)
+	var pic: Image = ImageDiff.diff_picture(changed, d["mask"])
+	_ok(pic.get_width() == 16 and pic.get_height() == 16 and pic.get_format() == Image.FORMAT_RGBA8, "the picture is the frame's size")
+	_ok(pic.get_pixel(5, 3).is_equal_approx(ImageDiff.MARK) and pic.get_pixel(6, 4).is_equal_approx(ImageDiff.MARK), "each changed pixel is magenta")
+	var g := pic.get_pixel(0, 0)
+	_ok(g.r8 == g.g8 and g.g8 == g.b8 and g.r8 < frame.get_pixel(0, 0).g8, "an unchanged pixel is gray, and darker than the frame (%s)" % str(g))
+	return true
+
+
+## compare_screenshots against a stub bridge: the native frame in both branches, 1.16's diff_pct, the new fields, the
+## diff picture, the threshold refusals, the size report and viewport=.
+func _t_compare_wiring() -> bool:
+	print("[unit] compare_screenshots: native frames, 1.16's diff_pct, and the changed-pixel fields")
+	var ImageDiff = load(_IMAGE_DIFF_PATH)
+	var qa = load(_QA_TOOLS_PATH).new()
+	var bridge := _ShotBridgeStub.new()
+	var srv := _CaptureServerStub.new()
+	srv.bridge = bridge
+	qa.server = srv
+	var dir := "user://beckett_unit_cmp"
+	_rm_tree(dir)
+	DirAccess.make_dir_recursive_absolute(dir)
+	var base_path := dir + "/a.png"
+	var a := _diff_frame(64, 48)
+	a.set_pixel(5, 3, Color8(20, 10, 10, 255))
+	a.set_pixel(6, 3, Color8(20, 10, 10, 255))
+	bridge.reply = _shot_reply(a)
+	var first: Dictionary = qa._compare_screenshots({"baseline": base_path})
+	_ok(str(first.get("text", "")) == "baseline saved to %s" % base_path and FileAccess.file_exists(base_path), "the first run saves the baseline, in 1.16's words: %s" % str(first.get("text", first.get("error", ""))))
+	_ok(bridge.last_cmd == {"cmd": "screenshot"} and bridge.timeout >= 15000, "...from the native frame: no scale, cap or fit, no viewport, and a deadline a large frame fits in (%s, %d ms)" % [str(bridge.last_cmd), bridge.timeout])
+	var same: Dictionary = qa._compare_screenshots({"baseline": base_path})
+	var sj: Dictionary = same.get("json", {})
+	_ok(bridge.last_cmd == {"cmd": "screenshot"}, "a compare asks for the native frame as well (1.16 asked for a quarter): %s" % str(bridge.last_cmd))
+	_ok(float(sj.get("diff_pct", -1.0)) == 0.0 and sj.get("pass") == true and int(sj.get("changed", -1)) == 0 and float(sj.get("changed_pct", -1.0)) == 0.0 and int(sj.get("max_delta", -1)) == 0 and not sj.has("bbox"), "identical frames: diff_pct 0, pass, 0 changed, max_delta 0, no box: %s" % str(sj))
+	_ok(sj.keys().slice(0, 3) == ["diff_pct", "tolerance", "pass"], "...and diff_pct, tolerance and pass lead the reply, as they did")
+	var b := a.duplicate() as Image
+	b.set_pixel(5, 3, Color8(220, 10, 10, 255))
+	b.set_pixel(6, 3, Color8(220, 10, 10, 255))
+	bridge.reply = _shot_reply(b)
+	var moved: Dictionary = qa._compare_screenshots({"baseline": base_path, "diff_image": true})
+	var mj: Dictionary = moved.get("json", {})
+	_ok(int(mj.get("changed", -1)) == 2 and mj.get("bbox") == [5, 3, 2, 1] and int(mj.get("max_delta", -1)) == 200, "two pixels moved by 200: changed 2, box [5, 3, 2, 1], max_delta 200 (%s)" % str(mj))
+	_ok(is_equal_approx(float(mj.get("diff_pct", -1.0)), ImageDiff.diff_pct_64(b, a)) and is_equal_approx(float(mj.get("changed_pct", -1.0)), snappedf(100.0 * 2.0 / 3072.0, 0.0001)), "diff_pct is diff_pct_64 of the two frames, and changed_pct the share of the frame (%s)" % str(mj.get("changed_pct")))
+	var links: Array = moved.get("resource_links", [])
+	var diff_path := str(mj.get("diff", ""))
+	_ok(links.size() == 1 and str((links[0] as Dictionary).get("uri", "")).begins_with("capture://") and diff_path.is_absolute_path() and FileAccess.file_exists(diff_path), "diff_image=true: a capture:// link and the absolute path of the picture (%s)" % diff_path)
+	_ok(not moved.has("image_base64") and not moved.has("image_png_base64"), "...and never the picture inline")
+	var pic := Image.new()
+	if pic.load(diff_path) == OK:
+		var gray := pic.get_pixel(0, 0)
+		_ok(pic.get_pixel(5, 3).is_equal_approx(Color(1, 0, 1)) and pic.get_pixel(6, 3).is_equal_approx(Color(1, 0, 1)) and gray.r8 == gray.g8 and gray.g8 == gray.b8, "the stored picture is magenta on the change and gray elsewhere")
+	else:
+		_ok(false, "the stored diff picture loads")
+	for rl in links:
+		DirAccess.remove_absolute(Captures.DIR + "/" + str((rl as Dictionary)["uri"]).substr(10))
+	bridge.reply = _shot_reply(a)
+	var quiet: Dictionary = qa._compare_screenshots({"baseline": base_path, "diff_image": true})
+	_ok(not quiet.has("resource_links") and not (quiet.get("json", {}) as Dictionary).has("diff"), "nothing changed: no picture and no link")
+	bridge.reply = _shot_reply(b)
+	bridge.last_cmd = {}
+	var refusals: Array = []
+	for bad in [0.05, "abc", 999, -1, true]:
+		var e: Dictionary = qa._compare_screenshots({"baseline": base_path, "threshold": bad})
+		if not str(e.get("error", "")).contains("threshold"):
+			refusals.append("%s -> %s" % [str(bad), str(e).left(80)])
+	_ok(refusals.is_empty() and bridge.last_cmd.is_empty(), "a threshold that is a fraction, out of range, a word or a bool is refused before anything is captured%s" % ("" if refusals.is_empty() else ": " + str(refusals)))
+	var t0: Dictionary = qa._compare_screenshots({"baseline": base_path, "threshold": "0"})
+	_ok(int((t0.get("json", {}) as Dictionary).get("changed", -1)) == 2, "threshold given as text (\"0\") is taken")
+	bridge.reply = _shot_reply(_diff_frame(32, 24))
+	var mis: Dictionary = qa._compare_screenshots({"baseline": base_path})
+	var misj: Dictionary = mis.get("json", {})
+	_ok(str(misj.get("size_mismatch", "")).begins_with("baseline 64x48, frame 32x24") and not misj.has("changed") and misj.has("diff_pct") and misj.has("pass"), "frames of another size: size_mismatch gives both sizes, no counts, and diff_pct as before (%s)" % str(misj).left(160))
+	bridge.reply = _shot_reply(a)
+	var old_rt: Dictionary = qa._compare_screenshots({"baseline": base_path, "viewport": "PixelView/SubViewport"})
+	_ok(str(old_rt.get("error", "")).contains("started before this Beckett"), "viewport= answered with the window (a game from before 1.17) is an error: %s" % str(old_rt.get("error", "")).left(120))
+	_ok(bridge.last_cmd == {"cmd": "screenshot", "viewport": "PixelView/SubViewport"}, "...and viewport= is sent as given, still with no scale, cap or fit (%s)" % str(bridge.last_cmd))
+	bridge.reply = _shot_reply(a, {"src": "PixelView/SubViewport"})
+	var px_base := dir + "/px.png"
+	var pb: Dictionary = qa._compare_screenshots({"baseline": px_base, "viewport": "PixelView/SubViewport"})
+	_ok(str(pb.get("text", "")) == "baseline saved to %s (game pixels of PixelView/SubViewport, 64x48)" % px_base, "a game-pixel baseline says what it holds: %s" % str(pb.get("text", pb.get("error", ""))))
+	var pc: Dictionary = qa._compare_screenshots({"baseline": px_base, "viewport": "PixelView/SubViewport"})
+	var pcj: Dictionary = pc.get("json", {})
+	_ok(int(pcj.get("changed", -1)) == 0 and not pcj.has("stale") and not pcj.has("hdr"), "...and compares against the same capture with nothing changed, and no frame notes (%s)" % str(pcj))
+	# A SubViewport that is not redrawing hands back its last frame: 0 changed must not read as proof that nothing did.
+	bridge.reply = _shot_reply(a, {"src": "PixelView/SubViewport", "stale": "its container is hidden", "hdr": true})
+	var stj: Dictionary = qa._compare_screenshots({"baseline": px_base, "viewport": "PixelView/SubViewport"}).get("json", {})
+	_ok(str(stj.get("stale", "")) == "may be an old frame (its container is hidden)" and stj.get("hdr") == true and int(stj.get("changed", -1)) == 0, "a frame the game says may be old says so beside its 0 changed, and an HDR one says it was converted (%s)" % str(stj))
+	var stale_base := dir + "/stale.png"
+	var sb: Dictionary = qa._compare_screenshots({"baseline": stale_base, "viewport": "PixelView/SubViewport"})
+	_ok(str(sb.get("text", "")) == "baseline saved to %s (game pixels of PixelView/SubViewport, 64x48); may be an old frame (its container is hidden); HDR frame converted to 8 bits" % stale_base, "...and so does a baseline taken from one: %s" % str(sb.get("text", sb.get("error", ""))))
+	bridge.reply = _shot_reply(a)
+	qa._compare_screenshots({"baseline": base_path, "viewport": "window"})
+	_ok(bridge.last_cmd == {"cmd": "screenshot"}, "viewport=window is the window")
+	_rm_tree(dir)
+	return true
+
+
 ## qa_tools._compare_screenshots' metric, in one place so the check above measures what
 ## the tool measures.
 func _img_diff_pct(a: Image, b: Image) -> float:
@@ -2045,7 +4892,19 @@ class DoctorStubServer:
 	var effort := 6
 	var ceiling := 6
 	var meta := true  # does the connected client get the per-tool _meta hints (MCP 2025-06-18+)?
+	# 1.17: which editor this is, and how its last start went (see _t_doctor_identity).
+	var ident := {"folder": "C:/stub/project", "name": "stub-project", "build": "", "edition": "Full", "pid": 4242, "port": 0, "runtime_port": 0}
+	var requested := 0
+	var start_error := ""
+	var runtime_requested := 0
+	var runtime_from_env := false
 
+	func identity() -> Dictionary: return ident
+	func requested_port() -> int: return requested
+	func last_start_error() -> String: return start_error
+	func runtime_requested_port() -> int: return runtime_requested
+	func runtime_port_from_env() -> bool: return runtime_from_env
+	func instructions_text() -> String: return "stub instructions"
 	func get_effort() -> int: return effort
 	func max_effort() -> int: return ceiling
 	func is_lite() -> bool: return ceiling < 6
@@ -2835,7 +5694,8 @@ func _t_settle_before_serving() -> bool:
 	var enter_body := src.substr(i_enter, src.find("\nfunc ", i_enter + 10) - i_enter)
 	_ok(not enter_body.contains("start_server(") and not enter_body.contains("ensure_auto(") and enter_body.contains("process_frame.connect(_settle_tick)"),
 		"plugin.gd _enter_tree schedules serving and does not start the server or write client configs itself")
-	var start_body := src.substr(src.find("func _start_serving() -> void:"), 1800)
+	var i_start := src.find("func _start_serving() -> void:")
+	var start_body := src.substr(i_start, src.find("\nfunc ", i_start + 10) - i_start)  # the whole body, however long it grows
 	_ok(start_body.contains("_server.start_server(") and start_body.contains("MCPClientConfig.ensure_auto("), "...those live in _start_serving, behind the settle")
 	_ok(src.contains("tree.process_frame.disconnect(_settle_tick)"), "...and _exit_tree disconnects the wait, so a plugin disabled before the editor settled leaves nothing behind")
 	return true
@@ -4605,7 +7465,7 @@ func _t_read_guard() -> bool:
 	var pg_src := FileAccess.get_file_as_string("res://addons/beckett/core/path_guard.gd")
 	var cc_src := FileAccess.get_file_as_string("res://addons/beckett/core/client_config.gd")
 	_ok(_code_of(pg_src).count(".is_link(") == 0 and _code_of(pg_src).count(".read_link(") == 0 and _code_of(cc_src).count(".is_link(") == 0 and cc_src.contains("PathGuardScript.is_link_path("),
-		"no code names DirAccess.is_link or read_link directly (4.2 would fail to parse it); client_config shares the one probe in path_guard")
+		"no code names DirAccess.is_link or read_link directly (4.2 has no is_link, and a typed call would fail there at run time); client_config shares the one probe in path_guard")
 	_ok(not pg_src.contains("EditorInterface") and not pg_src.contains("EditorPlugin") and not pg_src.contains("static var"), "path_guard stays free of editor classes and of state (the headless runner preloads it)")
 
 	OS.set_environment("BECKETT_ALLOW_OUTSIDE_READS", env_was)
@@ -5090,6 +7950,777 @@ func _t_writers_readback_errors() -> bool:
 	return true
 
 
+# ---------------------------------------------------------------- property writes (set_property, create_resource)
+
+## The undo manager a stand-in editor hands the tools: none, so they write directly.
+class _NoUndoServer extends RefCounted:
+	func get_undo_redo() -> Variant:
+		return null
+
+
+const _PW_DIR := "res://tests/_beckett_unit_writes"
+
+
+## set_property and create_resource store what they say they stored. Object.set() turns a value of the wrong type into
+## the type's default, so text in a texture emptied it, a Color literal was stored as black, and both replies said the
+## value was set (live on 4.6.2, 2026-10-08). The write targets here are Resources; editor_property_values drives node
+## targets through the stand-in scene.
+func _t_property_writes() -> bool:
+	print("[unit] property writes: an object property loads a res:// path or refuses, color text is a color or refused, a write is read back")
+	var gold := Color(1, 0.85, 0, 1)
+	for text in ["Color(1, 0.85, 0, 1)", "Color(1,0.85,0,1)", "Color(1, 0.85, 0)", "(1, 0.85, 0, 1)", "1 0.85 0", "1, 0.85, 0, 1", " Color( 1 , 0.85 , 0 ) "]:
+		var c: Variant = CallArgs.coerce(text, TYPE_COLOR).get("value")
+		_ok(c is Color and (c as Color).is_equal_approx(gold), "the color text '%s' is gold, not black (got %s)" % [text, str(c)])
+	var named: Array = [CallArgs.coerce("#ffd900", TYPE_COLOR).get("value"), CallArgs.coerce("gold", TYPE_COLOR).get("value"), CallArgs.coerce("Color.GOLD", TYPE_COLOR).get("value"), CallArgs.coerce("Color(\"#ffd900\")", TYPE_COLOR).get("value")]
+	_ok(named[0] == Color("#ffd900") and named[1] == Color.GOLD and named[2] == Color.GOLD and named[3] == Color("#ffd900"), "hex codes and names read as before, and as GDScript writes them (%s)" % str(named))
+	var shapes: Array = [CallArgs.coerce([1, 0.85, 0], TYPE_COLOR).get("value"), CallArgs.coerce("[1, 0.85, 0, 1]", TYPE_COLOR).get("value"), CallArgs.coerce({"r": 1, "g": 0.85, "b": 0}, TYPE_COLOR).get("value")]
+	_ok(shapes.all(func(x: Variant) -> bool: return x is Color and (x as Color).is_equal_approx(gold)), "an array, an array sent as text and an r/g/b dictionary still read (%s)" % str(shapes))
+	_ok(CallArgs.coerce("Vector2(3, 4)", TYPE_VECTOR2).get("value") == Vector2(3, 4) and CallArgs.coerce("100 50", TYPE_VECTOR2).get("value") == Vector2(100, 50), "vectors read as before")
+
+	# value_for_property: what a writer may store
+	var mat := StandardMaterial3D.new()
+	var lit: Dictionary = Reflect.value_for_property(mat, "albedo_color", "Color(1, 0.85, 0)")
+	_ok(lit.get("value") is Color and (lit["value"] as Color).is_equal_approx(gold), "a color literal for a color property is that color")
+	var no_color: Dictionary = Reflect.value_for_property(mat, "albedo_color", "reddish")
+	_ok(str(no_color.get("error", "")).contains("albedo_color") and str(no_color.get("suggestion", "")).contains("#rrggbb") and Reflect.value_for_property(mat, "albedo_color", "").has("error"),
+		"text that reads as no color is refused for a color property (Color(text) made it black), and so is empty text")
+	_rm_tree(_PW_DIR)
+	DirAccess.make_dir_recursive_absolute(_PW_DIR)
+	var tex := PlaceholderTexture2D.new()
+	tex.size = Vector2(8, 8)
+	var tex_path := _PW_DIR + "/tex.tres"
+	var other_path := _PW_DIR + "/gradient.tres"
+	var mat_path := _PW_DIR + "/mat.tres"
+	_ok(ResourceSaver.save(tex, tex_path) == OK and ResourceSaver.save(Gradient.new(), other_path) == OK and ResourceSaver.save(StandardMaterial3D.new(), mat_path) == OK,
+		"fixtures: a texture, a gradient and a material, saved as text resources (nothing to import)")
+	var loaded: Dictionary = Reflect.value_for_property(mat, "albedo_texture", tex_path)
+	_ok(loaded.get("value") is Texture2D and (loaded["value"] as Resource).resource_path == tex_path, "a res:// path for a texture property is loaded")
+	var as_text: Dictionary = Reflect.value_for_property(mat, "albedo_texture", "glow")
+	_ok(str(as_text.get("error", "")).contains("not a res:// or uid:// path") and str(as_text.get("suggestion", "")).contains("set_resource"), "...text that is not a path is refused, and the refusal points at set_resource")
+	_ok(str(Reflect.value_for_property(mat, "albedo_texture", _PW_DIR + "/nope.tres").get("error", "")).begins_with("No resource at"), "...a path with nothing there is refused")
+	var wrong_class: Dictionary = Reflect.value_for_property(mat, "albedo_texture", other_path)
+	_ok(str(wrong_class.get("error", "")).contains("Gradient") and str(wrong_class["error"]).contains("Texture2D"), "...a resource of another class is refused, naming both (the setter would get null)")
+	_ok(str(Reflect.value_for_property(mat, "albedo_texture", "res://../beckett_unit_escape.tres").get("error", "")).contains("Refused to read"), "...a path the read rule refuses is refused in its words")
+	var emptied: Dictionary = Reflect.value_for_property(mat, "albedo_texture", null)
+	_ok(emptied.has("value") and emptied["value"] == null and not emptied.has("error"), "...and null empties it")
+	var mi := MeshInstance3D.new()
+	_ok(Reflect.value_for_property(mi, "material_override", mat_path).get("value") is StandardMaterial3D and Reflect.value_for_property(mi, "material_override", tex_path).has("error"),
+		"a slot that takes BaseMaterial3D or ShaderMaterial takes a material and refuses a texture")
+	mi.free()
+	_ok(Reflect._is_one_of(Reflect.new(), PackedStringArray(["BeckettReflect"])) and not Reflect._is_one_of(RefCounted.new(), PackedStringArray(["BeckettReflect"])),
+		"a project class_name matches the script an object runs (is_class knows engine classes only)")
+
+	# readback's comparison and the words a reply quotes a value in
+	_ok(Reflect.same_value(&"Gilded", "Gilded") and Reflect.same_value(NodePath("A/B"), "A/B") and Reflect.same_value(1, 1.0) and Reflect.same_value(0.1, 0.10000000149)
+		and Reflect.same_value([1, 2], PackedInt32Array([1, 2])) and Reflect.same_value(Vector3(0.1, 0, 0), Vector3(0.100000001, 0, 0)) and Reflect.same_value({"a": [1]}, {"a": [1.0]}),
+		"a read-back matches across what a write converts: StringName and NodePath text, int and float, 32-bit float error, packed arrays, dictionaries")
+	_ok(not Reflect.same_value(1, 2) and not Reflect.same_value("a", "b") and not Reflect.same_value(null, 0) and not Reflect.same_value([1], [1, 1]) and not Reflect.same_value(Color.RED, Color.BLUE)
+		and not Reflect.same_value(1000000, 1000001), "...and still tells different values apart (ints exactly)")
+	_ok(Reflect.shown(null) == "null" and Reflect.shown(StandardMaterial3D.new()) == "<StandardMaterial3D>" and Reflect.shown(load(tex_path)) == tex_path and Reflect.shown(gold) == str(gold),
+		"a reply quotes a saved resource by its path, another object by its class, and nothing as null")
+	var null_object: Variant = StandardMaterial3D.new().get("albedo_texture")  # what an emptied object property reads back as
+	_ok(Reflect.same_value(null_object, null) and Reflect.shown(null_object) == "null" and not Reflect.same_value(null_object, load(tex_path)),
+		"an empty object property (a null %s, not a Nil) reads back as the null written, and a reply says null, not <Object#null>" % type_string(typeof(null_object)))
+
+	# set_property end to end, on resources held by nodes of a stand-in scene (the "/" walk)
+	var scene := Node.new()
+	scene.name = "ZzWritesScene"
+	var mesh := MeshInstance3D.new()
+	mesh.name = "ZzWritesMesh"
+	scene.add_child(mesh)
+	var held := StandardMaterial3D.new()
+	held.albedo_texture = load(tex_path)
+	mesh.material_override = held
+	var holder_gd := GDScript.new()
+	holder_gd.source_code = "extends Node\nvar box: Resource\n"
+	holder_gd.reload()
+	var holder: Node = holder_gd.new()
+	holder.name = "ZzWritesHolder"
+	scene.add_child(holder)
+	var box_gd := GDScript.new()
+	box_gd.source_code = "extends Resource\nvar locked := 1:\n\tset(v):\n\t\tpass\nvar clamped := 0:\n\tset(v):\n\t\tclamped = clampi(v, 0, 10)\n"
+	box_gd.reload()
+	var boxed: Resource = box_gd.new()
+	holder.set("box", boxed)
+	Reflect.scene_root_override = scene
+	var rt := ReflectionTools.new()
+	rt.server = _NoUndoServer.new()
+	var target := "ZzWritesMesh/material_override"
+	var kept: Dictionary = rt._set_property({"target": target, "property": "albedo_texture", "value": "glow"})
+	_ok(kept.has("error") and held.albedo_texture != null and held.albedo_texture.resource_path == tex_path, "set_property refuses text for a texture, and the texture is still there (it was emptied, and the reply said 'set')")
+	var cleared: Dictionary = rt._set_property({"target": target, "property": "albedo_texture", "value": null})
+	_ok(not cleared.has("error") and held.albedo_texture == null and str(cleared.get("text", "")).ends_with("= null"), "null empties it, and the reply says null (%s)" % str(cleared.get("text", cleared.get("error", ""))))
+	var set_tex: Dictionary = rt._set_property({"target": target, "property": "albedo_texture", "value": tex_path})
+	_ok(held.albedo_texture != null and held.albedo_texture.resource_path == tex_path and str(set_tex.get("text", "")) == "set %s.albedo_texture = %s" % [target, tex_path],
+		"a res:// path is loaded into it, and the reply quotes the path (%s)" % str(set_tex.get("text", set_tex.get("error", ""))))
+	var set_gold: Dictionary = rt._set_property({"target": target, "property": "albedo_color", "value": "Color(1,0.85,0,1)"})
+	_ok(held.albedo_color.is_equal_approx(gold) and str(set_gold.get("text", "")).contains("0.85"), "a Color literal is stored as that color, and the reply shows it (%s)" % str(set_gold.get("text", set_gold.get("error", ""))))
+	var kept_gold: Dictionary = rt._set_property({"target": target, "property": "albedo_color", "value": "reddish"})
+	_ok(kept_gold.has("error") and held.albedo_color.is_equal_approx(gold), "...and color text that is no color is refused, the color kept")
+	var stuck: Dictionary = rt._set_property({"target": "ZzWritesHolder/box", "property": "locked", "value": 5})
+	_ok(str(stuck.get("error", "")).contains("did not stick") and boxed.get("locked") == 1, "a write the setter ignores is an error, not 'set' (%s)" % str(stuck.get("error", stuck.get("text", ""))))
+	var clamped: Dictionary = rt._set_property({"target": "ZzWritesHolder/box", "property": "clamped", "value": 50})
+	_ok(not clamped.has("error") and boxed.get("clamped") == 10 and str(clamped.get("text", "")).contains("= 10") and str(clamped["text"]).contains("NOTE"),
+		"a write the setter clamps says what was stored (%s)" % str(clamped.get("text", clamped.get("error", ""))))
+	Reflect.scene_root_override = null
+	scene.free()
+
+	# create_resource: the same rules, and nothing saved when a property is refused
+	var cr := ResourceTools.new()
+	var made_path := _PW_DIR + "/made.tres"
+	var made: Dictionary = cr._create_resource({"class": "StandardMaterial3D", "path": made_path, "properties": {"albedo_texture": tex_path, "albedo_color": "Color(1, 0.85, 0)"}})
+	var saved: Variant = ResourceLoader.load(made_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	_ok(not made.has("error") and saved is StandardMaterial3D and (saved as StandardMaterial3D).albedo_texture != null and (saved as StandardMaterial3D).albedo_texture.resource_path == tex_path
+		and (saved as StandardMaterial3D).albedo_color.is_equal_approx(gold), "create_resource saves a texture given by path and a color given as a literal (it saved them empty and black) (%s)" % str(made.get("text", made.get("error", ""))))
+	for bad in [{"albedo": "#ff0000"}, {"albedo_texture": "glow"}, {"albedo_color": "reddish"}]:
+		var bad_path := _PW_DIR + "/refused.tres"
+		var r: Dictionary = cr._create_resource({"class": "StandardMaterial3D", "path": bad_path, "properties": bad})
+		_ok(str(r.get("error", "")).begins_with("properties.%s:" % bad.keys()[0]) and str(r["error"]).ends_with("The resource was not saved.") and not FileAccess.file_exists(bad_path),
+			"create_resource refuses properties=%s and saves nothing (%s)" % [JSON.stringify(bad), str(r.get("error", r.get("text", ""))).left(110)])
+	_rm_tree(_PW_DIR)
+	return true
+
+
+## The kinds of property a game script declares, as the editor sees them on a node: typed, untyped (holding an int, a
+## vector, an object or nothing), an enum with explicit values, a path and a name.
+class _EditorValueProbe extends Node3D:
+	var hp: int = 3
+	var speed = 200
+	var anything
+	var aim = Vector3(1, 2, 3)
+	var held = Resource.new()
+	var anim: StringName = &"idle"
+	@export var target: NodePath = NodePath("A/B")
+	@export_enum("Walk", "Run:5", "Fly") var gait: int = 0
+	@export var follow: Node3D
+
+
+const _EPV_DIR := "res://tests/_beckett_unit_values"
+const _ANIMATION_TOOLS_PATH := "res://addons/beckett/tools/animation_tools.gd"  # Full only, so loaded by path
+
+
+## The editor half of the 2026-10-08 zero-vector report: an editor write takes the spellings a runtime write takes, held
+## to the type the property DECLARES, and refuses what does not fit. Reflect's own converter padded "1 2" to (1, 2, 0),
+## read "(5.0, 6.0, 11.0)" (how a reply prints a vector) as (0, 6, 11), stored "abc" as (0, 0, 0), "Always" as 0 and
+## "maybe" as false, and set_property answered "set" every time. call_method set("position", "0 6 11") zeroed the node
+## (Object.set stores the type's default for a value of another type), and an animation key on "Sprite:modulate:a"
+## was converted to the type of modulate: Color(0, 0, 0, 1). Node targets run through the stand-in scene, now that
+## set_property asks Reflect.scene_root() for the persist verdict.
+func _t_editor_property_values() -> bool:
+	print("[unit] editor writes: set_property, call_method set and animation keys hold a value to the declared type, or refuse it")
+	await process_frame  # set_deferred below needs the frame loop
+
+	# --- value_for_property, the report's values, on a Resource
+	var box := BoxMesh.new()
+	var v3_missed: Array = []
+	for v in ["5 6 11", "5, 6, 11", "5,6,11", "(5.0, 6.0, 11.0)", "(5, 6, 11)", "Vector3(5, 6, 11)", [5, 6, 11], [5.0, 6.0, 11.0], "[5, 6, 11]", {"x": 5, "y": 6, "z": 11}]:
+		var fit: Dictionary = Reflect.value_for_property(box, "size", v)
+		if fit.get("value") != Vector3(5, 6, 11):
+			v3_missed.append("%s -> %s" % [var_to_str(v), str(fit)])
+	_ok(v3_missed.is_empty(), "BoxMesh.size takes every Vector3 spelling a runtime write takes, and \"(5.0, 6.0, 11.0)\" keeps its first number (it read (0, 6, 11))%s" % ("" if v3_missed.is_empty() else ": " + str(v3_missed)))
+	var v3_taken: Array = []
+	for v in ["abc", "1 2", "1 2 3 4", [1, 2], {"y": 5}, ["0", 6, 11], true, "Vector2(1, 2)", null, "(1, 2, 3"]:
+		var fit: Dictionary = Reflect.value_for_property(box, "size", v)
+		if fit.has("value") or not str(fit.get("error", "")).begins_with("BoxMesh.size: expected Vector3") or not str(fit.get("suggestion", "")).contains("\"x y z\""):
+			v3_taken.append("%s -> %s" % [var_to_str(v), str(fit).left(140)])
+	_ok(v3_taken.is_empty(), "...and refuses what is no Vector3, naming the type and its spellings (\"abc\" was (0, 0, 0), \"1 2\" was padded to (1, 2, 0), {\"y\": 5} got zeros)%s" % ("" if v3_taken.is_empty() else ": " + str(v3_taken)))
+	_ok(Reflect.value_for_property(QuadMesh.new(), "size", "100 50").get("value") == Vector2(100, 50) and str(Reflect.value_for_property(QuadMesh.new(), "size", "100").get("error", "")).begins_with("QuadMesh.size: expected Vector2"),
+		"a Vector2 takes \"x y\" and refuses one number")
+
+	var mat := StandardMaterial3D.new()
+	var not_red: Array = []
+	for v in ["#ff0000", "red", "Color.RED", "Color(1, 0, 0, 1)", "Color(1, 0, 0)", "Color(\"#ff0000\")", "(1.0, 0.0, 0.0, 1.0)", "1 0 0", "1, 0, 0, 1", [1, 0, 0], [1, 0, 0, 1], "[1, 0, 0]", {"r": 1, "g": 0, "b": 0}]:
+		var fit: Dictionary = Reflect.value_for_property(mat, "albedo_color", v)
+		if not (fit.get("value") is Color and (fit["value"] as Color).is_equal_approx(Color.RED)):
+			not_red.append("%s -> %s" % [var_to_str(v), str(fit)])
+	_ok(not_red.is_empty(), "a Color takes hex, a name, Color.NAME, Color(...) with 3 or 4 numbers or a quoted hex, the (r, g, b, a) a reply prints, bare numbers, [r, g, b(, a)] and {r, g, b}%s" % ("" if not_red.is_empty() else ": " + str(not_red)))
+	var black: Array = []
+	for v in ["garbage", "", "1 0", "1 0 x", "Colour(1, 0, 0)", [1, 0], 5, true]:
+		var fit: Dictionary = Reflect.value_for_property(mat, "albedo_color", v)
+		if fit.has("value") or not str(fit.get("error", "")).begins_with("StandardMaterial3D.albedo_color: expected Color") or not str(fit.get("suggestion", "")).contains("#rrggbb"):
+			black.append("%s -> %s" % [var_to_str(v), str(fit).left(120)])
+	_ok(black.is_empty(), "...and refuses what is no color (it was black)%s" % ("" if black.is_empty() else ": " + str(black)))
+	var sm := ShaderMaterial.new()
+	var sh := Shader.new()
+	sh.code = "shader_type spatial;\nuniform vec3 tint : source_color;\nuniform vec2 offset;\n"
+	sm.shader = sh
+	var tint: Dictionary = Reflect.value_for_property(sm, "shader_parameter/tint", "0.1 0.2 0.3")
+	var off: Dictionary = Reflect.value_for_property(sm, "shader_parameter/offset", "left")
+	_ok(sm.get("shader_parameter/tint") == null and tint.get("value") is Color and (tint["value"] as Color).is_equal_approx(Color(0.1, 0.2, 0.3)) and str(off.get("error", "")).begins_with("ShaderMaterial.shader_parameter/offset: expected Vector2"),
+		"a source_color uniform at its default (it reads null) takes \"0.1 0.2 0.3\" as the Color it declares (it was black), and a vec2 uniform refuses a word: %s | %s" % [str(tint), str(off.get("error", ""))])
+
+	var alpha: Dictionary = Reflect.value_for_property(mat, "transparency", "Alpha")
+	_ok(str(alpha.get("error", "")).begins_with("StandardMaterial3D.transparency: expected int") and str(alpha.get("suggestion", "")).contains("1 Alpha") and Reflect.value_for_property(mat, "transparency", 1.0).get("value") == 1,
+		"an enum refuses its name (\"Alpha\" was read as 0) and lists its numbers, and takes its number: %s" % str(alpha.get("suggestion", "")))
+	var flag_yes: Dictionary = Reflect.value_for_property(mat, "vertex_color_use_as_albedo", "yes")
+	var flag_bad: Dictionary = Reflect.value_for_property(mat, "vertex_color_use_as_albedo", "maybe")
+	_ok(flag_yes.get("value") == true and str(flag_bad.get("error", "")).begins_with("StandardMaterial3D.vertex_color_use_as_albedo: expected bool") and str(flag_bad.get("suggestion", "")).contains("true or false"),
+		"a bool takes \"yes\", and \"maybe\" is refused (it was read as false)")
+	var metal: Dictionary = Reflect.value_for_property(mat, "metallic", "0.5")
+	var prio_frac: Dictionary = Reflect.value_for_property(mat, "render_priority", 2.5)
+	var prio_word: Dictionary = Reflect.value_for_property(mat, "render_priority", "high")
+	_ok(is_equal_approx(float(metal.get("value", -1.0)), 0.5) and Reflect.value_for_property(mat, "metallic", "shiny").has("error") and Reflect.value_for_property(mat, "render_priority", "5").get("value") == 5
+		and str(prio_frac.get("error", "")).contains("fractional") and prio_word.has("error"),
+		"a float takes \"0.5\" and refuses a word, an int takes \"5\" and refuses 2.5 (it was cut to 2) and a word (it was 0)")
+	_ok(Reflect.value_for_property(mat, "resource_name", 5).get("value") == "5" and Reflect.value_for_property(mat, "resource_name", "[Press Start]").get("value") == "[Press Start]",
+		"text takes a number as its text, and keeps bracketed text as written")
+
+	# --- value_for_property on a node's script variables
+	var p := _EditorValueProbe.new()
+	var hp: Dictionary = Reflect.value_for_property(p, "hp", "5")
+	var speed: Dictionary = Reflect.value_for_property(p, "speed", 250.5)
+	var anything: Dictionary = Reflect.value_for_property(p, "anything", "free text")
+	var aim: Dictionary = Reflect.value_for_property(p, "aim", "0 6 11")
+	var aim_bad: Dictionary = Reflect.value_for_property(p, "aim", "abc")
+	_ok(hp.get("value") == 5 and is_equal_approx(float(speed.get("value", 0.0)), 250.5) and anything.get("value") == "free text" and aim.get("value") == Vector3(0, 6, 11) and str(aim_bad.get("error", "")).begins_with("Node3D.aim: expected Vector3"),
+		"script variables: a typed int takes \"5\", an untyped one holding an int takes a fraction, one holding nothing takes what is sent, one holding a Vector3 takes \"0 6 11\" and refuses \"abc\"")
+	var path_text: Dictionary = Reflect.value_for_property(p, "target", "../Barbarian")
+	var path_literal: Dictionary = Reflect.value_for_property(p, "target", "NodePath(\"../Barbarian\")")
+	var path_clear: Dictionary = Reflect.value_for_property(p, "target", null)
+	_ok(path_text.get("value") == NodePath("../Barbarian") and path_literal.get("value") == NodePath("../Barbarian") and path_clear.get("value") == NodePath() and Reflect.value_for_property(p, "anim", "run").get("value") == &"run",
+		"a NodePath takes the path as text or as the literal describe_object prints, null clears it, and a StringName takes text")
+	var gait: Dictionary = Reflect.value_for_property(p, "gait", "Run")
+	var mode: Dictionary = Reflect.value_for_property(p, "process_mode", "Always")
+	_ok(str(gait.get("suggestion", "")).contains("0 Walk, 5 Run, 6 Fly") and str(mode.get("suggestion", "")).contains("3 Always") and Reflect.value_for_property(p, "gait", 5.0).get("value") == 5,
+		"a script enum lists its numbers as the engine numbers them, and so does process_mode: %s | %s" % [str(gait.get("suggestion", "")), str(mode.get("suggestion", ""))])
+	var held_bad: Dictionary = Reflect.value_for_property(p, "held", 5)
+	var held_clear: Dictionary = Reflect.value_for_property(p, "held", null)
+	_ok(str(held_bad.get("error", "")).contains("takes an object") and held_clear.has("value") and held_clear["value"] == null, "an untyped variable holding an object is held to it as an object: a number is refused, null empties it")
+	p.free()
+
+	# --- set_property and call_method end to end on nodes of a stand-in scene
+	_rm_tree(_EPV_DIR)
+	DirAccess.make_dir_recursive_absolute(_EPV_DIR)
+	var tex := PlaceholderTexture2D.new()
+	tex.size = Vector2(4, 4)
+	var tex_path := _EPV_DIR + "/tex.tres"
+	_ok(ResourceSaver.save(tex, tex_path) == OK, "fixture: a texture saved as a text resource (nothing to import)")
+	var scene := Node.new()
+	scene.name = "ZzValScene"
+	var cam := Camera3D.new()
+	cam.name = "ZzValCam"
+	var spr := Sprite2D.new()
+	spr.name = "ZzValSprite"
+	var mesh := MeshInstance3D.new()
+	mesh.name = "ZzValMesh"
+	var mesh_mat := StandardMaterial3D.new()
+	mesh.material_override = mesh_mat
+	var box3 := Node3D.new()
+	box3.name = "ZzValBox"
+	var fp := _EditorValueProbe.new()
+	fp.name = "ZzValProbe"
+	for n in [cam, spr, mesh, box3, fp]:
+		scene.add_child(n)
+		n.owner = scene
+	Reflect.scene_root_override = scene
+	var rt := ReflectionTools.new()
+	rt.server = _NoUndoServer.new()
+	var landed: Array = []
+	for v in ["0 6 11", "(0.0, 6.0, 11.0)", "Vector3(0, 6, 11)", [0, 6, 11], {"x": 0, "y": 6, "z": 11}]:
+		cam.position = Vector3(5, 5, 5)
+		var r: Dictionary = rt._set_property({"target": "ZzValCam", "property": "position", "value": v})
+		if r.has("error") or cam.position != Vector3(0, 6, 11) or str(r.get("text", "")) != "set ZzValCam.position = %s" % str(Vector3(0, 6, 11)):
+			landed.append("%s -> %s at %s" % [var_to_str(v), str(r).left(120), str(cam.position)])
+	_ok(landed.is_empty(), "set_property on a node lands every spelling, and the reply quotes the value read back%s" % ("" if landed.is_empty() else ": " + str(landed)))
+	cam.position = Vector3(5, 5, 5)
+	var kept: Array = []
+	for v in ["abc", "1 2", [1, 2], {"y": 5}]:
+		var r: Dictionary = rt._set_property({"target": "ZzValCam", "property": "position", "value": v})
+		if not str(r.get("error", "")).begins_with("Camera3D.position: expected Vector3") or cam.position != Vector3(5, 5, 5):
+			kept.append("%s -> %s at %s" % [var_to_str(v), str(r).left(120), str(cam.position)])
+	_ok(kept.is_empty(), "...and refuses what is no Vector3 with the camera left where it was (it zeroed or padded, and said set)%s" % ("" if kept.is_empty() else ": " + str(kept)))
+	var always: Dictionary = rt._set_property({"target": "ZzValCam", "property": "process_mode", "value": "Always"})
+	var maybe: Dictionary = rt._set_property({"target": "ZzValCam", "property": "visible", "value": "maybe"})
+	_ok(str(always.get("suggestion", "")).contains("3 Always") and cam.process_mode == Node.PROCESS_MODE_INHERIT and maybe.has("error") and cam.visible,
+		"process_mode=\"Always\" is refused with the numbers (it stored 0) and visible=\"maybe\" is refused (it stored false)")
+	var tex_set: Dictionary = rt._set_property({"target": "ZzValSprite", "property": "texture", "value": tex_path})
+	var tex_kept: Dictionary = rt._set_property({"target": "ZzValSprite", "property": "texture", "value": "glow"})
+	_ok(not tex_set.has("error") and tex_kept.has("error") and spr.texture != null and spr.texture.resource_path == tex_path,
+		"a node's texture loads a res:// path, and text that is no path is refused with the texture kept (it was emptied, and the reply said set)")
+	var follow: Dictionary = rt._set_property({"target": "ZzValProbe", "property": "follow", "value": "../ZzValCam"})
+	var follow_set := fp.follow
+	var by_name: Dictionary = Reflect.value_for_property(fp, "follow", "ZzValCam")
+	var wrong_kind: Dictionary = rt._set_property({"target": "ZzValProbe", "property": "follow", "value": "ZzValSprite"})
+	var nowhere: Dictionary = rt._set_property({"target": "ZzValProbe", "property": "follow", "value": "Nope"})
+	var blank: Dictionary = Reflect.value_for_property(fp, "follow", "")
+	_ok(not follow.has("error") and follow_set == cam and str(follow.get("text", "")) == "set ZzValProbe.follow = ZzValCam (Camera3D)" and by_name.get("value") == cam
+		and str(wrong_kind.get("error", "")).contains("is a Sprite2D") and str(nowhere.get("error", "")).contains("no node of the open scene") and blank.has("error") and fp.follow == cam
+		and not str(nowhere.get("suggestion", "")).contains("res://"),
+		"a node-typed export takes a node's path from the node or a name, and refuses a node of another class, a path to nothing and \"\" (text emptied it, and the reply said set): %s | %s" % [str(follow.get("text", follow.get("error", ""))), str(wrong_kind.get("error", ""))])
+	var unfollow: Dictionary = rt._set_property({"target": "ZzValProbe", "property": "follow", "value": null})
+	_ok(not unfollow.has("error") and fp.follow == null and str(unfollow.get("text", "")).ends_with("= null"), "...and null empties it")
+
+	cam.position = Vector3(5, 5, 5)
+	var c_set: Dictionary = rt._call_method({"target": "ZzValCam", "method": "set", "args": ["position", "0 6 11"]})
+	_ok(not c_set.has("error") and cam.position == Vector3(0, 6, 11), "call_method set(\"position\", \"0 6 11\") lands the vector (Object.set stored Vector3.ZERO for the string, with no undo): %s" % str(cam.position))
+	cam.position = Vector3(5, 5, 5)
+	var c_bad: Dictionary = rt._call_method({"target": "ZzValCam", "method": "set", "args": ["position", "abc"]})
+	_ok(str(c_bad.get("error", "")).begins_with("call_method Camera3D.set: arg 1 (value): Camera3D.position: expected Vector3") and str(c_bad.get("suggestion", "")).contains("x y z") and cam.position == Vector3(5, 5, 5),
+		"...and a value that is no Vector3 is an error, the camera left alone: %s" % str(c_bad.get("error", "")))
+	var c_idx: Dictionary = rt._call_method({"target": "ZzValCam", "method": "set_indexed", "args": ["position:y", "7"]})
+	var c_idx_bad: Dictionary = rt._call_method({"target": "ZzValCam", "method": "set_indexed", "args": ["position:y", "up"]})
+	_ok(not c_idx.has("error") and is_equal_approx(cam.position.y, 7.0) and str(c_idx_bad.get("error", "")).contains("Camera3D.position:y: expected float") and is_equal_approx(cam.position.y, 7.0),
+		"set_indexed(\"position:y\", \"7\") lands as the float the member holds, and \"up\" is refused: %s" % str(c_idx_bad.get("error", "")))
+	var gold := Color(1, 0.85, 0)
+	var c_nested: Dictionary = rt._call_method({"target": "ZzValMesh", "method": "set_indexed", "args": ["material_override:albedo_color", "Color(1, 0.85, 0)"]})
+	_ok(not c_nested.has("error") and mesh_mat.albedo_color.is_equal_approx(gold), "set_indexed through an object (material_override:albedo_color) is held to the material's Color (it was black): %s" % str(mesh_mat.albedo_color))
+	var c_def: Dictionary = rt._call_method({"target": "ZzValCam", "method": "set_deferred", "args": ["position", "(1.0, 2.0, 3.0)"]})
+	await process_frame
+	await process_frame
+	_ok(not c_def.has("error") and cam.position == Vector3(1, 2, 3), "set_deferred lands the converted vector once the frame flushes: %s" % str(cam.position))
+	spr.texture = null
+	var c_tex: Dictionary = rt._call_method({"target": "ZzValSprite", "method": "set", "args": ["texture", tex_path]})
+	var c_unknown: Dictionary = rt._call_method({"target": "ZzValCam", "method": "set", "args": ["no_such_prop", "abc"]})
+	_ok(not c_tex.has("error") and spr.texture != null and spr.texture.resource_path == tex_path and not c_unknown.has("error"),
+		"set(\"texture\", res://...) loads it (the string emptied it), and set on a name that is no property goes through as before")
+
+	# --- animation keys and preset_slide's offset (Full only)
+	if ResourceLoader.exists(_ANIMATION_TOOLS_PATH):
+		var at = load(_ANIMATION_TOOLS_PATH).new()
+		at.server = _NoUndoServer.new()
+		var player := AnimationPlayer.new()
+		player.name = "ZzValAnim"
+		scene.add_child(player)
+		player.owner = scene
+		var lib := AnimationLibrary.new()
+		lib.add_animation("clip", Animation.new())
+		player.add_animation_library("", lib)
+		var clip: Animation = player.get_animation("clip")
+		var fade: Dictionary = at._add_property_track({"player": "ZzValAnim", "name": "clip", "path": "ZzValSprite:modulate:a", "keys": [{"time": 0, "value": 1}, {"time": 0.5, "value": "0.25"}]})
+		var k0: Variant = clip.track_get_key_value(0, 0) if clip.get_track_count() > 0 else null
+		var k1: Variant = clip.track_get_key_value(0, 1) if clip.get_track_count() > 0 else null
+		_ok(not fade.has("error") and typeof(k0) == TYPE_FLOAT and typeof(k1) == TYPE_FLOAT and is_equal_approx(float(k1), 0.25),
+			"a \"Sprite:modulate:a\" track keys the float the member holds (every key was Color(0, 0, 0, 1)): %s, %s" % [var_to_str(k0), var_to_str(k1)])
+		var tracks := clip.get_track_count()
+		var bad_key: Dictionary = at._add_property_track({"player": "ZzValAnim", "name": "clip", "path": "ZzValSprite:position", "keys": [{"time": 0, "value": "10 20"}, {"time": 1, "value": "abc"}]})
+		var not_key: Dictionary = at._add_property_track({"player": "ZzValAnim", "name": "clip", "path": "ZzValSprite:position", "keys": [{"time": 0, "value": "10 20"}, 5]})
+		_ok(str(bad_key.get("error", "")).begins_with("keys[1].value: Sprite2D.position: expected Vector2") and str(not_key.get("error", "")).begins_with("keys[1] is not a {time, value}") and clip.get_track_count() == tracks,
+			"a key that is no Vector2, or no key at all, is refused before the clip is touched (it became a zero key, or was skipped while the reply counted it): %s" % str(bad_key.get("error", "")))
+		var pos: Dictionary = at._add_property_track({"player": "ZzValAnim", "name": "clip", "node": "ZzValSprite", "property": "position", "keys": [{"time": 0, "value": "10 20"}, {"time": 1, "value": [30, 40]}]})
+		_ok(not pos.has("error") and clip.get_track_count() == tracks + 1 and clip.track_get_key_value(tracks, 0) == Vector2(10, 20) and clip.track_get_key_value(tracks, 1) == Vector2(30, 40),
+			"node + property keys \"10 20\" and [30, 40] as Vector2s")
+		box3.position = Vector3(1, 2, 3)
+		var slide_bad: Dictionary = at._preset_slide({"target": "ZzValBox", "player": "ZzValAnim", "offset": "abc"})
+		_ok(str(slide_bad.get("error", "")).begins_with("offset: expected Vector3") and not player.has_animation("slide"), "preset_slide refuses an offset that is no vector, and builds nothing (it read as no offset, a clip that did not move): %s" % str(slide_bad.get("error", "")))
+		var slide3: Dictionary = at._preset_slide({"target": "ZzValBox", "player": "ZzValAnim"})
+		var s3: Animation = player.get_animation("slide") if player.has_animation("slide") else null
+		_ok(not slide3.has("error") and s3 != null and s3.track_get_key_value(0, 0) == Vector3(-99, 2, 3), "a 3D target's default offset is (-100, 0, 0), what the zero padding made of \"-100 0\"")
+		spr.position = Vector2(50, 60)
+		var slide2: Dictionary = at._preset_slide({"target": "ZzValSprite", "player": "ZzValAnim", "name": "slide2d", "offset": "(0, -40)"})
+		var s2: Animation = player.get_animation("slide2d") if player.has_animation("slide2d") else null
+		_ok(not slide2.has("error") and s2 != null and s2.track_get_key_value(0, 0) == Vector2(50, 20), "a 2D offset takes the (x, y) a reply prints")
+
+	Reflect.scene_root_override = null
+	scene.free()
+	_rm_tree(_EPV_DIR)
+	return true
+
+
+## A loader for the made-up extension .beckettprobe that records every path the engine asks it for: a check that it saw
+## nothing proves the text never reached ResourceLoader, which an error reply alone does not.
+class _ProbeLoader extends ResourceFormatLoader:
+	var seen: Array = []
+
+	func _get_recognized_extensions() -> PackedStringArray:
+		return PackedStringArray(["beckettprobe"])
+
+	func _handles_type(_t: StringName) -> bool:
+		return true
+
+	func _get_resource_type(p: String) -> String:
+		return "Resource" if p.get_extension() == "beckettprobe" else ""
+
+	func _load(path: String, _original: String, _sub_threads: bool, _cache_mode: int) -> Variant:
+		seen.append(path)
+		var r := Resource.new()
+		r.resource_name = "probe"
+		return r
+
+
+## str_to_var reads Resource("C:/elsewhere/x.tres") anywhere in its text and LOADS that file, from any folder, past
+## PathGuard's read rule (measured 2026-10-08: a .json outside the project came back as a JSON resource with its data).
+## Agent text reached it through CallArgs (a vector or Transform3D argument, a property write) and through any
+## Expression, which can call it and hands the value back. Now a literal reaches str_to_var only as one constructor
+## of plain numbers, and no expression may call it.
+func _t_str_to_var_guard() -> bool:
+	print("[unit] str_to_var guard: agent text never loads a file through a literal or an expression")
+	var loader := _ProbeLoader.new()
+	ResourceLoader.add_resource_format_loader(loader, true)
+	# One path per check: ResourceLoader caches what it loaded by path, and a second load of a cached path never reaches
+	# the loader, so a check that reused a path could pass while the text was still read.
+	var spot := "C:/nowhere/beckett_unit_%s.beckettprobe"
+	var hazard: Variant = str_to_var('Resource("%s")' % (spot % "hazard"))
+	_ok(hazard is Resource and loader.seen == [spot % "hazard"], "the hazard on this engine: str_to_var('Resource(\"...\")') loads the file it names, from any folder (seen: %s)" % str(loader.seen))
+	hazard = null
+	loader.seen.clear()
+
+	# --- literals: CallArgs and every write that goes through it
+	var at := spot % "literal"
+	var payloads: Array = ['Resource("%s")' % at, 'ExtResource("%s")' % at, 'SubResource("%s")' % at, 'Resource ;c\n("%s")' % at,
+		'[1, Resource("%s")]' % at, '{"a": Resource("%s")}' % at, 'Object(Resource,"resource_name":"made")',
+		'Vector3(1, 2, 3) Resource("%s")' % at, 'Vector3(1, Resource("%s"), 3)' % at, 'Transform3D(Resource("%s"))' % at]
+	var types: Array = [TYPE_VECTOR2, TYPE_VECTOR2I, TYPE_VECTOR3, TYPE_VECTOR3I, TYPE_VECTOR4, TYPE_VECTOR4I, TYPE_QUATERNION, TYPE_RECT2, TYPE_RECT2I,
+		TYPE_TRANSFORM2D, TYPE_TRANSFORM3D, TYPE_BASIS, TYPE_AABB, TYPE_PLANE, TYPE_PROJECTION, TYPE_COLOR]
+	var took: Array = []
+	for p in payloads:
+		for t in types:
+			if bool(CallArgs.coerce(p, t).get("ok", false)):
+				took.append("%s as %s" % [str(p).left(40), type_string(t)])
+	_ok(took.is_empty() and loader.seen.is_empty(), "CallArgs refuses %d spellings of a Resource or Object literal for %d value types, and none of them reached ResourceLoader (the Transform3D argument route loaded it)%s" % [payloads.size(), types.size(), "" if took.is_empty() and loader.seen.is_empty() else ": took %s, seen %s" % [str(took.slice(0, 3)), str(loader.seen)]])
+	var mi := MeshInstance3D.new()
+	var wat := spot % "write"
+	var writes := [CallArgs.coerce_write('Resource("%s")' % wat, {"name": "transform", "type": TYPE_TRANSFORM3D}, Transform3D()),
+		Reflect.value_for_property(mi, "transform", 'Transform3D(Resource("%s"))' % wat), Reflect.value_for_property(mi, "position", 'Resource("%s")' % wat)]
+	mi.free()
+	_ok(writes.all(func(w: Dictionary) -> bool: return not bool(w.get("ok", false)) and not w.has("value")) and loader.seen.is_empty(), "a property write (runtime and editor) refuses them the same way, and loads nothing")
+	var setting: Variant = ProjectTools._setting_value('Vector2(Resource("%s"), 1)' % (spot % "setting"), null)
+	_ok(setting is String and loader.seen.is_empty(), "set_project_setting keeps such text as the String it was sent as, and loads nothing")
+
+	# --- every literal Godot itself writes still reads back
+	var values: Array = [Vector2(1.5, -2), Vector2i(3, -4), Vector3(0.1, 1e20, -1e-07), Vector3i(1, 2, 3), Vector4(1, 2, 3, 4.5), Vector4i(-1, 0, 1, 2),
+		Quaternion(0.1, 0.2, 0.3, 0.9), Rect2(1, 2, 3, 4), Rect2i(-1, -2, 3, 4), Transform2D(0.5, Vector2(5, 6)),
+		Transform3D(Basis.from_euler(Vector3(0.3, 0.2, 0.1)), Vector3(7, 8, 9)), Basis.from_euler(Vector3(1, 0, 0)), AABB(Vector3(1, 2, 3), Vector3(4, 5, 6)),
+		Plane(Vector3(0, 1, 0), 2), Projection.create_perspective(60, 1.5, 0.1, 100), Vector2(INF, -INF), Vector3(NAN, 0, 1)]
+	var lost: Array = []
+	for v in values:
+		var text := var_to_str(v)
+		var back: Dictionary = CallArgs.coerce(text, typeof(v))
+		if not bool(back.get("ok", false)) or var_to_str(back["value"]) != text:
+			lost.append("%s -> %s" % [text, str(back.get("error", var_to_str(back.get("value"))))])
+	_ok(lost.is_empty(), "every value type still reads back from the literal var_to_str writes for it (%d values, inf and nan included)%s" % [values.size(), "" if lost.is_empty() else ": " + str(lost)])
+	_ok(CallArgs.coerce("Vector3( 1 ,\n 2 , 3 )", TYPE_VECTOR3).get("value") == Vector3(1, 2, 3) and CallArgs.literal("Vector3(1, 2, 3)", ["Vector2"]) == null and CallArgs.literal("Vector3()", CallArgs.VECTOR_LITERALS) == null,
+		"spaces and line breaks inside a literal are fine; a constructor that is not the wanted one, or holds no numbers, is not read")
+
+	# --- expressions: no expression from a suite, a step or a tool call may call str_to_var
+	var base_node := Node.new()  # every Beckett expression runs with a base: a name it does not know is looked up on it
+	var raw_ex := Expression.new()
+	raw_ex.parse('str_to_var("Resource(\\"%s\\")")' % (spot % "expr_raw"))
+	var raw_v: Variant = raw_ex.execute([], base_node, false)
+	var raw_loaded := raw_v is Resource and loader.seen == [spot % "expr_raw"]
+	raw_v = null
+	var unreachable: Array = []
+	for s in ['ResourceLoader.load("%s")' % (spot % "singleton"), 'load("%s")' % (spot % "load"), 'FileAccess.file_exists("C:/Windows/win.ini")', 'OS.get_name()', 'ClassDB.instantiate("Node")', 'JSON.parse_string("1")']:
+		var ex := Expression.new()
+		ex.parse(s)
+		ex.execute([], base_node, false)
+		if not ex.has_execute_failed():
+			unreachable.append(s)
+	base_node.free()
+	_ok(raw_loaded and unreachable.is_empty() and loader.seen == [spot % "expr_raw"],
+		"an Expression can call str_to_var and gets the loaded file back (the route the guard closes), while load() and the engine singletons (ResourceLoader, FileAccess, OS, ClassDB, JSON) are out of its scope%s" % ("" if unreachable.is_empty() else ": reachable " + str(unreachable)))
+	loader.seen.clear()
+	at = spot % "expr"
+	var refused_src := ['str_to_var("Resource(\\"%s\\")")' % at, ' str_to_var  ("x") != null', 'bytes_to_var_with_objects(PackedByteArray()) == null', 'get_node("A").str_to_var(1)']
+	var allowed_src := ['get_node("Label").text == "str_to_var(x)"', "my_str_to_var(1) > 0", "get_node('Player').health >= 0", "str(1) == '1'"]
+	var guard_bad: Array = []
+	for s in refused_src:
+		if not Invariants.unsafe_call(s).contains("may not call"):
+			guard_bad.append("let through: " + s)
+	for s in allowed_src:
+		if not Invariants.unsafe_call(s).is_empty():
+			guard_bad.append("refused: " + s)
+	_ok(guard_bad.is_empty(), "unsafe_call finds a call to str_to_var or bytes_to_var_with_objects outside a string literal, and nothing else%s" % ("" if guard_bad.is_empty() else ": " + str(guard_bad)))
+	var bad_expr := 'str_to_var("Resource(\\"%s\\")") != null' % at
+	var inv: Dictionary = Invariants.normalize([{"name": "leak", "expr": bad_expr}])
+	_ok(not bool(inv.get("ok", true)) and str(inv.get("error", "")).contains("may not call str_to_var"), "an invariant that calls it is refused when the suite is checked: %s" % str(inv.get("error", "")))
+	await process_frame
+	var rt = MCPRuntime.new()
+	root.add_child(rt)
+	var ev: Dictionary = rt._dispatch({"cmd": "eval", "expr": bad_expr})
+	var step: Dictionary = rt._dispatch({"cmd": "tc_step_until", "condition": bad_expr})
+	var uido := UiDo.new()
+	var cond: Dictionary = uido._eval_eventually(bad_expr, "assert")
+	_ok(str(ev.get("error", "")).contains("may not call str_to_var") and str(step.get("error", "")).contains("may not call str_to_var") and str(cond.get("error", "")).contains("may not call str_to_var") and loader.seen.is_empty(),
+		"the game refuses it in an expr assert (eval), a step_until condition and a ui_do condition, before parsing it, and loads nothing: %s" % str(ev.get("error", "")))
+	root.remove_child(rt)
+	rt.free()
+	if ResourceLoader.exists(_PLAYTEST_RUNNER_PATH):
+		var runner = load(_PLAYTEST_RUNNER_PATH).new()
+		var judged: Dictionary = runner._eval_assert({"type": "expr", "condition": bad_expr})
+		runner.free()
+		_ok(str(judged.get("status", "")) == "fail" and str(judged.get("detail", "")).contains("may not call str_to_var") and loader.seen.is_empty(), "the headless runner fails such an expr assert without evaluating it: %s" % str(judged.get("detail", "")))
+	if ResourceLoader.exists(_STANDALONE_PATH):
+		var T = load(_STANDALONE_PATH)
+		var same: Array = []
+		for s in refused_src + allowed_src:
+			if T.unsafe_call(s) != Invariants.unsafe_call(s):
+				same.append(s)
+		var sbase := Node.new()
+		var sa: Dictionary = T.eval_assert({"type": "expr", "condition": bad_expr}, sbase)
+		sbase.free()
+		var si: Dictionary = T.inv_open([{"name": "leak", "expr": bad_expr}])
+		_ok(same.is_empty() and str(sa.get("detail", "")).contains("may not call str_to_var") and not bool(si.get("ok", true)) and loader.seen.is_empty() and T.plain_literal('Resource("%s")' % at, ["Vector3"]) == null,
+			"the standalone test refuses the same expressions with the same words, and its literal gate reads no Resource either%s" % ("" if same.is_empty() else ": differ on " + str(same)))
+	if ResourceLoader.exists(_PLAYTEST_TOOLS_PATH):
+		var pt = load(_PLAYTEST_TOOLS_PATH).new()
+		var saved: Dictionary = pt._save({"name": "zz_unit_unsafe_expr", "scene": "res://x.tscn", "steps": [{"wait": {"condition": bad_expr}}]})
+		var saved2: Dictionary = pt._save({"name": "zz_unit_unsafe_expr", "scene": "res://x.tscn", "steps": [{"wait": {"ms": 1}}], "asserts": [{"type": "expr", "condition": bad_expr}]})
+		_ok(str(saved.get("error", "")).begins_with("op=save: steps[0]: an expression may not call str_to_var") and str(saved2.get("error", "")).begins_with("op=save: asserts[0]: an expression may not call str_to_var"),
+			"playtest op=save refuses a step or an assert whose condition calls it, before anything is written: %s" % str(saved.get("error", "")))
+	ResourceLoader.remove_resource_format_loader(loader)
+	return true
+
+
+# ---------------------------------------------------------------- a write reaches what is loaded (2026-10-08)
+
+## Is `prop` in the object's property list? set_property asks exactly this before it sets anything.
+func _lists(obj: Object, prop: String) -> bool:
+	for p in obj.get_property_list():
+		if str(p.get("name", "")) == prop:
+			return true
+	return false
+
+
+## A write through Beckett has to reach the copy of a resource that is already loaded. update_file reloads nothing
+## and leaves the editor's own change check nothing to notice, so a shader in use kept its old code all session: its
+## material listed the old uniforms and set_property shader_parameter/<new> failed (2026-10-08, on 4.6.2; the same on
+## 4.4.1 and 4.7). This drives refresh_loaded_copy outside the editor, where loading and the cache behave the same; the
+## Shader Editor case needs a real editor and is in tests/live-reload.ps1.
+func _t_loaded_copy_refresh() -> bool:
+	print("[unit] a write reaches the loaded copy: a shader, its include, a .tres, and what is left alone")
+	var dir := "res://beckett_unit_refresh"
+	_rm_tree(dir)  # left behind by a run that died half way
+	var inc := dir + "/shade.gdshaderinc"
+	var sh := dir + "/grass.gdshader"
+	_wf(inc, "float shade(float y) {\n\treturn mix(0.6, 1.0, y);\n}\n")
+	var body := "#include \"%s\"\n\nuniform vec4 tint : source_color = vec4(1.0);\n\nvoid fragment() {\n\tALBEDO = tint.rgb * shade(UV.y);\n}\n" % inc
+	_wf(sh, "shader_type spatial;\n" + body)
+	var shader: Shader = load(sh)
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	_ok(_lists(mat, "shader_parameter/tint") and not _lists(mat, "shader_parameter/blades"), "control: the material lists the shader's uniforms (tint, no blades yet)")
+	_wf(sh, "shader_type spatial;\nuniform float blades = 3.0;\n" + body)
+	_ok(not _lists(mat, "shader_parameter/blades"), "control: rewriting the file alone leaves the loaded shader as it was (the bug)")
+	var note := ProjectTools.refresh_loaded_copy(sh)
+	_ok(note.contains("refreshed"), "refresh_loaded_copy says it refreshed the loaded shader (%s)" % note.strip_edges())
+	_ok(load(sh) == shader and shader.code.contains("uniform float blades"), "...in place: the cached object everything holds has the new code")
+	_ok(_lists(mat, "shader_parameter/blades") and _lists(mat, "shader_parameter/tint"), "...so the material using it lists shader_parameter/blades at once")
+	_wf(inc, "uniform float sway = 0.5;\n\nfloat shade(float y) {\n\treturn mix(0.6, 1.0, y) * sway;\n}\n")
+	note = ProjectTools.refresh_loaded_copy(inc)
+	_ok(note.contains("refreshed") and _lists(mat, "shader_parameter/sway"), "refreshing an include recompiles the shader that includes it: shader_parameter/sway is listed")
+	shader.changed.connect(func(): pass)
+	_ok(not ProjectTools.shader_tab_holds(shader) and not ProjectTools.shader_tab_holds(mat), "a connection from anything but a Shader Editor tab does not count as the shader being open there")
+
+	var mt := dir + "/mat.tres"
+	_wf(mt, "[gd_resource type=\"StandardMaterial3D\" format=3]\n\n[resource]\nalbedo_color = Color(1, 0, 0, 1)\nroughness = 0.25\n")
+	var std: StandardMaterial3D = load(mt)
+	_wf(mt, "[gd_resource type=\"StandardMaterial3D\" format=3]\n\n[resource]\nalbedo_color = Color(0, 0, 1, 1)\n")
+	note = ProjectTools.refresh_loaded_copy(mt)
+	_ok(note.contains("refreshed") and load(mt) == std and std.albedo_color == Color(0, 0, 1, 1), "a loaded .tres takes the new values in place")
+	_ok(is_equal_approx(std.roughness, 1.0), "...and a property the new file no longer sets is back at its default, as the editor's own reload leaves it (roughness %s)" % std.roughness)
+	_wf(mt, "[gd_resource type=\"StandardMaterial3D\" format=3]\n\n[resource]\nalbedo_color = Color(0, 0\n")
+	print("  note  the Parse Error the engine prints next is this check's own: the file is broken on purpose")
+	note = ProjectTools.refresh_loaded_copy(mt)
+	_ok(note.contains("does not load") and std.albedo_color == Color(0, 0, 1, 1), "a file that no longer loads leaves the loaded copy as it was, and says so (%s)" % note.strip_edges().left(90))
+	_wf(mt, "[gd_resource type=\"ShaderMaterial\" format=3]\n\n[resource]\n")
+	note = ProjectTools.refresh_loaded_copy(mt)
+	_ok(note.contains("cannot change") and std.albedo_color == Color(0, 0, 1, 1), "a file that now holds another class is not forced onto the loaded object, and the note says why")
+
+	var never := dir + "/never.tres"
+	_wf(never, "[gd_resource type=\"StandardMaterial3D\" format=3]\n\n[resource]\n")
+	_ok(ProjectTools.refresh_loaded_copy(never) == "", "a file nothing has loaded gets no note")
+	var gd := dir + "/s.gd"
+	_wf(gd, "extends Node\nvar a := 1\n")
+	var scr: GDScript = load(gd)
+	_wf(gd, "extends Node\nvar a := 2\n")
+	_ok(ProjectTools.refresh_loaded_copy(gd) == "" and scr.source_code.contains("a := 1"), "a script is left to the editor's own reload")
+	var imp := dir + "/imp.tres"
+	_wf(imp, "[gd_resource type=\"StandardMaterial3D\" format=3]\n\n[resource]\nalbedo_color = Color(1, 0, 0, 1)\n")
+	var held: StandardMaterial3D = load(imp)
+	_wf(imp + ".import", "[remap]\n")
+	_wf(imp, "[gd_resource type=\"StandardMaterial3D\" format=3]\n\n[resource]\nalbedo_color = Color(0, 1, 0, 1)\n")
+	_ok(ProjectTools.refresh_loaded_copy(imp) == "" and held.albedo_color == Color(1, 0, 0, 1), "a file with an .import beside it is left to the import pipeline")
+	var gone := dir + "/gone.tres"
+	_wf(gone, "[gd_resource type=\"StandardMaterial3D\" format=3]\n\n[resource]\nalbedo_color = Color(1, 0, 0, 1)\n")
+	var gone_res: StandardMaterial3D = load(gone)
+	DirAccess.remove_absolute(gone)
+	_ok(ProjectTools.refresh_loaded_copy(gone) == "" and gone_res.albedo_color == Color(1, 0, 0, 1),
+		"a loaded file that was deleted gets no note and keeps its copy (rescan_filesystem syncs removals through here too)")
+	_rm_tree(dir)
+	return true
+
+
+## Godot's hot reload keeps the nodes that run a script and gives every variable the new version adds no value (null),
+## whatever its type or initializer, so a new `@export var patches := 0` broke its own loop and was saved as
+## `patches = null` (2026-10-08, on 4.4.1, 4.6.2 and 4.7). The reload here is the engine's own (Script.reload(true) on a
+## script that nodes run, base before subclass as the editor orders it); heal_new_members is what Beckett runs after it.
+func _t_hot_reload_heal() -> bool:
+	print("[unit] new exports on a hot-reloaded script take their declared values on the nodes already running it")
+	var dir := "res://beckett_unit_heal"
+	_rm_tree(dir)
+	var base_path := dir + "/gen.gd"
+	var child_path := dir + "/gen_child.gd"
+	_wf(base_path, "extends Node\n\n@export var count := 10\n")
+	_wf(child_path, "extends \"%s\"\n\n@export var extra := 1\n" % base_path)
+	var base: GDScript = load(base_path)
+	var child: GDScript = load(child_path)
+	var a := Node.new()
+	a.set_script(base)
+	var b := Node.new()
+	b.set_script(base)
+	b.set("count", 4)
+	var c := Node.new()
+	c.set_script(child)
+	var before: Variant = ProjectTools.loaded_member_names(base_path)
+	_ok(before is Dictionary and (before as Dictionary).has("count") and not (before as Dictionary).has("patches"), "loaded_member_names reads the variables of the loaded copy")
+	_ok(ProjectTools.loaded_member_names(dir + "/nothing_loaded.gd") == null, "...and is null for a script nothing has loaded (no node can run it)")
+	var v2 := "extends Node\n\n@export var count := 10\n@export var patches := 0\n@export var patch_radius := 1.2\n@export var tags: Array[String] = [\"grass\"]\n@export var mesh_hint: Mesh\nvar _seen := 3\nvar _cache = {}\n"
+	_wf(base_path, v2)
+	base.source_code = v2
+	var e1 := base.reload(true)  # keep the nodes, as the editor's hot reload does
+	var e2 := child.reload(true)
+	_ok(e1 == OK and e2 == OK and a.get("patches") == null and c.get("patch_radius") == null, "control: Godot's own hot reload leaves the new exports null on the nodes (the bug)")
+	var note := ProjectTools.heal_new_members(base, before, {"Gen": a, "Gen2": b, "GenChild": c})
+	_ok(a.get("patches") == 0 and is_equal_approx(float(a.get("patch_radius")), 1.2) and c.get("patches") == 0, "the new exports hold the script's defaults, on a node running a subclass too")
+	var tags: Variant = a.get("tags")
+	_ok(tags is Array and (tags as Array) == ["grass"] and (tags as Array).is_typed(), "a typed array export gets its default, still typed")
+	if tags is Array:
+		(tags as Array).append("moss")
+	_ok(b.get("tags") is Array and (b.get("tags") as Array) == ["grass"] and (base.get_property_default_value("tags") as Array) == ["grass"],
+		"...as its own copy: no node shares it with another node or with the script's default")
+	_ok(b.get("count") == 4 and c.get("extra") == 1, "a value set before the reload is never touched")
+	_ok(a.get("mesh_hint") == null, "an object export whose default is null stays null")
+	_ok(a.get("_seen") == null, "a variable that is not exported keeps the null the reload gave it (no default can be read for it)")
+	_ok(note.contains("hot reload") and note.contains("patches, patch_radius, tags") and note.contains("3 node(s)") and note.contains("Gen, Gen2, GenChild"),
+		"the note names the exports it set and the nodes (%s)" % note.strip_edges().left(150))
+	_ok(note.contains("_seen") and not note.contains("_cache") and not note.contains("mesh_hint") and not note.contains("count"),
+		"...and the typed variable it could not set, but not an untyped one, an object export or an old variable")
+	_ok(ProjectTools.heal_new_members(base, ProjectTools.loaded_member_names(base_path), {"Gen": a}) == "", "nothing new since the last look: no note, nothing set")
+	var fresh := Node.new()
+	fresh.set_script(base)
+	fresh.set("patches", 7)
+	_ok(ProjectTools.heal_new_members(base, before, {"Fresh": fresh}) == "" and fresh.get("patches") == 7, "a node built after the reload (every value set) is left as it is")
+	_ok(ProjectTools.heal_new_members(base, before, {}) == "", "a script no node runs: no note")
+	for n in [a, b, c, fresh]:
+		(n as Node).free()
+	_rm_tree(dir)
+	return true
+
+
+## A headless Godot 4.5+ editor never reloads a script that was written: EditorFileSystem leaves out the step that does
+## it in command-line mode, so nodes kept running the old code, call_method ran it, and the reply said nothing
+## (2026-10-08, on 4.6.2 and 4.7). A file rewritten here plays that part: the loaded copy stays as it was. Beckett
+## reloads such a script itself, but only a version with the loaded one's shape, since Godot reloads a script together
+## with every loaded script that extends it and GDScript cannot find those. Scripts run outside the editor, so the
+## nodes here run real code, one of them through a subclass that nothing reloads.
+func _t_skipped_reload() -> bool:
+	print("[unit] a script the editor did not reload: reloaded when its shape holds, an honest note when it does not")
+	var dir := "res://beckett_unit_skipped"
+	_rm_tree(dir)
+	var path := dir + "/gen.gd"
+	var v1 := "@tool\nextends Node\n\nenum Mode {CALM, WINDY}\nconst STEP := 1\n\n@export var count := 10\n@export var tags: Array[Mode] = []\nvar mode: Mode = Mode.CALM\nstatic var made := 0\n\nclass Leaf:\n\tvar size := 1\n\nfunc label() -> String:\n\treturn \"v1\"\n\nfunc total() -> int:\n\treturn count + STEP\n"
+	_wf(path, v1)
+	_wf(dir + "/gen_child.gd", "@tool\nextends \"%s\"\n\n@export var extra := 1\n\nfunc both() -> String:\n\treturn label() + str(extra)\n" % path)
+	var gd: GDScript = load(path)
+	var a := Node.new()
+	a.set_script(gd)
+	a.set("count", 4)
+	var c := Node.new()
+	c.set_script(load(dir + "/gen_child.gd"))
+	_ok(ProjectTools.loaded_copy_current(path) and ProjectTools.skipped_reload_note(gd, path) == "", "a loaded copy that matches its file is current, and gets no note")
+	_ok(ProjectTools.loaded_copy_current(dir + "/never_loaded.gd"), "...and a file nothing has loaded counts as current (no node runs an old copy of it)")
+
+	# Same shape: new code in a method, a constant changed, a method added.
+	var v2 := v1.replace("return \"v1\"", "return \"v2\"").replace("STEP := 1", "STEP := 5") + "\nfunc helper() -> int:\n\treturn 7\n"
+	_wf(path, v2)
+	_ok(not ProjectTools.loaded_copy_current(path) and a.call("label") == "v1", "control: the file changed and the loaded copy did not, as a headless 4.5+ editor leaves it")
+	var note := ProjectTools.skipped_reload_note(gd, path)
+	_ok(note.contains("Beckett reloaded it") and ProjectTools.loaded_copy_current(path), "same shape: Beckett reloads it and says so (%s)" % note.strip_edges().left(140))
+	_ok(a.call("label") == "v2" and a.call("helper") == 7 and a.call("total") == 9,
+		"...and the node runs the new code at once: the new body, the added method, the new constant (total %s)" % str(a.call("total")))
+	_ok(c.call("both") == "v21", "...through the subclass too, which was not reloaded and did not need to be (%s)" % str(c.call("both")))
+	_ok(a.get("count") == 4 and load(path) == gd, "...in place: a value set before is kept, and the cache still holds the same script object")
+
+	# Any other shape stays unloaded, and the note says what changed.
+	var line_count := "@export var count := 10\n"
+	var line_tags := "@export var tags: Array[Mode] = []\n"
+	var cases := [
+		[v2.replace("var mode: Mode", "@export var patches := 0\nvar mode: Mode"), "adds variable(s) patches"],
+		[v2.replace("var mode: Mode = Mode.CALM\n", ""), "removes variable(s) mode"],
+		[v2.replace("count := 10", "count := 10.0"), "changes the type or order of variable(s) count"],
+		[v2.replace(line_count + line_tags, line_tags + line_count), "changes the type or order of variable(s) count, tags"],
+		[v2.replace("Array[Mode]", "Array[int]"), "changes the type or order of variable(s) tags"],
+		[v2.replace("static var made := 0", "static var made := 0\nstatic var lost := 0"), "adds static variable(s) lost"],
+		[v2.replace("func total() -> int:", "func total() -> float:"), "changes the signature of total"],
+		[v2.replace("\tvar size := 1", "\tvar size := 1\n\tvar depth := 0"), "changes inner class Leaf (it adds variable(s) depth)"],
+		[v2.replace("extends Node\n", "extends Node2D\n"), "changes what the script extends"],
+		[v2.replace("var mode: Mode", "var wind := 0.5\nvar mode: Mode").replace("func total() -> int:", "func total() -> float:"), "adds variable(s) wind and changes the signature of total"],
+	]
+	for cs in cases:
+		_wf(path, str(cs[0]))
+		note = ProjectTools.skipped_reload_note(gd, path)
+		_ok(note.contains(str(cs[1])) and note.contains("keeps running the OLD code") and note.contains("restarts") and gd.source_code == v2 and a.call("label") == "v2",
+			"a version that %s is not reloaded, and the note says so (%s)" % [str(cs[1]), note.strip_edges().left(120)])
+	_ok(not ProjectTools.loaded_copy_current(path), "...and the loaded copy is still reported as not current")
+
+	# The copies below fail to compile on purpose, each with engine error printing off for that one call: smoke and CI fail
+	# the suite on any "SCRIPT ERROR:" line, and these would be nothing but noise there.
+	_wf(path, v2 + "\nfunc broken(:\n")
+	Engine.print_error_messages = false
+	note = ProjectTools.skipped_reload_note(gd, path)
+	Engine.print_error_messages = true
+	_ok(note.contains("does not compile on its own") and note.contains("OLD version") and gd.source_code == v2 and a.call("label") == "v2",
+		"a new file that does not compile leaves the loaded copy as it was, and says so (%s)" % note.strip_edges().left(120))
+	_wf(dir + "/helper.gd", "extends RefCounted\n")
+	_wf(path, v2.replace("const STEP := 5", "const STEP := 5\nconst H = preload(\"helper.gd\")"))
+	Engine.print_error_messages = false
+	note = ProjectTools.skipped_reload_note(gd, path)
+	Engine.print_error_messages = true
+	_ok(note.contains("relative to the file") and gd.source_code == v2, "a path relative to the file cannot resolve in a copy, and the note says that is why (%s)" % note.strip_edges().left(120))
+
+	var v3 := v2.replace("\nfunc helper() -> int:\n\treturn 7\n", "")
+	_wf(path, v3)
+	note = ProjectTools.skipped_reload_note(gd, path)
+	_ok(note.contains("Beckett reloaded it") and not a.has_method("helper") and a.call("label") == "v2", "a method taken away changes nothing compiled against the old version: reloaded")
+
+	# What the shape compares: a script's own types read "@self", whatever the copy is named.
+	_ok(ProjectTools._as_self("Gen.Mode", ["Gen"]) == "@self.Mode" and ProjectTools._as_self("res://g.gd.Mode", ["res://g.gd"]) == "@self.Mode",
+		"an enum of the script's own reads @self, under its class_name or its path")
+	_ok(ProjectTools._as_self("String;Gen.Mode", ["Gen"]) == "String;@self.Mode" and ProjectTools._as_self("24/17:Gen", ["Gen"]) == "24/17:@self",
+		"...also as a typed Dictionary's value type and after an exported array's element hint")
+	_ok(ProjectTools._as_self("MyGen.Mode", ["Gen"]) == "MyGen.Mode" and ProjectTools._as_self("Genre", ["Gen"]) == "Genre", "...and another type that only contains the name is left alone")
+	var named := "extends RefCounted\nclass_name BeckettJobs\n\nenum Kind {A, B}\nvar kind: Kind\nvar me: BeckettJobs\n\nfunc get_self() -> BeckettJobs:\n\treturn self\n"
+	var decl_only := GDScript.new()
+	decl_only.source_code = named.replace("class_name BeckettJobs", "class_name __BeckettValidate")
+	Engine.print_error_messages = false
+	var decl_err := decl_only.reload()
+	Engine.print_error_messages = true
+	_ok(decl_err != OK, "control: a copy that renames only a registered class_name declaration fails on a method returning self as that class")
+	var cp: Variant = ProjectTools.compile_detached(named, "res://addons/beckett/core/jobs.gd")
+	_ok(cp is GDScript, "compile_detached renames every use of the registered class_name, so the copy compiles")
+	if cp is GDScript:
+		var quals := ["res://addons/beckett/core/jobs.gd", "BeckettJobs", "__BeckettValidate", "gdscript://%d.gd" % (cp as GDScript).get_instance_id()]
+		var sh := ProjectTools.shape_of(cp, quals)
+		_ok(sh["vars"] == [["kind", TYPE_INT, "@self.Kind", ""], ["me", TYPE_OBJECT, "@self", ""]] and sh["methods"]["get_self"][1] == [TYPE_OBJECT, "@self", ""],
+			"...and its own types read @self in the shape (%s)" % str(sh["vars"]))
+		_ok(ProjectTools.shape_change(sh, sh) == "", "a shape compared with itself: no change")
+	Engine.print_error_messages = false
+	var other: Variant = ProjectTools.compile_detached(named, "res://somewhere/else.gd")
+	Engine.print_error_messages = true
+	_ok(not (other is GDScript), "a class_name registered to another file is not renamed away: that copy fails, as the file would")
+
+	# A script the Script Editor has open is left to that tab.
+	var with_export := v3 + "\n@export var wind := 0.3\nvar _gust := 1\n"
+	_ok(ProjectTools.added_exports(gd, with_export) == ["wind"], "added_exports names the new export, not the new plain variable")
+	var tab := ProjectTools.script_tab_note(gd, path, with_export, false)
+	_ok(tab.contains("open in the Script Editor") and tab.contains("next gets focus") and tab.contains("auto_reload_scripts_on_external_change") and tab.contains("wind") and tab.contains("close the tab"),
+		"windowed: the tab reloads it on focus, the new export will be null then, and how to have it set (%s)" % tab.strip_edges().left(120))
+	tab = ProjectTools.script_tab_note(gd, path, with_export, true)
+	_ok(tab.contains("open in the Script Editor") and tab.contains("never does") and tab.contains("restarts"), "headless: the tab never gets the focus that reloads it")
+
+	# Beckett's own scripts are never reloaded under it. Only the loaded copy's text is changed, in memory, and put back.
+	var own: GDScript = load("res://addons/beckett/core/internals.gd")
+	var kept := own.source_code
+	own.source_code = kept + "\n# beckett unit: in memory only\n"
+	note = ProjectTools.skipped_reload_note(own, "res://addons/beckett/core/internals.gd")
+	own.source_code = kept
+	_ok(note.contains("never reloads its own scripts") and own.source_code == kept, "a script of Beckett's own that is not current gets a note, never a reload (%s)" % note.strip_edges().left(100))
+	for n in [a, c]:
+		(n as Node).free()
+	_rm_tree(dir)
+	return true
+
+
 ## A game answering from a table: what playtest's _run needs of a live bridge.
 class _ScriptedBridge extends RefCounted:
 	var replies: Dictionary = {}
@@ -5488,36 +9119,10 @@ func _t_runtime_invariants_restart() -> bool:
 	var ev_false: Dictionary = rt._dispatch({"cmd": "eval", "expr": "get_node('InvProbe').x < 3"})
 	_ok(bool(ev_false["ok"]) and ev_false["value"] == false and is_equal_approx(float(ev_false["reads"]["get_node('InvProbe').x"]), 5.0), "the eval command (the expr assert) answers a false condition with what it read")
 	_ok(not rt._dispatch({"cmd": "eval", "expr": "get_node('InvProbe').x < 9"}).has("reads") and not rt._dispatch({"cmd": "eval", "expr": "1 < 2"}).has("reads"), "...and a true one, or one that reads nothing, adds nothing")
-	probe.x = 0.0
-	var bad: Dictionary = rt._dispatch({"cmd": "replay_open", "events": [], "invariants": [{"name": "a", "expr": "health >"}]})
-	_ok(not bool(bad.get("ok", true)) and str(bad.get("error", "")).contains("does not parse") and not rt._replaying, "replay_open refuses a rule set that does not load, says why, and opens no window")
-	var events := [{"type": "key", "keycode": "Right", "pressed": true, "f": 1}, {"type": "key", "keycode": "Right", "pressed": false, "f": 4}]
-	var opened: Dictionary = rt._dispatch({"cmd": "replay_open", "events": events, "settle_frames": 2,
-		"invariants": [{"name": "x_low", "expr": "get_node('InvProbe').x < 3"}, {"name": "hp", "expr": "get_node('InvProbe').health >= 0"}]})
-	_ok(bool(opened.get("ok", false)) and rt._inv.active and rt._replaying, "replay_open with rules opens the window and arms the checker")
-	var mid: Dictionary = rt._dispatch({"cmd": "replay_status"})
-	_ok(bool(mid["replaying"]) and not mid.has("invariants"), "the rule results are not sent on every poll while the window is open")
-	var guard := 0
-	while rt._replaying and guard < 60:
-		probe.x += 1.0  # the "game" moves x by 1 a frame; the replay judges it at the START of the next frame
-		rt._replay_step_tick()
-		guard += 1
-	var closed: Dictionary = rt._dispatch({"cmd": "replay_status"})
-	var inv: Array = closed.get("invariants", [])
-	_ok(not bool(closed["replaying"]) and inv.size() == 2, "the poll that reports the window closed carries the rule results")
-	var low: Dictionary = inv[0]
-	_ok(low["name"] == "x_low" and low["status"] == "fail" and int(low["first_violation"]["frame"]) == 2 and is_equal_approx(float(low["first_violation"]["reads"]["get_node('InvProbe').x"]), 3.0),
-		"x_low: first violation on replay frame 2, with the value it read (%s)" % str(low.get("detail")))
-	_ok(inv[1]["status"] == "pass" and int(inv[1]["checked"]) >= 7, "hp held on every frame of the window")
-	_ok(rt._held.is_empty(), "the key the replay pressed (f=1) and released (f=4) is not left held")
-	# a window that ends with the key still down: the restart lets go of it
-	var open2: Dictionary = rt._dispatch({"cmd": "replay_open", "events": [{"type": "key", "keycode": "Left", "pressed": true, "f": 0}], "settle_frames": 1})
-	_ok(bool(open2["ok"]) and not rt._inv.active, "a window with no rules disarms the previous set")
-	guard = 0
-	while rt._replaying and guard < 20:
-		rt._replay_step_tick()
-		guard += 1
-	_ok(rt._held.size() == 1, "a key pressed and never released is remembered")
+	# The replay window's half of this group (rules armed by replay_open and judged at every frame) needs the Full-only tick
+	# clock, so it lives in step_clock_replay. Here, in both editions: a key the last run pressed and never released.
+	var pressed: Dictionary = rt._dispatch({"cmd": "input", "events": [{"type": "key", "keycode": "Left", "pressed": true}]})
+	_ok(bool(pressed.get("ok", false)) and int(pressed.get("dispatched", 0)) == 1 and rt._held.size() == 1, "a key pressed and never released is remembered")
 	var no_scene: Dictionary = rt._dispatch({"cmd": "scene_reload"})
 	_ok(not bool(no_scene["ok"]) and str(no_scene["error"]).contains("no current scene") and not no_scene.has("pending") and rt._held.size() == 1, "scene_reload with no current scene refuses, and touches nothing")
 	rt._reload_old_id = 777  # a restart that was issued and has not been seen come up: the window with no scene is the load, not an absence
@@ -5558,6 +9163,588 @@ func _t_runtime_invariants_restart() -> bool:
 	_ok(not bool(uo_bad["ok"]) and not rt._ui_do.active, "ui_do_open refuses rules that do not parse, and opens no window")
 	rt._inv.close()
 	tree.paused = false
+	root.remove_child(probe)
+	probe.free()
+	root.remove_child(rt)
+	rt.free()
+	return true
+
+
+## The step clock's plans and close rule (runtime/step_clock.gd), as pure functions.
+func _t_step_clock_pure() -> bool:
+	print("[unit] 1.17 step clock: the tick plans, the replay plan and the close rule")
+	var C = load(_STEP_CLOCK_PATH)
+	var p0: Dictionary = C.plan_ticks([], 0)
+	_ok(int(p0["frames"]) == 1 and (p0["ticks"] as Array).is_empty() and not bool(p0["grown"]), "frames 0 runs one tick")
+	var p1: Dictionary = C.plan_ticks([[{"type": "key"}], "x", []], 1)
+	_ok(int(p1["frames"]) == 3 and bool(p1["grown"]) and (p1["ticks"] as Array).size() == 3 and (p1["ticks"][1] as Array).is_empty(), "a 3-entry batch on frames 1 runs 3 ticks and says it grew; an entry that is no array is a tick with no input")
+	var p2: Dictionary = C.plan_ticks("nope", 4)
+	_ok(int(p2["frames"]) == 4 and (p2["ticks"] as Array).is_empty() and not bool(p2["grown"]), "a batch that is no array is no input")
+	var ev := func(f: Variant, key: String) -> Dictionary:
+		var d := {"type": "key", "keycode": key, "pressed": true}
+		if f != null:
+			d["f"] = f
+		return d
+	var r: Dictionary = C.plan_replay([ev.call(4, "A"), ev.call(1, "B"), ev.call(null, "C"), ev.call(1, "D"), "junk", ev.call(-1, "E"), ev.call(-7, "F")], 2)
+	var t: Array = r["ticks"]
+	_ok(int(r["end"]) == 6 and int(r["total"]) == 6, "end is the last f + settle (4 + 2), and total counts every event, the junk entry aside")
+	var keys := func(i: int) -> String:
+		var batch: Array = t[i] if t[i] is Array else []
+		return ",".join(PackedStringArray(batch.map(func(e): return str(e["keycode"]))))
+	_ok(t.size() == 6 and keys.call(0) == "E,F" and keys.call(1) == "C" and keys.call(2) == "B,D" and keys.call(3) == "" and keys.call(4) == "" and keys.call(5) == "A",
+		"an event stamped f goes in before frame f+1 (index f+1, a missing f counts as 0), stamps of -1 and below go in before frame 0, and events of one frame keep their order")
+	var r0: Dictionary = C.plan_replay([ev.call(3, "A")], 0)
+	_ok(int(r0["end"]) == 3 and (r0["ticks"] as Array).size() == 5 and ((r0["ticks"] as Array)[4] as Array).size() == 1 and (r0["ticks"] as Array)[2] == null, "settle 0: the last event sits past the last frame (index end+1), where the close puts it in; a frame with no event holds null, not an Array")
+	_ok(int(C.plan_replay([], 0)["end"]) == 0 and int(C.plan_replay(null, 3)["end"]) == 3 and int(C.plan_replay([ev.call(-5, "A")], 2)["end"]) == 0, "no events: end is the settle, and stamps below zero never make it negative")
+	var far: Dictionary = C.plan_replay([ev.call(3, "A"), ev.call(C.REPLAY_FRAMES_MAX + 1, "B")], 0)
+	_ok(str(far.get("error", "")).contains("past the %d frames" % C.REPLAY_FRAMES_MAX) and not far.has("ticks"), "a stamp past REPLAY_FRAMES_MAX is refused, not planned frame by frame: %s" % str(far.get("error")))
+	var rows := [
+		["count", 2, 3, 0, 0, 0, false, ""], ["count", 3, 3, 0, 0, 0, false, "done"], ["count", 4, 3, 0, 0, 0, true, "done"],
+		["replay", 0, 0, 0, 0, 0, false, "done"], ["replay", 5, 6, 0, 0, 0, false, ""],
+		["until", 3, 0, 3, 99, 50, true, "condition"], ["until", 3, 0, 3, 0, 50, false, "max_frames"], ["until", 2, 0, 3, 50, 50, false, "timeout"],
+		["until", 2, 0, 0, 10, 50, false, ""], ["until", 9, 0, 0, 10, 50, false, ""],
+	]
+	var wrong: Array = []
+	for row in rows:
+		var got: String = C.close_reason(row[0], row[1], row[2], row[3], row[4], row[5], row[6])
+		if got != str(row[7]):
+			wrong.append("%s -> '%s'" % [str(row), got])
+	_ok(wrong.is_empty(), "close_reason: count and replay end at the target; until ends on the condition first (at max_frames and past the deadline too), then max_frames, then the deadline, and runs on with no max_frames%s" % ("" if wrong.is_empty() else ": " + str(wrong)))
+	var rt_path := "res://addons/beckett/tools/runtime_tools.gd"  # loaded by path: its class_name is Full-only, and this suite runs on Lite too
+	if ResourceLoader.exists(rt_path):
+		var RT = load(rt_path)
+		_ok(RT.step_poll_cap_ms(1, 60) == 2000 and RT.step_poll_cap_ms(600, 60) == int(1000.0 * 608.0 / 60.0) + 1500 and RT.step_poll_cap_ms(5, 0) == 14500,
+			"op=step waits frames + 8 ticks at the physics rate plus 1.5 s, at least 2 s, and a rate of 0 counts as one tick a second")
+		# the editor's side of op=step / op=step_until, against a scripted game
+		var sb := _SeqBridge.new()
+		var fs := _FakeServer.new()
+		fs.bridge = sb
+		var drive = RT.new()
+		drive.server = fs
+		var moving: Array = []
+		for i in 12:
+			moving.append({"ok": true, "in_step": true, "frames": i, "paused": false, "time_scale": 1.0})
+		moving.append({"ok": true, "in_step": false, "frames": 12, "paused": true, "time_scale": 1.0, "terminator": "done"})
+		sb.replies = {"tc_step_status": moving}
+		var polled: Dictionary = drive._tc_poll_window(60)
+		_ok(not bool(polled.get("in_step", true)) and int(polled.get("frames", 0)) == 12, "a window still running ticks when the wait runs out gets more time while its frame count moves (a game with slow frames runs one tick per engine frame)")
+		sb.replies = {"tc_step_status": {"ok": true, "in_step": true, "frames": 3, "paused": false, "time_scale": 1.0}}
+		var stuck: Dictionary = drive._tc_poll_window(60)
+		_ok(bool(stuck.get("in_step", false)) and int(stuck.get("frames", 0)) == 3, "...and one that stops moving is reported still open, not waited on")
+		sb.replies = {"tc_step": {"ok": true, "started": true, "kind": "count", "frames_requested": 3, "note": "frames raised to 3 to cover the inputs_per_frame batch"},
+			"tc_step_status": {"ok": true, "in_step": false, "kind": "count", "frames": 3, "paused": true, "time_scale": 1.0, "physics_frames": 99, "terminator": "done", "inputs_injected": 2}}
+		var stepped: Dictionary = drive._tc_step({"frames": 1, "inputs_per_frame": [[{"type": "key"}], [], [{"type": "key"}]], "unfreeze": "true"})["json"]
+		var sent: Dictionary = sb.cmds[sb.sent.find("tc_step")]
+		_ok(stepped == {"op": "step", "frames_requested": 3, "frames_stepped": 3, "paused": true, "time_scale": 1.0, "inputs_injected": 2, "note": "frames raised to 3 to cover the inputs_per_frame batch"} and bool(sent.get("unfreeze", false)),
+			"op=step replies with what the game counted, no engine counter and no terminator when it is done, and passes unfreeze on: %s" % str(stepped))
+		sb.replies["tc_step_status"] = {"ok": true, "in_step": false, "frames": 1, "paused": true, "time_scale": 1.0, "terminator": "game_paused", "note": "the game paused the tree itself after 1 tick(s); it stays paused"}
+		var gp: Dictionary = drive._tc_step({"frames": 5})["json"]
+		_ok(str(gp.get("terminator", "")) == "game_paused" and int(gp["frames_stepped"]) == 1 and str(gp.get("note", "")).ends_with("paused the tree itself after 1 tick(s); it stays paused"), "...a terminator that is not done is named, with the game's note: %s" % str(gp))
+		sb.replies = {"tc_step_until": {"ok": true, "started": false, "kind": "until", "immediate": true, "terminator": "condition", "frames": 0, "condition_value": true, "paused": true}}
+		var im: Dictionary = drive._tc_step_until({"condition": "true"})["json"]
+		_ok(im == {"op": "step_until", "terminator": "condition", "immediate": true, "frames": 0, "condition_value": true, "paused": true}, "step_until already true: frames 0, immediate, the value read and the pause, and no condition echo: %s" % str(im))
+	else:
+		print("  skip  runtime_tools.gd is not in this build")
+	return true
+
+
+## The clock's window machine, driven by hand: the test calls what the engine would (on_physics_frame at the start of a tick,
+## on_process_frame at the start of an idle part) and marks the witness the way the scene's tick would.
+func _t_step_clock_machine() -> bool:
+	print("[unit] 1.17 step clock: a window counts the ticks the scene ran, puts input in between ticks, and freezes after the last")
+	var C = load(_STEP_CLOCK_PATH)
+	var tree := root.get_tree()
+	var was_paused := tree.paused
+	var steps0 := Engine.max_physics_steps_per_frame
+	var host := Node.new()
+	host.name = "ZzClockHost"
+	host.process_mode = Node.PROCESS_MODE_ALWAYS  # as the runtime is: the clock reads "cannot process" as a suspended game
+	root.add_child(host)
+	var got: Array = []
+	var c = C.new()
+	c.attach(host, func(ie: InputEvent) -> void: got.append(ie), false)
+	var head := func() -> void: c.on_physics_frame()
+	var idle := func() -> void: c.on_process_frame()
+	var tick := func() -> void:  # the scene runs the tick (its witness with it), then an idle part follows
+		c._probe.ran = true
+		c.on_process_frame()
+	var press := {"type": "key", "keycode": "A", "pressed": true}
+	var release := {"type": "key", "keycode": "A", "pressed": false}
+
+	# --- a count window of 3 ticks, input on ticks 0 and 2
+	var o: Dictionary = c.open_count(3, [[press], [], [release]], false)
+	_ok(bool(o["ok"]) and int(o["frames_requested"]) == 3 and int(o["input_frames"]) == 3 and not o.has("note") and got.size() == 1 and not tree.paused and Engine.max_physics_steps_per_frame == 1 and c.in_step(),
+		"open: tick 0's event goes in at once, the game runs, one physics tick per engine frame")
+	_ok(host.get_node_or_null(str(C.PROBE_NAME)) == c._probe and c._probe.process_mode == Node.PROCESS_MODE_PAUSABLE and c._probe.process_physics_priority == C.PROBE_PRIORITY,
+		"the witness is a PAUSABLE child of the runtime, last in the physics order, made at the first window")
+	head.call()
+	tick.call()
+	_ok(c._ticks == 0 and got.size() == 1, "the idle part after tick 0 has nothing to put in (tick 1 has no input)")
+	head.call()
+	tick.call()
+	_ok(c._ticks == 1 and got.size() == 2 and not (got[1] as InputEventKey).pressed, "the head after tick 0 counts it, and the idle part after tick 1 puts tick 2's release in")
+	head.call()
+	tick.call()
+	head.call()
+	_ok(c._ticks == 3 and tree.paused and c._phase == C.Phase.SETTLE and Engine.max_physics_steps_per_frame == steps0 and c.in_step(),
+		"the head after the third tick freezes the game, the engine's step setting goes back, and the settle frame is next")
+	idle.call()
+	_ok(not tree.paused and c._phase == C.Phase.SETTLING, "the settle frame lifts the pause at the start of the next idle part")
+	c.settle_end()
+	var st: Dictionary = c.status()
+	_ok(tree.paused and not c.in_step() and st == {"kind": "count", "frames": 3, "in_step": false, "inputs_injected": 2, "terminator": "done"}, "...and puts it back at its end: frames 3, done, 2 inputs: %s" % str(st))
+	var open_st: Dictionary = c.open_count(1, [], false)
+	_ok(c.status() == {"kind": "count", "frames": 0, "in_step": true} and not open_st.has("note"), "an open window's status carries no terminator and no inputs_injected, and a closed window is not 'replaced': %s" % str(c.status()))
+	head.call()
+	tick.call()
+	head.call()
+	idle.call()
+	c.settle_end()
+
+	# --- a tick the witness did not run in is not counted
+	c.open_count(2, [], false)
+	head.call()
+	idle.call()  # an idle part came, but the scene never ran the tick
+	head.call()
+	_ok(c._ticks == 0 and c.in_step() and not tree.paused, "a tick the witness did not run in is not counted, and the window goes on")
+	tick.call()
+	head.call()
+	tick.call()
+	head.call()
+	_ok(c._ticks == 2 and tree.paused, "...the next two are, and the window closes after them")
+	idle.call()
+	c.settle_end()
+
+	# --- the game pauses the tree itself
+	c.open_count(5, [], false)
+	head.call()
+	tick.call()
+	head.call()
+	tick.call()
+	tree.paused = true  # the game pauses in its own _process, after tick 1 ended
+	head.call()
+	var gp: Dictionary = c.status()
+	_ok(str(gp.get("terminator", "")) == "game_paused" and int(gp["frames"]) == 2 and tree.paused and c._phase == C.Phase.DONE and str(gp.get("note", "")).contains("after 2 tick(s)") and Engine.max_physics_steps_per_frame == steps0,
+		"a game that pauses the tree after a tick ends the window (game_paused) with that tick counted, keeps its own pause, and gets no settle frame: %s" % str(gp))
+	c.open_count(5, [], false)
+	head.call()
+	tick.call()
+	head.call()
+	tree.paused = true  # the game pauses during tick 1, before the witness ran
+	idle.call()
+	head.call()
+	var gp2: Dictionary = c.status()
+	_ok(str(gp2.get("terminator", "")) == "game_paused" and int(gp2["frames"]) == 1 and str(gp2.get("note", "")).contains("during tick 2, so that tick did not finish"),
+		"a game that pauses the tree during a tick: that tick is not counted, and the note says which: %s" % str(gp2.get("note")))
+
+	# --- step_until
+	var cnode := Node.new()
+	cnode.name = "ZzCond"
+	root.add_child(cnode)
+	var expr := Expression.new()
+	expr.parse("get_meta('n', 0) >= 2")
+	var base := func() -> Object: return cnode
+	var safe := func(v: Variant) -> Variant: return v
+	var u: Dictionary = c.open_until(expr, 0, 10.0, false, base, safe)
+	_ok(bool(u["ok"]) and bool(u["started"]) and not bool(u["immediate"]) and c.in_step() and not tree.paused, "step_until opens a window while the condition is not yet true")
+	head.call()
+	tick.call()
+	cnode.set_meta("n", 1)
+	head.call()
+	tick.call()
+	cnode.set_meta("n", 2)  # what tick 1 left
+	head.call()
+	_ok(c._ticks == 2 and tree.paused and c._phase == C.Phase.SETTLE, "the condition is read at the start of every tick: true at the third head, so the game freezes with 2 ticks run")
+	idle.call()
+	cnode.set_meta("n", 0)  # the settle frame's _process changes what the condition reads
+	c.settle_end()
+	var us: Dictionary = c.status()
+	_ok(str(us.get("terminator", "")) == "condition" and int(us["frames"]) == 2 and us.get("condition_value") == true and str(us.get("note", "")).contains("condition reads false after the settle frame"),
+		"terminator condition, frames 2, the value it closed on, and a note because the settle frame changed what it reads: %s" % str(us))
+	cnode.set_meta("n", 5)
+	var im: Dictionary = c.open_until(expr, 0, 10.0, false, base, safe)
+	_ok(bool(im["ok"]) and not bool(im["started"]) and bool(im["immediate"]) and int(im["frames"]) == 0 and im["condition_value"] == true and bool(im["paused"]) and tree.paused and not c.in_step() and Engine.max_physics_steps_per_frame == steps0,
+		"already true when the window opens: no tick runs, the game is frozen, nothing is left open")
+	var im2: Dictionary = c.open_until(expr, 0, 10.0, true, base, safe)
+	_ok(bool(im2["immediate"]) and not bool(im2["paused"]) and not tree.paused, "...and with unfreeze the game is left running")
+	var never := Expression.new()
+	never.parse("false")
+	c.open_until(never, 2, 10.0, false, base, safe)
+	head.call()
+	tick.call()
+	head.call()
+	tick.call()
+	head.call()
+	_ok(c._terminator == "max_frames" and c._ticks == 2 and tree.paused, "max_frames 2 ends the window after two ticks")
+	idle.call()
+	c.settle_end()
+	var stu: Dictionary = c.status()
+	_ok(not stu.has("note") and stu.get("condition_value") == false, "...and a condition that reads the same after the settle frame adds no note")
+	c.open_until(never, 0, 10.0, false, base, safe)
+	c._deadline_ms = Time.get_ticks_msec() - 1
+	head.call()
+	_ok(c._terminator == "timeout" and c._ticks == 0 and tree.paused, "a deadline that has passed ends the window at the next head (timeout)")
+	idle.call()
+	c.settle_end()
+
+	# --- unfreeze, a window that replaces one, the two families, abort
+	c.open_count(1, [], true)
+	head.call()
+	tick.call()
+	head.call()
+	_ok(c._phase == C.Phase.DONE and not tree.paused and str(c.status().get("terminator", "")) == "done" and Engine.max_physics_steps_per_frame == steps0, "unfreeze: the window ends with the game running, and no settle frame")
+	got.clear()
+	c.open_count(4, [[press], [], [], [release]], false)
+	head.call()
+	tick.call()
+	var re: Dictionary = c.open_count(1, [], false)
+	_ok(str(re.get("note", "")).contains("the open step window was ended after 1 tick(s)") and str(re.get("note", "")).contains("let go of 1 input(s) it held") and got.size() == 2 and not (got[1] as InputEventKey).pressed,
+		"a step while one is open replaces it, lets go of the key it held, and the note says so: %s" % str(re.get("note")))
+	head.call()
+	tick.call()
+	head.call()
+	idle.call()
+	c.settle_end()
+	var rp: Dictionary = c.open_replay([], 3, Callable())
+	_ok(bool(rp["ok"]) and c.is_replay() and not c.in_step(), "a replay window opens (and is no step window)")
+	var refused: Dictionary = c.open_count(1, [], false)
+	_ok(not bool(refused["ok"]) and str(refused["error"]).contains("replay window is open") and c.is_replay(), "a step is refused while a replay window is open, and the replay goes on")
+	head.call()
+	tick.call()
+	c.abort()
+	var ab: Dictionary = c.replay_status()
+	_ok(not c.is_open() and str(ab.get("terminator", "")) == "aborted" and str(ab.get("note", "")).contains("ended the window after 1 tick(s)") and int(ab["frames"]) == 1 and Engine.max_physics_steps_per_frame == steps0,
+		"abort ends a window where it stands (terminator aborted, with a note), frames and the note both count the tick it let run, and the step setting goes back: %s" % str(ab))
+	c.open_count(2, [], false)
+	var rr: Dictionary = c.open_replay([], 3, Callable())
+	_ok(not bool(rr["ok"]) and str(rr["error"]).contains("step window is open") and c.in_step(), "a replay is refused while a step window is open")
+	c.abort()
+
+	# --- two heads with no idle part between them (the Game view's speed above 1x, --fixed-fps)
+	got.clear()
+	c.open_count(4, [[press], [], [release], []], false)
+	head.call()
+	c._probe.ran = true  # tick 0 ran, and tick 1 starts in the same engine frame
+	head.call()
+	c._probe.ran = true
+	head.call()  # tick 2's release had no idle part to go in: it goes in at this head
+	_ok(c._ticks == 2 and got.size() == 2 and c._tail_mode and c._late == 1, "two heads with no idle part between them: the late tick's event goes in at its head, and from then on at the end of the tick before")
+	tick.call()
+	head.call()
+	tick.call()
+	head.call()
+	var bb: Dictionary = c.status()
+	_ok(int(bb["frames"]) == 4 and str(bb.get("note", "")).contains("back to back") and str(bb.get("note", "")).contains("1 input event(s)"), "...the window still counts every tick, and its note says what went in inside physics: %s" % str(bb.get("note")))
+	idle.call()
+	c.settle_end()
+
+	# --- the handlers do nothing while the runtime cannot process (the Game view's Suspend; here a pausable host in a paused tree)
+	c.open_count(2, [], false)
+	head.call()
+	host.process_mode = Node.PROCESS_MODE_PAUSABLE
+	tree.paused = true
+	c._probe.ran = true
+	idle.call()
+	head.call()
+	head.call()
+	_ok(c._ticks == 0 and c._phase == C.Phase.RUNNING, "while the runtime node cannot process, the clock counts nothing and closes nothing")
+	host.process_mode = Node.PROCESS_MODE_ALWAYS
+	c.abort()
+
+	c.detach()
+	tree.paused = was_paused
+	_ok(Engine.max_physics_steps_per_frame == steps0, "every way out put the engine's step setting back (%d)" % Engine.max_physics_steps_per_frame)
+	root.remove_child(cnode)
+	cnode.free()
+	root.remove_child(host)
+	host.free()
+	return true
+
+
+## The clock on real engine ticks: the unit tree runs a pausable counter and a falling RigidBody3D. A step of N gives the counter N
+## _physics_process calls and the physics server N steps (the 2026-10-12 report: frames=1 gave the scene none), input lands on its
+## own tick, the settle frame runs _process once, and a game whose frames are slow still runs one tick per frame in a window.
+func _t_step_clock_ticks() -> bool:
+	print("[unit] 1.17 step clock on real ticks: a step of N is N ticks for the scene and the physics server, input on its own tick")
+	await process_frame
+	var C = load(_STEP_CLOCK_PATH)
+	var tree := root.get_tree()
+	var was_paused := tree.paused
+	var steps0 := Engine.max_physics_steps_per_frame
+	var host := Node.new()
+	host.name = "ZzTickHost"
+	host.process_mode = Node.PROCESS_MODE_ALWAYS
+	root.add_child(host)
+	var counter := _StepCounter.new()
+	counter.name = "ZzStepCounter"
+	root.add_child(counter)
+	var ball := RigidBody3D.new()
+	ball.name = "ZzStepBall"
+	ball.can_sleep = false
+	ball.linear_damp_mode = RigidBody3D.DAMP_MODE_REPLACE
+	ball.linear_damp = 0.0
+	ball.position = Vector3(0, 1000, 0)
+	var shape := CollisionShape3D.new()
+	shape.shape = SphereShape3D.new()
+	ball.add_child(shape)
+	root.add_child(ball)
+	var c = C.new()
+	c.attach(host, func(ie: InputEvent) -> void: Input.parse_input_event(ie), true)
+	counter.clock = c
+	counter.settling = C.Phase.SETTLING
+	var g: float = float(ProjectSettings.get_setting("physics/3d/default_gravity", 9.8))
+	var tps: int = Engine.physics_ticks_per_second
+	var steps := func() -> int: return roundi(-ball.linear_velocity.y * float(tps) / g)
+	tree.paused = true
+	c.open_count(1, [], false)
+	var synced: bool = await _sc_wait(c)
+	_ok(synced and tree.paused, "a one-tick window from a frozen game closes, frozen (it lines the ball's node up with the physics server)")
+	var counts: Array = []
+	for n in [1, 2, 5]:
+		var t0: int = counter.ticks
+		var s0: int = steps.call()
+		var settles0: int = counter.settle_calls
+		c.open_count(n, [], false)
+		var done: bool = await _sc_wait(c)
+		counts.append([n, counter.ticks - t0, steps.call() - s0, counter.settle_calls - settles0, int(c.status()["frames"]), done and tree.paused])
+	var bad_counts: Array = counts.filter(func(row): return not (row[1] == row[0] and row[2] == row[0] and row[3] == 1 and row[4] == row[0] and row[5]))
+	_ok(bad_counts.is_empty(), "steps of 1, 2 and 5: the counter ran N _physics_process calls, the ball took N physics steps, frames said N, the settle frame ran _process once, and the game ended frozen ([N, ticks, steps, settle _process, frames, frozen]: %s)" % str(counts))
+	var down := {"type": "action", "action": "ui_accept", "pressed": true}
+	var up := {"type": "action", "action": "ui_accept", "pressed": false}
+	counter.reset_log()
+	var t1: int = counter.ticks
+	c.open_count(3, [[down], [], [up]], false)
+	await _sc_wait(c)
+	_ok(counter.input_at == [[t1, "down"], [t1 + 2, "up"]] and counter.pressed_at == [t1 + 1, t1 + 2] and counter.just_at == [t1 + 1] and int(c.status().get("inputs_injected", 0)) == 2,
+		"[[down], [], [up]] on 3 ticks: _input saw down before the first tick and up before the third (%s), is_action_pressed read it on the first two (%s) and is_action_just_pressed on the first (%s)" % [str(counter.input_at), str(counter.pressed_at), str(counter.just_at)])
+	counter.reset_log()
+	var t2: int = counter.ticks
+	c.open_count(1, [[{"type": "mouse_motion", "position": [12, 34], "relative": [1, 0]}]], false)
+	await _sc_wait(c)
+	_ok(counter.input_at == [[t2, "motion"]], "a mouse motion on a one-tick step reaches _input before that tick (%s); in 1.16 it never reached the game" % str(counter.input_at))
+	counter.reset_log()
+	counter.sleep_ms = 40
+	var t3: int = counter.ticks
+	var s3: int = steps.call()
+	c.open_count(6, [[down], [], [], [up], [], []], false)
+	var slow_done: bool = await _sc_wait(c, 4000)
+	counter.sleep_ms = 0
+	_ok(slow_done and counter.ticks - t3 == 6 and steps.call() - s3 == 6 and counter.pressed_at == [t3 + 1, t3 + 2, t3 + 3] and counter.just_at == [t3 + 1] and counter.max_ticks_per_idle == 1,
+		"a game whose frames take 40 ms still runs one tick per engine frame in a window: 6 ticks, 6 steps, pressed on its own ticks (%s), at most %d tick between two _process calls" % [str(counter.pressed_at), counter.max_ticks_per_idle])
+	var t4: int = counter.ticks
+	counter.pause_at = t4 + 2
+	c.open_count(5, [], false)
+	await _sc_wait(c)
+	var gp: Dictionary = c.status()
+	counter.pause_at = -1
+	_ok(str(gp.get("terminator", "")) == "game_paused" and int(gp["frames"]) == 1 and counter.ticks == t4 + 2 and tree.paused,
+		"a game that pauses the tree during the second tick ends the window (game_paused) with 1 tick counted, and stays paused: %s" % str(gp))
+	c.open_count(2, [], true)
+	await _sc_wait(c)
+	var t5: int = counter.ticks
+	for i in 6:
+		await physics_frame
+	_ok(not tree.paused and counter.ticks > t5 and Engine.max_physics_steps_per_frame == steps0, "unfreeze=true: the game runs on after the window, and the engine's step setting is back (%d)" % Engine.max_physics_steps_per_frame)
+	c.detach()
+	tree.paused = was_paused
+	for n in [counter, ball, host]:
+		root.remove_child(n)
+		(n as Node).free()
+	return true
+
+
+## Wait (in real engine frames) until the step clock's window has closed, or `budget_ms` passed; true when it closed.
+func _sc_wait(c: Object, budget_ms: int = 3000) -> bool:
+	var t0 := Time.get_ticks_msec()
+	while c.is_open() and Time.get_ticks_msec() - t0 < budget_ms:
+		await process_frame
+	return not c.is_open()
+
+
+## The pausable game node of step_clock_ticks: what it saw, on which of its own ticks.
+class _StepCounter extends Node:
+	var ticks := 0
+	var pressed_at: Array = []
+	var just_at: Array = []
+	var input_at: Array = []
+	var sleep_ms := 0
+	var pause_at := -1
+	var max_ticks_per_idle := 0
+	var settle_calls := 0
+	var clock: Object = null
+	var settling := -1
+	var _last := -1
+
+	func reset_log() -> void:
+		pressed_at = []
+		just_at = []
+		input_at = []
+		max_ticks_per_idle = 0
+		_last = -1
+
+	func _physics_process(_delta: float) -> void:
+		ticks += 1
+		if Input.is_action_pressed("ui_accept"):
+			pressed_at.append(ticks)
+		if Input.is_action_just_pressed("ui_accept"):
+			just_at.append(ticks)
+		if ticks == pause_at:
+			get_tree().paused = true
+
+	func _process(_delta: float) -> void:
+		if _last >= 0:
+			max_ticks_per_idle = maxi(max_ticks_per_idle, ticks - _last)
+		_last = ticks
+		if clock != null and int(clock.get("_phase")) == settling:
+			settle_calls += 1
+		if sleep_ms > 0:
+			OS.delay_msec(sleep_ms)
+
+	func _input(event: InputEvent) -> void:
+		if event is InputEventMouseMotion:
+			input_at.append([ticks, "motion"])
+		elif event.is_action("ui_accept"):
+			input_at.append([ticks, "down" if event.is_pressed() else "up"])
+
+
+## The playtest replay window on the tick clock, driven by hand (the replay half of runtime_invariants_restart moved here, since the
+## clock is Full-only): an event stamped f goes in during the idle part before frame f+1, the rules judge every frame at its head,
+## and the window runs end = the last f + settle frames. Then the editor's side: a replay the game stopped is an error at once.
+func _t_step_clock_replay() -> bool:
+	print("[unit] 1.17 replay window on the step clock: rules at every frame, events between frames, frames = the frames run")
+	var rt = MCPRuntime.new()
+	root.add_child(rt)
+	var probe := _InvProbe.new()
+	probe.name = "InvProbe"
+	root.add_child(probe)
+	var tree := root.get_tree()
+	var was_paused := tree.paused
+	var C = load(_STEP_CLOCK_PATH)
+	var c = rt._clock
+	_ok(c != null and c.has_method("open_replay"), "the runtime hooks its tick clock up when it enters the tree")
+	c.detach()
+	c.attach(rt, Callable(rt, "_inject"), false)  # driven by hand from here on: no signals, no timers
+	var running: int = C.Phase.RUNNING
+	var us := [Time.get_ticks_usec()]
+	var perf_clock := func() -> void:  # the end of the runtime's _process: replay_perf times every frame there, 16.7 ms apart here
+		us[0] += 16667
+		rt._replay_perf.frame(us[0])
+	var frame := func() -> void:  # one replay frame: its head, then (while the window runs) the scene runs it and an idle part follows
+		c.on_physics_frame()
+		if c._phase == running:
+			c._probe.ran = true
+			c.on_process_frame()
+			perf_clock.call()
+	probe.x = 0.0
+	var bad: Dictionary = rt._dispatch({"cmd": "replay_open", "events": [], "invariants": [{"name": "a", "expr": "health >"}]})
+	_ok(not bool(bad.get("ok", true)) and str(bad.get("error", "")).contains("does not parse") and not c.is_open(), "replay_open refuses a rule set that does not load, says why, and opens no window")
+	var events := [{"type": "key", "keycode": "Right", "pressed": true, "f": 1}, {"type": "key", "keycode": "Right", "pressed": false, "f": 4}]
+	var opened: Dictionary = rt._dispatch({"cmd": "replay_open", "events": events, "settle_frames": 2,
+		"invariants": [{"name": "x_low", "expr": "get_node('InvProbe').x < 3"}, {"name": "hp", "expr": "get_node('InvProbe').health >= 0"}]})
+	perf_clock.call()  # the rest of the frame the open arrived in: it sets the clock's start
+	_ok(bool(opened.get("ok", false)) and rt._inv.active and c.is_replay() and int(opened.get("end_frame", -1)) == 6 and int(opened.get("events", -1)) == 2, "replay_open with rules opens the window and arms the checker (end_frame 6: the last f 4 + settle 2)")
+	var refused: Dictionary = rt._dispatch({"cmd": "tc_step", "frames": 2})
+	_ok(not bool(refused.get("ok", true)) and str(refused.get("error", "")).contains("replay window is open") and c.is_replay(), "time_control op=step is refused while the replay runs")
+	var mid: Dictionary = rt._dispatch({"cmd": "replay_status"})
+	_ok(bool(mid["replaying"]) and not mid.has("invariants") and not mid.has("terminator"), "the rule results are not sent on every poll while the window is open")
+	var held_after: Array = []
+	var guard := 0
+	while c._phase == running and guard < 60:
+		probe.x += 1.0  # the "game" moves x by 1 a frame; the replay judges it at the START of the next frame
+		frame.call()
+		held_after.append(rt._held.size())
+		guard += 1
+	_ok(held_after == [0, 1, 1, 1, 0, 0, 0], "the f=1 press goes in after frame 1 and the f=4 release after frame 4, between frames (held after each frame: %s)" % str(held_after))
+	_ok(tree.paused and c._phase == C.Phase.SETTLE, "the head of frame 6 freezes the game, and the settle frame is next")
+	c.on_process_frame()
+	c.settle_end()
+	var closed: Dictionary = rt._dispatch({"cmd": "replay_status"})
+	var inv: Array = closed.get("invariants", [])
+	_ok(not bool(closed["replaying"]) and inv.size() == 2 and int(closed["frames"]) == 6 and int(closed["injected"]) == 2 and int(closed["remaining"]) == 0 and not closed.has("terminator") and bool(closed["paused"]),
+		"the poll that reports the window closed carries the rule results; frames 6 (the frames the scene ran), both events in, frozen")
+	_ok(int((closed["perf"] as Dictionary).get("frames", -1)) == 6, "perf sampled the 6 frames that ran, not the closing head (%s)" % str((closed["perf"] as Dictionary).get("frames")))
+	var low: Dictionary = inv[0]
+	_ok(low["name"] == "x_low" and low["status"] == "fail" and int(low["first_violation"]["frame"]) == 2 and is_equal_approx(float(low["first_violation"]["reads"]["get_node('InvProbe').x"]), 3.0),
+		"x_low: first violation on replay frame 2, with the value it read (%s)" % str(low.get("detail")))
+	_ok(inv[1]["status"] == "pass" and int(inv[1]["checked"]) == 7, "hp held on every frame of the window, frame 6 at the closing head included (%s checks)" % str(inv[1].get("checked")))
+	_ok(rt._held.is_empty(), "the key the replay pressed (f=1) and released (f=4) is not left held")
+	# a window that ends with the key still down: what the scene restart lets go of
+	var open2: Dictionary = rt._dispatch({"cmd": "replay_open", "events": [{"type": "key", "keycode": "Left", "pressed": true, "f": 0}], "settle_frames": 1})
+	_ok(bool(open2["ok"]) and not rt._inv.active, "a window with no rules disarms the previous set")
+	guard = 0
+	while c._phase == running and guard < 20:
+		frame.call()
+		guard += 1
+	c.on_process_frame()
+	c.settle_end()
+	_ok(rt._held.size() == 1 and int(rt._dispatch({"cmd": "replay_status"})["frames"]) == 1, "a key pressed and never released is remembered for scene_reload (end 1: one frame ran, and the press went in after it)")
+	InputCodec.release_all(rt._held)
+	# settle 0: the last events sit past the last frame and go in at the close, while the game still runs
+	var seen: Array = []
+	c.attach(rt, func(ie: InputEvent) -> void: seen.append([ie.is_pressed(), tree.paused]), false)
+	var open3: Dictionary = rt._dispatch({"cmd": "replay_open", "events": [{"type": "key", "keycode": "Up", "pressed": true, "f": 2}, {"type": "key", "keycode": "Up", "pressed": false, "f": 2}], "settle_frames": 0})
+	guard = 0
+	while c._phase == running and guard < 20:
+		frame.call()
+		guard += 1
+	_ok(int(open3["end_frame"]) == 2 and seen == [[true, false], [false, false]] and tree.paused and c._ticks == 2, "settle 0: frames 0 and 1 run, and the events stamped 2 go in at the close, before the freeze (%s)" % str(seen))
+	c.on_process_frame()
+	c.settle_end()
+	c.attach(rt, Callable(rt, "_inject"), false)
+	# frames back to back (no idle part between two heads: --fixed-fps below the physics rate): the replay's note says so too
+	rt._dispatch({"cmd": "replay_open", "events": [{"type": "key", "keycode": "Up", "pressed": true, "f": 1}, {"type": "key", "keycode": "Up", "pressed": false, "f": 2}], "settle_frames": 1})
+	for i in 2:  # the heads of frames 0 and 1, each frame run, and no idle part after either
+		c.on_physics_frame()
+		c._probe.ran = true
+	guard = 0
+	while c._phase == running and guard < 20:
+		frame.call()
+		guard += 1
+	c.on_process_frame()
+	c.settle_end()
+	var b2b: Dictionary = rt._dispatch({"cmd": "replay_status"})
+	_ok(int(b2b["frames"]) == 3 and int(b2b["injected"]) == 2 and not b2b.has("terminator") and str(b2b.get("note", "")).contains("back to back") and str(b2b.get("note", "")).contains("1 input event(s)") and rt._held.is_empty(),
+		"a replay whose frames ran back to back puts the f=1 press in at the head of frame 2, runs to the end, and replay_status names it in note: %s" % str(b2b.get("note")))
+	var far: Dictionary = rt._dispatch({"cmd": "replay_open", "events": [{"type": "key", "keycode": "Up", "pressed": true, "f": C.REPLAY_FRAMES_MAX + 1}]})
+	_ok(not bool(far.get("ok", true)) and str(far.get("error", "")).contains("past the") and not c.is_open(), "a stamp past REPLAY_FRAMES_MAX is refused at replay_open, and no window opens: %s" % str(far.get("error")))
+
+	# the editor's side: a replay the game stopped (it paused the tree itself) is an error at once, and a batch blocks that run
+	if ResourceLoader.exists(_PLAYTEST_TOOLS_PATH):
+		var sb := _SeqBridge.new()
+		var pt = _pt_with(sb)
+		var made_dir := not DirAccess.dir_exists_absolute(_PT_DIR)
+		var suite := "zz_unit_step_paused"
+		pt._store(suite, {"name": suite, "scene": "res://x.tscn", "events": [{"type": "key", "keycode": "Right", "pressed": true, "f": 3}], "asserts": [{"type": "node_state", "target": "P", "property": "x", "equals": 1}], "schema_version": 1})
+		var stopped := {"ok": true, "replaying": false, "injected": 0, "frames": 2, "terminator": "game_paused", "note": "the game paused the tree itself after 2 tick(s); it stays paused", "perf": {}}
+		sb.replies = {"replay_open": {"ok": true, "end_frame": 7}, "replay_status": stopped, "get": {"ok": true, "value": 1},
+			"scene_reload": {"ok": true, "old_id": 1, "scene": "res://x.tscn"}, "scene_state": {"ok": true, "id": 2, "ready": true}}
+		var run: Dictionary = pt._run({"name": suite})
+		_ok(str(run.get("error", "")) == "replay stopped: the game paused the tree itself after 2 tick(s); it stays paused" and not sb.sent.has("get"),
+			"playtest op=run: a replay the game stopped by pausing itself is an error at once, with the reason, and no assert reads the run that did not happen: %s" % str(run.get("error", "")))
+		sb.clear()
+		var rep: Dictionary = (pt._repeat({"name": suite, "n": 2}) as Dictionary)["json"]
+		_ok(rep["outcomes"] == ["blocked", "blocked"] and str((rep["run_errors"] as Array)[0]["error"]).begins_with("replay stopped: the game paused") and rep["verdict"] == "blocked",
+			"op=repeat turns it into a BLOCKED run with the reason, every run: %s" % str(rep.get("outcomes")))
+		sb.replies["replay_status"] = {"ok": true, "replaying": false, "injected": 0, "frames": 1, "terminator": "aborted", "perf": {}}
+		_ok(str(pt._run({"name": suite}).get("error", "")) == "replay stopped: aborted after 1 frame(s)", "...and a window a freeze or a restart cut short says so, when the game sent no note")
+		sb.replies["replay_status"] = {"ok": true, "replaying": false, "injected": 1, "frames": 4, "perf": {}, "note": "ticks ran back to back (the Game view's speed above 1x, or --fixed-fps), so 1 input event(s) went in inside physics"}
+		var noted: Dictionary = (pt._run({"name": suite}) as Dictionary).get("json", {})
+		_ok(str(noted.get("verdict", "")) == "pass" and str((noted.get("replay", {}) as Dictionary).get("note", "")).contains("1 input event(s) went in inside physics"), "a replay that ran to the end with frames back to back passes, and op=run's replay carries the game's note: %s" % str(noted.get("replay")))
+		# a game that renders below its physics rate replays in slow motion: the wait goes on while its frames move, not when they stop
+		var slow: Array = []
+		for i in 12:
+			slow.append({"ok": true, "replaying": true, "injected": 0, "frames": i, "perf": {}})
+		slow.append({"ok": true, "replaying": false, "injected": 1, "frames": 12, "perf": {}})
+		sb.replies = {"replay_status": slow}
+		var moved: Dictionary = pt._replay_poll(60, 1, 12)
+		_ok(not moved.has("error") and int(moved.get("frames", 0)) == 12, "a replay still running frames when its wait runs out gets more time while its frame count moves: %s" % str(moved))
+		sb.replies = {"replay_status": {"ok": true, "replaying": true, "injected": 0, "frames": 3, "perf": {}}}
+		var stuck: Dictionary = pt._replay_poll(60, 1, 12)
+		_ok(str(stuck.get("error", "")).begins_with("replay window did not close within") and str(stuck.get("error", "")).ends_with("(it had run 3 of 12 frames)"), "...and one that stopped moving is an error that says how far it got: %s" % str(stuck.get("error")))
+		_pt_cleanup([suite], made_dir)
+	else:
+		print("  skip  playtest_tools.gd is not in this build")
+	tree.paused = was_paused
 	root.remove_child(probe)
 	probe.free()
 	root.remove_child(rt)
@@ -7171,6 +11358,457 @@ func _t_persist_guard() -> bool:
 	return true
 
 
+## The 2026-10-12 report, on Beckett 1.16.0: set_property on a ShaderMaterial saved as its own .tres answered "set", the
+## file kept the old value, and a game started later loaded that. A write changes the copy the editor has loaded, and the
+## editor writes an edited resource file on its next scene save, only while a saved scene is open. Driven here outside
+## the editor, with the stand-in scene as the open one and no undo history (_NoUndoServer): where a written resource
+## lives, the NOTE that says so, what save=true writes and reads back, and what it refuses before anything changes. That
+## a scene save writes the edited file needs a real editor: tests/live-resource-save.ps1.
+func _t_resource_persist() -> bool:
+	print("[unit] resource persist: where a written resource lives on disk, the NOTE that says so, and save=true")
+	var dir := "res://tests/_beckett_unit_persist"
+	_rm_tree(dir)  # left behind by a run that died half way
+	DirAccess.make_dir_recursive_absolute(dir)
+	var mat_path := dir + "/mat.tres"
+	var outer_path := dir + "/outer.tres"
+	var custom_path := dir + "/custom.tres"
+	var script_path := dir + "/probe_res.gd"
+	var open_scene := dir + "/open.tscn"
+	var beckett_file := "res://addons/beckett/zz_unit_persist.tres"
+	# Every fixture is held in a local for the whole group: a write goes to the copy the cache holds, and an unheld
+	# resource leaves the cache.
+	_wf(script_path, "extends Resource\n\n@export var n := 1\nvar temp := 0\n")
+	var custom_src := Resource.new()
+	custom_src.set_script(load(script_path))
+	var outer_src := StandardMaterial3D.new()
+	outer_src.next_pass = StandardMaterial3D.new()
+	_ok(ResourceSaver.save(StandardMaterial3D.new(), mat_path) == OK and ResourceSaver.save(outer_src, outer_path) == OK and ResourceSaver.save(custom_src, custom_path) == OK,
+		"fixtures: a material, a material with an inline next_pass, and a scripted resource with a stored and a plain variable")
+	var mat: StandardMaterial3D = load(mat_path)
+	var outer: StandardMaterial3D = load(outer_path)
+	var part: Resource = outer.next_pass
+	var custom: Resource = load(custom_path)
+	var gd: Resource = load(script_path)
+	# Stand-ins at the paths of the other kinds, through take_over_path (the cache then holds them there).
+	_wf(dir + "/fake.png", "not a png")
+	_wf(dir + "/fake.png.import", "[remap]\n")
+	_wf(dir + "/fake.glb.import", "[remap]\n")
+	var imported := PlaceholderTexture2D.new()
+	imported.take_over_path(dir + "/fake.png")
+	var glb_part := StandardMaterial3D.new()
+	glb_part.take_over_path(dir + "/fake.glb::mat_1")
+	var cached := Resource.new()
+	cached.take_over_path("res://.godot/zz_unit_persist.res")
+	var open_part := StandardMaterial3D.new()
+	open_part.take_over_path(open_scene + "::mat_open")
+	var other_part := StandardMaterial3D.new()
+	other_part.take_over_path(dir + "/other.tscn::mat_other")
+	var packed := PackedScene.new()
+	packed.take_over_path(dir + "/level.res")
+	var packed_part := StandardMaterial3D.new()
+	packed_part.take_over_path(dir + "/level.res::mat_1")
+	var outside := StandardMaterial3D.new()
+	outside.take_over_path("C:/beckett_unit_persist/zz.tres")
+	var mine := StandardMaterial3D.new()
+	mine.take_over_path(beckett_file)
+	var no_saver := StandardMaterial3D.new()
+	no_saver.take_over_path(dir + "/x.png")  # no x.png.import: not imported, and no saver writes a material to .png
+	var in_user := StandardMaterial3D.new()
+	in_user.take_over_path("user://beckett_unit_persist_u.tres")
+	var copy: Resource = ResourceLoader.load(mat_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var copy_has_path := copy != null and copy.resource_path == mat_path
+
+	# --- resource_home: where each kind lives
+	var h_file := PersistGuard.resource_home(mat, open_scene)
+	_ok(h_file["kind"] == PersistGuard.HOME_FILE and h_file["file"] == mat_path and not h_file["part"] and h_file["registered"] and h_file["scene_saved"],
+		"a material saved as its own .tres is FILE, its file is its path, and it is the copy the cache holds (%s)" % str(h_file))
+	var h_inside := PersistGuard.resource_home(part, open_scene)
+	_ok(h_inside["kind"] == PersistGuard.HOME_INSIDE and h_inside["file"] == outer_path and h_inside["part"], "an inline next_pass is INSIDE outer.tres (%s)" % part.resource_path)
+	_ok(PersistGuard.resource_home(open_part, open_scene)["kind"] == PersistGuard.HOME_SCENE and PersistGuard.resource_home(open_part, open_scene)["open"]
+		and not PersistGuard.resource_home(open_part, "res://zz_elsewhere.tscn")["open"], "a part of the open scene is SCENE and open; with another scene open it is not")
+	var h_packed := PersistGuard.resource_home(packed, open_scene)
+	var h_packed_part := PersistGuard.resource_home(packed_part, open_scene)
+	_ok(h_packed["kind"] == PersistGuard.HOME_SCENE and not h_packed["part"] and h_packed_part["kind"] == PersistGuard.HOME_SCENE and h_packed_part["part"],
+		"a PackedScene at its own path is SCENE, and so is a part of a scene saved as .res (the cached file is a PackedScene)")
+	_ok(PersistGuard.resource_home(StandardMaterial3D.new(), open_scene)["kind"] == PersistGuard.HOME_EMBEDDED, "a resource with no path is EMBEDDED")
+	var h_img := PersistGuard.resource_home(imported, open_scene)
+	var h_glb := PersistGuard.resource_home(glb_part, open_scene)
+	_ok(h_img["kind"] == PersistGuard.HOME_IMPORTED and h_img["file"] == dir + "/fake.png" and h_glb["kind"] == PersistGuard.HOME_IMPORTED and h_glb["file"] == dir + "/fake.glb"
+		and PersistGuard.resource_home(cached, open_scene)["kind"] == PersistGuard.HOME_IMPORTED,
+		"an asset with a .import beside it, a part of an imported model and a res://.godot/ path are IMPORTED")
+	_ok(PersistGuard.resource_home(gd, open_scene)["kind"] == PersistGuard.HOME_CODE and PersistGuard.resource_home(outside, open_scene)["kind"] == PersistGuard.HOME_OUTSIDE
+		and PersistGuard.resource_home(in_user, open_scene)["kind"] == PersistGuard.HOME_FILE, "a script is CODE, an absolute path OUTSIDE, a user:// .tres FILE")
+	_ok(not PersistGuard.resource_home(mat, "")["scene_saved"], "with no saved scene open, scene_saved is false")
+	if copy_has_path:
+		_ok(not PersistGuard.resource_home(copy, open_scene)["registered"], "a CACHE_MODE_IGNORE copy is not the copy the cache holds")
+	else:
+		print("  skip  this engine gives a CACHE_MODE_IGNORE load no path")
+	_ok(PersistGuard.saves_file(h_file) and PersistGuard.saves_file(h_inside) and not PersistGuard.saves_file(h_img) and not PersistGuard.saves_file(h_packed_part),
+		"save=true writes a file for FILE and INSIDE only")
+
+	# --- the NOTE text
+	var n_file := PersistGuard.file_note(h_file, true)
+	_ok(n_file == "NOTE: %s on disk keeps the old value until saved (save=true, or save_scene)." % mat_path, "FILE: %s" % n_file)
+	var n_set_res := PersistGuard.file_note(h_file, false)
+	_ok(n_set_res.ends_with("(save_scene, or set_property save=true on any stored property of this target at its current value: that writes the whole file)."),
+		"set_resource's NOTE gives the same-value recipe instead of a save argument it does not have: %s" % n_set_res)
+	var n_plain: Array = [PersistGuard.file_note(PersistGuard.resource_home(mat, ""), true), PersistGuard.file_note(PersistGuard.resource_home(in_user, open_scene), true)]
+	if copy_has_path:
+		n_plain.append(PersistGuard.file_note(PersistGuard.resource_home(copy, open_scene), true))
+	_ok(n_plain.all(func(t): return str(t).ends_with("until saved (save=true).") and not str(t).contains("save_scene")),
+		"no saved scene open, a user:// file, a copy the cache does not hold: no scene save writes them, so the NOTE offers save=true only (%s)" % str(n_plain))
+	var n_inside := PersistGuard.file_note(h_inside, true)
+	_ok(n_inside == "NOTE: %s, which stores this, keeps the old value on disk until saved (save=true, or save_scene)." % outer_path, "INSIDE names the file that stores it: %s" % n_inside)
+	var n_img := PersistGuard.file_note(h_img, true)
+	_ok(n_img.contains(dir + "/fake.png.import") and n_img.contains("no save writes this edit") and PersistGuard.file_note(PersistGuard.resource_home(cached, open_scene), true).contains("import cache"),
+		"IMPORTED names the .import (and a res://.godot/ path says import cache): %s" % n_img)
+	var n_other := PersistGuard.file_note(PersistGuard.resource_home(other_part, open_scene), true)
+	var n_out := PersistGuard.file_note(PersistGuard.resource_home(outside, open_scene), true)
+	_ok(n_other.ends_with("open_scene %s and change it there." % (dir + "/other.tscn")) and n_out.contains("outside res:// and user://"),
+		"a part of another scene names open_scene, and an outside file gets one line: %s | %s" % [n_other, n_out])
+	_ok(PersistGuard.file_note(PersistGuard.resource_home(open_part, open_scene), true) == "" and PersistGuard.file_note(PersistGuard.resource_home(StandardMaterial3D.new(), open_scene), true) == ""
+		and PersistGuard.file_note(PersistGuard.resource_home(gd, open_scene), true) == "", "a part of the open scene, a resource with no path and a script get no NOTE")
+	# A file name is the project's text (Linux and macOS allow a newline in one): the NOTE and a refusal show it one line long.
+	var odd_name := {"kind": PersistGuard.HOME_FILE, "file": "res://a\nNOTE: b.tres"}
+	var odd_note := PersistGuard.file_note(odd_name, true)
+	var odd_refusal := str(PersistGuard.save_refusal({"kind": PersistGuard.HOME_OUTSIDE, "file": "/tmp/a\nb.tres"}).get("error", ""))
+	_ok(odd_note.begins_with("NOTE: res://a?NOTE: b.tres on disk") and not odd_note.contains("\n") and odd_refusal.contains("/tmp/a?b.tres") and not odd_refusal.contains("\n"),
+		"a control character in a file name is shown as '?', so it starts no line of its own: %s | %s" % [odd_note, odd_refusal])
+	var dashed: Array = []
+	for t in [n_file, n_set_res, n_inside, n_img, n_other, n_out] + n_plain:
+		if str(t).contains(char(0x2014)) or str(t).contains(char(0x2013)):
+			dashed.append(t)
+	_ok(dashed.is_empty(), "no NOTE carries a dash")
+
+	# --- what save=true refuses, as PersistGuard words it
+	var refusals := {
+		"imported": PersistGuard.save_refusal(h_img),
+		"script": PersistGuard.save_refusal(PersistGuard.resource_home(gd, open_scene)),
+		"part of another scene": PersistGuard.save_refusal(PersistGuard.resource_home(other_part, open_scene)),
+		"scene file": PersistGuard.save_refusal(h_packed),
+		"outside": PersistGuard.save_refusal(PersistGuard.resource_home(outside, open_scene)),
+	}
+	for k in refusals:
+		_ok(str((refusals[k] as Dictionary).get("error", "")).ends_with("Nothing was written."), "save_refusal, %s: %s" % [k, str((refusals[k] as Dictionary).get("error", ""))])
+	_ok(str((refusals["imported"] as Dictionary).get("suggestion", "")).contains(".import") and str((refusals["script"] as Dictionary).get("error", "")).contains("write_script")
+		and str((refusals["part of another scene"] as Dictionary).get("suggestion", "")).begins_with("open_scene path="), "...and each says where the change belongs")
+	_ok(PersistGuard.save_refusal(h_file).is_empty() and PersistGuard.save_refusal(h_inside).is_empty() and PersistGuard.save_refusal(PersistGuard.resource_home(open_part, open_scene)).is_empty()
+		and PersistGuard.save_refusal(PersistGuard.resource_home(StandardMaterial3D.new(), open_scene)).is_empty(), "FILE, INSIDE, a part of the open scene and a resource with no path are not refused")
+
+	# --- Reflect: what a file stores, the parts of a file, and a copy compared the way a file stores it
+	var sm := ShaderMaterial.new()
+	var sh := Shader.new()
+	sh.code = "shader_type spatial;\nuniform float strength = 1.0;\n"
+	sm.shader = sh
+	_ok(Reflect.is_stored(mat, "albedo_color") and Reflect.is_stored(sm, "shader_parameter/strength") and Reflect.is_stored(custom, "n"), "albedo_color, a uniform and an @export var are stored")
+	_ok(not Reflect.is_stored(mat, "resource_path") and not Reflect.is_stored(custom, "temp") and not Reflect.is_stored(mat, "no_such"), "resource_path, a plain var and a name the object lacks are not")
+	_wf(dir + "/holder_res.gd", "extends Resource\n\n@export var list: Array[Resource] = []\n@export var map: Dictionary = {}\n@export var ext: Resource\n")
+	var holder_src := Resource.new()
+	holder_src.set_script(load(dir + "/holder_res.gd"))
+	var deep_src := StandardMaterial3D.new()
+	deep_src.next_pass = StandardMaterial3D.new()
+	var listed: Array[Resource] = [deep_src]
+	holder_src.set("list", listed)
+	holder_src.set("map", {"k": StandardMaterial3D.new()})
+	holder_src.set("ext", outer)  # a file of its own: never entered
+	_ok(ResourceSaver.save(holder_src, dir + "/embed.tres") == OK, "fixture: parts held in an Array, two levels deep, and in a Dictionary, beside another file")
+	var fresh_holder: Resource = ResourceLoader.load(dir + "/embed.tres", "", ResourceLoader.CACHE_MODE_IGNORE)
+	var in_list: StandardMaterial3D = (fresh_holder.get("list") as Array)[0]
+	var deep: Resource = in_list.next_pass
+	var in_map: Resource = (fresh_holder.get("map") as Dictionary)["k"]
+	_ok(deep.resource_path.contains("::") and Reflect.embedded_by_path(fresh_holder, deep.resource_path) == deep and Reflect.embedded_by_path(fresh_holder, in_map.resource_path) == in_map,
+		"embedded_by_path finds a part two levels down through an Array, and one in a Dictionary (%s)" % deep.resource_path)
+	_ok(Reflect.embedded_by_path(fresh_holder, part.resource_path) == null and Reflect.embedded_by_path(fresh_holder, dir + "/embed.tres::nope") == null,
+		"...never enters another file (outer.tres's part is not found through it), and a missing path is null")
+	_ok(Reflect.embedded_by_path(fresh_holder, deep.resource_path, 1) == null, "...and stops at the cap")
+	_ok(Reflect.same_stored(1, 1.0) and Reflect.same_stored("a", &"a") and not Reflect.same_stored(1, 2) and Reflect.same_stored(null, null), "same_stored compares plain values as same_value does")
+	if copy_has_path:
+		_ok(Reflect.same_stored(mat, copy) and Reflect.same_stored([mat], [copy]) and Reflect.same_stored({"m": mat}, {"m": copy}), "...two copies of one file by their path, in arrays and dictionaries too")
+	var bare_a := StandardMaterial3D.new()
+	var bare_b := StandardMaterial3D.new()
+	var bare_same := Reflect.same_stored(bare_a, bare_b)
+	bare_b.roughness = 0.3
+	_ok(bare_same and not Reflect.same_stored(bare_a, bare_b) and not Reflect.same_stored(bare_a, ShaderMaterial.new()) and not Reflect.same_stored(mat, outer),
+		"...two resources with no path by class and stored values (a getter can build a new one per read), and two files as different")
+	var long_a := PackedFloat32Array()
+	long_a.resize(5000)
+	var long_b := long_a.duplicate()
+	var long_same := Reflect.same_stored(long_a, long_b)
+	long_b[4999] = 1.0
+	_ok(long_same and not Reflect.same_stored(long_a, long_b), "...and a long packed array natively, still telling a changed one apart")
+	var a1: Resource = ResourceLoader.load(mat_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var a2: Resource = ResourceLoader.load(mat_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var no_drift := Reflect.stored_differences(a1, a2)
+	a1.set("roughness", 0.3)
+	_ok(no_drift.is_empty() and Reflect.stored_differences(a1, a2) == ["roughness"] and Reflect.stored_differences(a1, a2, "roughness").is_empty(),
+		"stored_differences: none between two loads of one file, a changed property named, unless it is the one skipped (%s)" % str(no_drift))
+	# A part of the file ('file::id') is a new object in every load, so it is compared by what it stores: a change inside
+	# it is named by its path in the file, and left out when it is the property being written on that part.
+	var o1: StandardMaterial3D = ResourceLoader.load(outer_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var o2: StandardMaterial3D = ResourceLoader.load(outer_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	var parts_same := Reflect.stored_differences(o1, o2).is_empty() and Reflect.same_stored(o1.next_pass, o2.next_pass)
+	(o1.next_pass as StandardMaterial3D).roughness = 0.3
+	var part_drift := Reflect.stored_differences(o1, o2)
+	_ok(parts_same and part_drift == ["next_pass:roughness"] and not Reflect.same_stored(o1.next_pass, o2.next_pass) and Reflect.stored_differences(o1, o2, "roughness", o1.next_pass).is_empty()
+		and Reflect.stored_differences(o1, o2, "roughness") == ["next_pass:roughness"], "...a part by what it stores, a change inside it named by its path, and skipped only on the part written (%s)" % str(part_drift))
+	var cyc_a := Resource.new()
+	cyc_a.set_script(load(dir + "/holder_res.gd"))
+	var cyc_b := Resource.new()
+	cyc_b.set_script(load(dir + "/holder_res.gd"))
+	cyc_a.set("ext", cyc_a)
+	cyc_b.set("ext", cyc_b)
+	var cyc_same := Reflect.same_stored(cyc_a, cyc_b)
+	cyc_b.set("map", {"x": 1})
+	var cyc_differs := not Reflect.same_stored(cyc_a, cyc_b)
+	cyc_a.set("ext", null)  # no reference cycle left behind
+	cyc_b.set("ext", null)
+	_ok(cyc_same and cyc_differs, "...a cycle of resources ends (a pair met again counts as the same), and a difference beside it still shows")
+	var chain_a := StandardMaterial3D.new()
+	var chain_b := StandardMaterial3D.new()
+	var tip_a := chain_a
+	var tip_b := chain_b
+	for i in 20:
+		tip_a.next_pass = StandardMaterial3D.new()
+		tip_b.next_pass = StandardMaterial3D.new()
+		tip_a = tip_a.next_pass
+		tip_b = tip_b.next_pass
+	tip_b.roughness = 0.3
+	var past_limit_same := Reflect.same_stored(chain_a, chain_b)
+	(chain_b.next_pass as StandardMaterial3D).roughness = 0.3
+	_ok(past_limit_same and not Reflect.same_stored(chain_a, chain_b), "...looked at 16 resources deep: a change 20 down is taken as the same, one near the top is not")
+
+	# --- set_property: the NOTE on a resource saved as its own file, by its path and through a node
+	var scene := Node3D.new()
+	scene.name = "ZzPersistScene"
+	scene.scene_file_path = open_scene
+	var holders := {"ZzPersistMesh": mat, "ZzPersistOuter": outer, "ZzPersistPlain": StandardMaterial3D.new(), "ZzPersistPart": open_part, "ZzPersistOther": other_part,
+		"ZzPersistOutside": outside, "ZzPersistMine": mine, "ZzPersistNoSaver": no_saver}
+	if copy_has_path:
+		holders["ZzPersistCopy"] = copy
+	for nm in holders:
+		var mi := MeshInstance3D.new()
+		mi.name = nm
+		mi.material_override = holders[nm]
+		scene.add_child(mi)
+		mi.owner = scene
+	var cam := Camera3D.new()
+	cam.name = "ZzPersistCam"
+	scene.add_child(cam)
+	cam.owner = scene
+	var inst := Node3D.new()  # a closed instance: what is inside it is NOT SAVED
+	inst.name = "ZzPersistInst"
+	inst.scene_file_path = dir + "/sub.tscn"
+	scene.add_child(inst)
+	inst.owner = scene
+	var kid := Node3D.new()
+	kid.name = "Kid"
+	inst.add_child(kid)
+	kid.owner = inst
+	Reflect.scene_root_override = scene
+	var rt := ReflectionTools.new()
+	rt.server = _NoUndoServer.new()
+	var red := Color(1, 0, 0, 1)
+	var r1: Dictionary = rt._set_property({"target": mat_path, "property": "albedo_color", "value": "#ff0000"})
+	var r1_disk: StandardMaterial3D = ResourceLoader.load(mat_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	_ok(str(r1.get("text", "")) == "set %s.albedo_color = %s. %s" % [mat_path, str(red), n_file], "the report's call now says the file keeps the old value: %s" % str(r1.get("text", r1.get("error", ""))))
+	_ok(mat.albedo_color == red and r1_disk.albedo_color == Color.WHITE, "...the loaded copy holds red, and the file still holds white")
+	for t in ["ZzPersistMesh/material_override", "ZzPersistMesh:material_override"]:
+		var rn: Dictionary = rt._set_property({"target": t, "property": "albedo_color", "value": "#ff0000"})
+		_ok(str(rn.get("text", "")).ends_with("). " + n_file), "through a node (%s) the NOTE names the .tres: %s" % [t, str(rn.get("text", rn.get("error", "")))])
+	var rp: Dictionary = rt._set_property({"target": "ZzPersistPlain:material_override", "property": "albedo_color", "value": "#ff0000"})
+	_ok(str(rp.get("text", "")) == "set ZzPersistPlain:material_override.albedo_color = %s" % str(red), "a material with no file gets no NOTE: %s" % str(rp.get("text", rp.get("error", ""))))
+	var ri: Dictionary = rt._set_property({"target": "ZzPersistOuter:material_override:next_pass", "property": "albedo_color", "value": "#ff0000"})
+	_ok(str(ri.get("text", "")).ends_with("). " + n_inside), "a part of another .tres names that .tres: %s" % str(ri.get("text", ri.get("error", ""))))
+	var rv: Dictionary = rt._set_property({"target": custom_path, "property": "temp", "value": 5})
+	_ok(not rv.has("error") and not str(rv.get("text", "")).contains("NOTE"), "a property files do not store gets no NOTE: %s" % str(rv.get("text", rv.get("error", ""))))
+	scene.scene_file_path = ""
+	var ru: Dictionary = rt._set_property({"target": mat_path, "property": "albedo_color", "value": "#ff0000"})
+	scene.scene_file_path = open_scene
+	Reflect.scene_root_override = null
+	var rz: Dictionary = rt._set_property({"target": mat_path, "property": "albedo_color", "value": "#ff0000"})
+	Reflect.scene_root_override = scene
+	_ok(str(ru.get("text", "")).ends_with("(save=true).") and str(rz.get("text", "")).ends_with("(save=true).") and not (str(ru.get("text", "")) + str(rz.get("text", ""))).contains("save_scene"),
+		"with the open scene never saved, or no scene open, the NOTE offers save=true only (save_scene refuses there): %s" % str(ru.get("text", ru.get("error", ""))))
+
+	# --- save=true: the file now, read back from it, and nothing reloaded
+	var green := Color(0, 1, 0, 1)
+	var s1: Dictionary = rt._set_property({"target": mat_path, "property": "albedo_color", "value": "#00ff00", "save": true})
+	var s1_disk: StandardMaterial3D = ResourceLoader.load(mat_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	_ok(str(s1.get("text", "")) == "set %s.albedo_color = %s, saved and read back from the file" % [mat_path, str(green)], "save=true writes the file and says so: %s" % str(s1.get("text", s1.get("error", ""))))
+	_ok(s1_disk.albedo_color == green and ResourceLoader.load(mat_path) == mat, "...the file holds green, and the editor's copy is the same object (nothing reloaded it)")
+	var s2: Dictionary = rt._set_property({"target": mat_path, "property": "albedo_color", "value": "#00ff00", "save": true})
+	_ok(not s2.has("error") and str(s2.get("text", "")).ends_with("saved and read back from the file"), "a second save=true with the same value succeeds (that is how earlier unsaved edits get written)")
+	var s3: Dictionary = rt._set_property({"target": "ZzPersistMesh:material_override", "property": "albedo_color", "value": "#00ff00", "save": true})
+	_ok(str(s3.get("text", "")).ends_with(", saved to %s and read back from the file" % mat_path), "through a node it names the file: %s" % str(s3.get("text", s3.get("error", ""))))
+	var s4: Dictionary = rt._set_property({"target": "ZzPersistOuter:material_override:next_pass", "property": "albedo_color", "value": "#00ff00", "save": true})
+	var s4_disk: StandardMaterial3D = ResourceLoader.load(outer_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	_ok(str(s4.get("text", "")).ends_with(", saved to %s, which stores it, and read back from the file" % outer_path) and (s4_disk.next_pass as StandardMaterial3D).albedo_color == green
+		and outer.next_pass == part, "save=true on a part writes the .tres that stores it, and the part is still the same object: %s" % str(s4.get("text", s4.get("error", ""))))
+
+	# --- a file changed behind the editor's copy: save=true writes the copy, and the reply names what it wrote over
+	_wf(mat_path, "[gd_resource type=\"StandardMaterial3D\" format=3]\n\n[resource]\nalbedo_color = Color(0, 1, 0, 1)\nroughness = 0.25\n")
+	var blue := Color(0, 0, 1, 1)
+	var dr: Dictionary = rt._set_property({"target": mat_path, "property": "albedo_color", "value": "#0000ff", "save": true})
+	var dr_disk: StandardMaterial3D = ResourceLoader.load(mat_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	_ok(str(dr.get("text", "")).ends_with(", and also wrote roughness, which differed from the file (an older editor copy, or earlier unsaved edits)") and is_equal_approx(dr_disk.roughness, 1.0)
+		and dr_disk.albedo_color == blue, "save=true over a file changed outside the editor names what it wrote back over it: %s" % str(dr.get("text", dr.get("error", ""))))
+	# The same inside a part of the file: outer.tres's inline next_pass changed outside the editor, then save=true on
+	# outer.tres. A part is a new object in every load, so it is compared by what it stores, and named by its path.
+	_wf(outer_path, _pr_outside(FileAccess.get_file_as_string(outer_path), "metallic = 0.5", "roughness = 0.25"))
+	var pd: Dictionary = rt._set_property({"target": outer_path, "property": "resource_name", "value": outer.resource_name, "save": true})
+	var pd_disk: StandardMaterial3D = ResourceLoader.load(outer_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	_ok(_pr_drift(pd) == ["next_pass:metallic", "roughness"] and is_equal_approx(pd_disk.roughness, 1.0) and is_equal_approx((pd_disk.next_pass as StandardMaterial3D).metallic, 0.0),
+		"a change outside the editor inside a part of the file is named by its path, and written back over: %s" % str(pd.get("text", pd.get("error", ""))))
+	# ...and through the part itself (INSIDE): an earlier unsaved edit to the part is named, the property written is not.
+	_wf(outer_path, _pr_outside(FileAccess.get_file_as_string(outer_path), "", "roughness = 0.25"))
+	var pe0: Dictionary = rt._set_property({"target": "ZzPersistOuter:material_override:next_pass", "property": "roughness", "value": 0.5})
+	var pe1: Dictionary = rt._set_property({"target": "ZzPersistOuter:material_override:next_pass", "property": "albedo_color", "value": "#ff0000"})
+	var pe: Dictionary = rt._set_property({"target": "ZzPersistOuter:material_override:next_pass", "property": "albedo_color", "value": "#0000ff", "save": true})
+	var pe_disk: StandardMaterial3D = ResourceLoader.load(outer_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	_ok(not pe0.has("error") and not pe1.has("error") and _pr_drift(pe) == ["next_pass:roughness", "roughness"] and is_equal_approx(pe_disk.roughness, 1.0)
+		and is_equal_approx((pe_disk.next_pass as StandardMaterial3D).roughness, 0.5) and (pe_disk.next_pass as StandardMaterial3D).albedo_color == blue and outer.next_pass == part,
+		"save=true on a part names an outside change and an earlier edit by their path in the file, not the property it wrote: %s" % str(pe.get("text", pe.get("error", ""))))
+
+	# --- refused before anything changes: the editor's copy and the file stay as they were
+	var md5 := FileAccess.get_md5(mat_path)
+	var refused := {
+		"imported": rt._set_property({"target": dir + "/fake.png", "property": "resource_name", "value": "zz", "save": true}),
+		"script": rt._set_property({"target": script_path, "property": "source_code", "value": "extends Resource\n", "save": true}),
+		"part of another scene": rt._set_property({"target": "ZzPersistOther:material_override", "property": "albedo_color", "value": "#0000ff", "save": true}),
+		"scene file": rt._set_property({"target": dir + "/level.res", "property": "resource_name", "value": "zz", "save": true}),
+		"not stored": rt._set_property({"target": custom_path, "property": "temp", "value": 9, "save": true}),
+		"outside": rt._set_property({"target": "ZzPersistOutside:material_override", "property": "albedo_color", "value": "#0000ff", "save": true}),
+		"beckett file": rt._set_property({"target": "ZzPersistMine:material_override", "property": "albedo_color", "value": "#0000ff", "save": true}),
+		"no saver": rt._set_property({"target": "ZzPersistNoSaver:material_override", "property": "albedo_color", "value": "#0000ff", "save": true}),
+	}
+	if copy_has_path:
+		refused["another copy"] = rt._set_property({"target": "ZzPersistCopy:material_override", "property": "albedo_color", "value": "#0000ff", "save": true})
+	for k in refused:
+		var e := str((refused[k] as Dictionary).get("error", ""))
+		_ok(e.ends_with("Nothing was written."), "save=true refused (%s): %s" % [k, e if not e.is_empty() else str(refused[k])])
+	_ok(imported.resource_name == "" and (gd as GDScript).source_code.contains("@export var n") and other_part.albedo_color == Color.WHITE and packed.resource_name == ""
+		and int(custom.get("temp")) == 5 and outside.albedo_color == Color.WHITE and mine.albedo_color == Color.WHITE and no_saver.albedo_color == Color.WHITE,
+		"...and every one left the editor's copy as it was")
+	_ok(FileAccess.get_md5(mat_path) == md5 and not FileAccess.file_exists(beckett_file) and not FileAccess.file_exists(dir + "/x.png") and not FileAccess.file_exists(dir + "/level.res"),
+		"...and wrote no file: mat.tres is byte for byte the same, and nothing appeared under Beckett's folder or at a refused path")
+	_ok(str((refused["not stored"] as Dictionary).get("suggestion", "")).contains("without save=true") and str((refused["beckett file"] as Dictionary).get("error", "")).contains(Internals.OFF_LIMITS)
+		and str((refused["no saver"] as Dictionary).get("error", "")).contains("no saver that writes a StandardMaterial3D to .png"), "...with the reason in each")
+	# A read-only file: the READ_WRITE probe refuses it before the write.
+	var ro_set: int = FileAccess.set_read_only_attribute(mat_path, true) if OS.get_name() == "Windows" else FileAccess.set_unix_permissions(mat_path, 292)  # 0444
+	var still_open := FileAccess.open(mat_path, FileAccess.READ_WRITE)
+	if ro_set != OK or still_open != null:
+		if still_open != null:
+			still_open.close()
+		print("  skip  read-only refusal: the attribute did not take, or this account opens a read-only file for writing anyway (root)")
+	else:
+		var ro: Dictionary = rt._set_property({"target": mat_path, "property": "albedo_color", "value": "#ff00ff", "save": true})
+		_ok(str(ro.get("error", "")).contains("cannot be opened for writing") and str(ro.get("error", "")).ends_with("Nothing was written.") and mat.albedo_color == blue,
+			"a read-only file is refused before the write, and the editor's copy keeps its value: %s" % str(ro.get("error", ro.get("text", ""))))
+	if OS.get_name() == "Windows":
+		FileAccess.set_read_only_attribute(mat_path, false)
+	else:
+		FileAccess.set_unix_permissions(mat_path, 420)  # 0644
+	_ok(FileAccess.get_md5(mat_path) == md5, "...and the file is unchanged")
+
+	# --- save=true where nothing has a file of its own: the value lands, and the NOTE says what saves it
+	var files_now := Array(DirAccess.get_files_at(dir))
+	var n1: Dictionary = rt._set_property({"target": "ZzPersistCam", "property": "position", "value": [1, 2, 3], "save": true})
+	_ok(cam.position == Vector3(1, 2, 3) and str(n1.get("text", "")).ends_with(". NOTE: save=true wrote no file: ZzPersistCam has no file of its own, and save_scene writes the scene that holds it."),
+		"on a node: %s" % str(n1.get("text", n1.get("error", ""))))
+	var n2: Dictionary = rt._set_property({"target": "ZzPersistPlain:material_override", "property": "albedo_color", "value": "#0000ff", "save": true})
+	var n3: Dictionary = rt._set_property({"target": "ZzPersistPart:material_override", "property": "albedo_color", "value": "#0000ff", "save": true})
+	_ok(str(n2.get("text", "")).contains("save=true wrote no file") and str(n3.get("text", "")).contains("save=true wrote no file") and open_part.albedo_color == blue,
+		"on a material with no path, and on a part of the open scene: written, with the same NOTE")
+	var n4: Dictionary = rt._set_property({"target": "ZzPersistInst/Kid", "property": "position", "value": [1, 0, 0], "save": true})
+	_ok(str(n4.get("text", "")).contains("NOT SAVED") and not str(n4.get("text", "")).contains("save=true wrote no file"),
+		"inside a closed instance the NOT SAVED verdict speaks, not the save NOTE: %s" % str(n4.get("text", n4.get("error", ""))))
+	scene.scene_file_path = ""
+	var n5: Dictionary = rt._set_property({"target": "ZzPersistCam", "property": "position", "value": [1, 2, 3], "save": true})
+	scene.scene_file_path = open_scene
+	_ok(str(n5.get("text", "")).ends_with("the open scene has none yet: save_scene path=res://<name>.tscn writes it."), "with the open scene never saved, the NOTE names save_scene with a path: %s" % str(n5.get("text", "")))
+	_ok(Array(DirAccess.get_files_at(dir)) == files_now, "...and none of these wrote a file")
+
+	# --- the read-back is real: a file that disagrees is an error that names it
+	ReflectionTools.disk_probe = func(_f: String, _p: String) -> Variant: return Color(0.25, 0.5, 0.75, 1)
+	var pr: Dictionary = rt._set_property({"target": mat_path, "property": "albedo_color", "value": "#ffffff", "save": true})
+	ReflectionTools.disk_probe = Callable()  # always put it back, before any assert can throw
+	_ok(str(pr.get("error", "")).contains("and saved %s, but the file reads it back as %s" % [mat_path, str(Color(0.25, 0.5, 0.75, 1))]) and str(pr.get("suggestion", "")).contains("read_file path=%s" % mat_path),
+		"a read-back that disagrees is an error naming the file and what it holds: %s" % str(pr.get("error", pr.get("text", ""))))
+	_ok(not ReflectionTools.disk_probe.is_valid(), "the test seam is back to null, so real saves read the file again")
+
+	# --- set_resource: the same NOTE with the same-value recipe, and the recipe writes the new inline sub-resource
+	var rs := ResourceTools.new()
+	rs.server = _NoUndoServer.new()
+	var sr: Dictionary = rs._set_resource({"target": outer_path, "property": "next_pass", "class": "StandardMaterial3D"})
+	_ok(str(sr.get("text", "")) == "assigned StandardMaterial3D to %s.next_pass. %s" % [outer_path, PersistGuard.file_note(PersistGuard.resource_home(outer, open_scene), false)],
+		"set_resource on a .tres ends with the NOTE and the recipe: %s" % str(sr.get("text", sr.get("error", ""))))
+	var made_np: Resource = outer.next_pass
+	var rec: Dictionary = rt._set_property({"target": outer_path, "property": "resource_name", "value": outer.resource_name, "save": true})
+	var rec_disk: StandardMaterial3D = ResourceLoader.load(outer_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	_ok(str(rec.get("text", "")).contains(", and also wrote next_pass, which differed from the file") and rec_disk.next_pass != null and made_np.resource_path.begins_with(outer_path + "::")
+		and rec_disk.next_pass.resource_path == made_np.resource_path, "...save=true on another stored property at its current value writes it, and it takes its 'file::id' path: %s" % str(rec.get("text", rec.get("error", ""))))
+
+	# --- a file of Beckett's own as a VALUE: refused the way attach_script refuses it
+	var beckett_script := "res://addons/beckett/core/internals.gd"
+	var bv: Dictionary = rt._set_property({"target": "ZzPersistCam", "property": "script", "value": beckett_script})
+	var bs: Dictionary = rs._set_resource({"target": custom_path, "property": "script", "resource": beckett_script})
+	var bc: Dictionary = rs._create_resource({"class": "Resource", "path": dir + "/zz_made.tres", "properties": {"script": beckett_script}})
+	_ok(str(bv.get("error", "")).contains(Internals.OFF_LIMITS) and cam.get_script() == null, "set_property refuses one of Beckett's scripts as a value: %s" % str(bv.get("error", bv.get("text", ""))))
+	_ok(str(bs.get("error", "")).contains(Internals.OFF_LIMITS) and custom.get_script() == gd, "set_resource refuses it too, and the resource keeps its own script")
+	_ok(str(bc.get("error", "")).contains(Internals.OFF_LIMITS) and not FileAccess.file_exists(dir + "/zz_made.tres"), "create_resource refuses it in properties, and saves nothing")
+
+	# --- the custom-resources skill's recipe: create_resource takes engine classes only, so a class_name type is made as a
+	# Resource with "script" first in properties, after which its @export fields are there to set
+	var mk: Dictionary = rs._create_resource({"class": "Resource", "path": dir + "/made_item.tres", "properties": {"script": script_path, "n": 7}})
+	var mk_disk: Resource = ResourceLoader.load(dir + "/made_item.tres", "", ResourceLoader.CACHE_MODE_IGNORE)
+	_ok(not mk.has("error") and mk_disk != null and mk_disk.get_script() == gd and int(mk_disk.get("n")) == 7,
+		"create_resource class=Resource with \"script\" first saves a class_name resource with its field set: %s" % str(mk.get("text", mk.get("error", ""))))
+
+	# --- the wiring and the schema
+	var src := FileAccess.get_file_as_string("res://addons/beckett/tools/reflection_tools.gd")
+	_ok(src.contains("core/path_guard.gd") and src.contains("write_path_error("), "reflection_tools.gd asks the shared write rule for the file save=true writes")
+	_ok(not src.contains("refresh_loaded_copy(") and not src.contains("sync_written_file(") and not src.contains("update_file("),
+		"save=true never refreshes the loaded copy or re-registers the file: the save's own callback records it, and a refresh would make every part a new object")
+	var spec: Dictionary = {}
+	for t in _all_tool_specs():
+		if str(t["name"]) == "set_property":
+			spec = t
+	var schema: Dictionary = spec.get("input_schema", {})
+	var save_decl: Dictionary = (schema.get("properties", {}) as Dictionary).get("save", {})
+	_ok(str(save_decl.get("type", "")) == "boolean" and str(save_decl.get("description", "")).length() <= 60 and not (schema.get("required", []) as Array).has("save"),
+		"set_property takes an optional boolean save, described in under 60 characters (%d)" % str(save_decl.get("description", "")).length())
+
+	Reflect.scene_root_override = null
+	scene.free()
+	_rm_tree(dir)
+	return true
+
+
+## A .tres with one sub_resource as a change made outside the editor leaves it: `part_line` added to that sub_resource,
+## `root_line` to the resource itself ("" adds nothing).
+func _pr_outside(text: String, part_line: String, root_line: String) -> String:
+	var at := text.find("[sub_resource ")
+	var eol := text.find("\n", at)
+	if not part_line.is_empty() and at >= 0 and eol >= 0:
+		text = text.substr(0, eol + 1) + part_line + "\n" + text.substr(eol + 1)
+	if not root_line.is_empty():
+		text = text.replace("\n[resource]\n", "\n[resource]\n" + root_line + "\n")
+	return text
+
+
+## The names a save=true reply says it also wrote over the file, sorted: [] when it names none.
+func _pr_drift(reply: Dictionary) -> Array:
+	var text := str(reply.get("text", ""))
+	var lead := ", and also wrote "
+	var from := text.find(lead)
+	var to := text.find(", which differed from the file")
+	if from < 0 or to < from:
+		return []
+	var names := Array(text.substr(from + lead.length(), to - from - lead.length()).split(", "))
+	names.sort()
+	return names
+
+
 ## Every case, in every configuration: the verdict next to what the packed scene kept.
 ## Returns {runs: {op: n}, bad: {op: [mismatch...]}, kept, lost}.
 func _pg_matrix(paths: Dictionary, scene_tools: Object) -> Dictionary:
@@ -7371,7 +12009,9 @@ func _pg_build_scenes() -> Dictionary:
 	var a := _pg_add(r, "A", r)
 	_pg_add(a, "B", r)
 	_pg_add(r, "C", r)
-	var inner: Node = (ResourceLoader.load(paths["sub2"], "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate()
+	# Every instance in these files is made the way the editor (and now instance_scene) instances a scene, so the
+	# files read like ones the editor saved: `instance=` with no type and no copy of the file's properties.
+	var inner: Node = (ResourceLoader.load(paths["sub2"], "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)
 	inner.name = "Inner"
 	r.add_child(inner)
 	inner.owner = r
@@ -7382,7 +12022,7 @@ func _pg_build_scenes() -> Dictionary:
 	_pg_add(plain, "PlainKid", root)
 	_pg_add(plain, "PlainKid2", root)
 	_pg_add(root, "Plain2", root)
-	var inst: Node = (ResourceLoader.load(paths["sub"], "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate()
+	var inst: Node = (ResourceLoader.load(paths["sub"], "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)
 	inst.name = "Inst"
 	root.add_child(inst)
 	inst.owner = root
@@ -7418,8 +12058,9 @@ func _pg_save(root: Node, path: String) -> void:
 
 
 ## The scene as the tools meet it. "opened": loaded the way the editor opens a scene. "opened+
-## instance_scene": the same, with Inst re-added the way instance_scene adds an instance (a plain
-## instantiate(), which carries none of the editor's instance state).
+## instance_scene": the same, with Inst re-added the way instance_scene adds an instance
+## (instantiate(GEN_EDIT_STATE_INSTANCE), like the editor's own instancing; through 1.16.0 it was a
+## plain instantiate(), which carries none of the scene's state: _t_instance_edit_state).
 func _pg_fresh_root(paths: Dictionary, flavor: String) -> Node:
 	var packed := ResourceLoader.load(paths["root"], "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene
 	var root: Node = packed.instantiate(PackedScene.GEN_EDIT_STATE_MAIN)
@@ -7429,7 +12070,7 @@ func _pg_fresh_root(paths: Dictionary, flavor: String) -> Node:
 	var at := old.get_index()
 	root.remove_child(old)
 	old.free()
-	var inst: Node = (ResourceLoader.load(paths["sub"], "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate()
+	var inst: Node = (ResourceLoader.load(paths["sub"], "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)
 	inst.name = "Inst"
 	root.add_child(inst)
 	root.move_child(inst, at)
@@ -7552,7 +12193,7 @@ func _pg_pre(root: Node, c: Dictionary, editable_inst: bool) -> bool:
 			_pg_add(root.get_node("Plain"), "Ghost", null)
 		"holder":
 			var holder := _pg_add(root, "Holder", root)
-			var h_inst: Node = (ResourceLoader.load(_PG_DIR + "/sub.tscn", "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate()
+			var h_inst: Node = (ResourceLoader.load(_PG_DIR + "/sub.tscn", "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)
 			h_inst.name = "HInst"
 			holder.add_child(h_inst)
 			h_inst.owner = root
@@ -7572,7 +12213,7 @@ func _pg_apply(root: Node, c: Dictionary, paths: Dictionary, scene_tools: Object
 			v = PersistGuard.verdict(root, parent, PersistGuard.ADD)
 		"instance":  # scene_tools._instance_scene
 			var parent := _pg_at(root, str(c["parent"]))
-			var inst: Node = (ResourceLoader.load(paths["sub"], "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate()
+			var inst: Node = (ResourceLoader.load(paths["sub"], "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)
 			inst.name = "NewInst"
 			parent.add_child(inst)
 			inst.set_owner(root)
@@ -7617,6 +12258,321 @@ func _pg_apply(root: Node, c: Dictionary, paths: Dictionary, scene_tools: Object
 			scene_tools._own_recursive(dup, root)
 			v = PersistGuard.verdict(root, parent, PersistGuard.ADD)
 	return v
+
+
+# ---------------------------------------------------------------- instance_scene / rename_node (2026-10-08)
+
+const _IE_DIR := "user://beckett_unit_instance"
+
+
+## instance_scene adds an INSTANCE of the file, as the editor's own instancing does (GEN_EDIT_STATE_INSTANCE).
+## Through 1.16.0 it called a plain instantiate(), which gives the node the file's path and none of the scene's
+## state, and a save wrote it as a copy of the file's root class: Pixvale's pixel_main.tscn got
+## `[node name="Model" type="Node3D" ... instance=...]`, plus every property the file's root sets, so a later change
+## to the file never reached the instance. Proven on the packed state, on the saved text and on a reload after the
+## file changes, for the tool's way and for the old way side by side, so the checks are not vacuous.
+func _t_instance_edit_state() -> bool:
+	print("[unit] instance_scene: an instanced scene is saved as an instance of its file, not as a copy of its root")
+	if not OS.has_feature("editor"):
+		print("  skip  PackedScene.GEN_EDIT_STATE_INSTANCE needs an editor build")
+		return true
+	DirAccess.make_dir_recursive_absolute(_IE_DIR)
+	var sub_path := _IE_DIR + "/sub.tscn"
+	var root_path := _IE_DIR + "/root.tscn"
+	_ie_save_sub(sub_path, 0.5)
+	var packed := ResourceLoader.load(sub_path, "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene
+	var root := Node2D.new()
+	root.name = "Root"
+	var inst: Node = packed.instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)  # instance_scene and scatter_nodes now
+	inst.name = "Inst"
+	root.add_child(inst)
+	inst.owner = root
+	var old: Node = packed.instantiate()  # what they did through 1.16.0
+	old.name = "Old"
+	root.add_child(old)
+	old.owner = root
+	var ps := PackedScene.new()
+	ps.pack(root)
+	var st := ps.get_state()
+	var at := _ie_rows(st)
+	var ni: int = at.get("./Inst", -1)
+	var no: int = at.get("./Old", -1)
+	_ok(ni != -1 and str(st.get_node_type(ni)) == "" and st.get_node_instance(ni) != null and st.get_node_property_count(ni) == 0,
+		"an instance made the editor's way packs as an instance of its file: no type, and nothing copied from the file")
+	_ok(no != -1 and str(st.get_node_type(no)) == "Node2D" and _ie_props(st, no).has("rotation"),
+		"...where a plain instantiate() packs the root's class and the file's own rotation (the old bug, so the check can see it)")
+	_ok(not at.keys().any(func(p: String) -> bool: return p.begins_with("./Inst/") or p.begins_with("./Old/")),
+		"neither writes the instanced file's own nodes into the scene (it holds %d nodes)" % st.get_node_count())
+	ResourceSaver.save(ps, root_path)
+	var text := FileAccess.get_file_as_string(root_path)
+	var inst_line := _ie_line(text, "Inst")
+	_ok(inst_line.contains("instance=ExtResource(") and not inst_line.contains("type="), "the saved line is an instance with no type=: %s" % inst_line)
+	_ok(_ie_line(text, "Old").contains("type=\"Node2D\""), "...and the old way's line carries type=\"Node2D\": %s" % _ie_line(text, "Old"))
+	_ok(not text.contains("parent=\"Inst") and not text.contains("parent=\"Old"), "no node is saved under either instance")
+	inst.set("rotation", 0.25)
+	var ps_set := PackedScene.new()
+	ps_set.pack(root)
+	_ok(_ie_props(ps_set.get_state(), _ie_rows(ps_set.get_state()).get("./Inst", -1)) == ["rotation"], "a property set on the instance is still saved, as an override of the file's value")
+	root.free()
+
+	# The harm: the file changes later. The instance follows it; the copy keeps the value it froze.
+	_ie_save_sub(sub_path, 1.0)
+	var back: Node = (ResourceLoader.load(root_path, "", ResourceLoader.CACHE_MODE_IGNORE_DEEP) as PackedScene).instantiate()
+	var inst_rot: float = back.get_node("Inst").get("rotation")
+	var old_rot: float = back.get_node("Old").get("rotation")
+	_ok(is_equal_approx(inst_rot, 1.0) and is_equal_approx(old_rot, 0.5), "after the file's rotation changes to 1.0, the instance has 1.0 and the copy still 0.5 (%s, %s)" % [inst_rot, old_rot])
+	back.free()
+	# A scene saved the old way heals when the editor opens it (GEN_EDIT_STATE_MAIN) and saves it: the type goes. A
+	# property the copy froze stays an override while it differs from the file.
+	var opened: Node = (ResourceLoader.load(root_path, "", ResourceLoader.CACHE_MODE_IGNORE_DEEP) as PackedScene).instantiate(PackedScene.GEN_EDIT_STATE_MAIN)
+	var ps_open := PackedScene.new()
+	ps_open.pack(opened)
+	var so := ps_open.get_state()
+	var oo: int = _ie_rows(so).get("./Old", -1)
+	_ok(oo != -1 and str(so.get_node_type(oo)) == "" and _ie_props(so, oo) == ["rotation"], "a scene saved the old way loses the type= on the editor's next save, and keeps the frozen rotation as an override")
+	opened.free()
+
+	# The tools: both instance a file the editor's way.
+	var scene_body := _func_body(FileAccess.get_file_as_string("res://addons/beckett/tools/scene_tools.gd"), "_instance_scene")
+	_ok(scene_body.contains("packed.instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)") and not scene_body.contains("packed.instantiate()"), "instance_scene instantiates with GEN_EDIT_STATE_INSTANCE")
+	if ResourceLoader.exists("res://addons/beckett/tools/scatter_tools.gd"):  # Full only
+		var make_body := _func_body(FileAccess.get_file_as_string("res://addons/beckett/tools/scatter_tools.gd"), "_make")
+		_ok(make_body.contains("packed.instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)") and not make_body.contains("packed.instantiate()"), "...and so does scatter_nodes for each copy of a scene")
+	for f in DirAccess.get_files_at(_IE_DIR):
+		DirAccess.remove_absolute(_IE_DIR + "/" + f)
+	DirAccess.remove_absolute(_IE_DIR)
+	return true
+
+
+## sub.tscn: a root that sets a non-default rotation (what a copy freezes), a child with a grandchild, and a nested instance.
+func _ie_save_sub(path: String, rotation: float) -> void:
+	var leaf := Node2D.new()
+	leaf.name = "Leaf"
+	var leaf_kid := Node2D.new()
+	leaf_kid.name = "X"
+	leaf.add_child(leaf_kid)
+	leaf_kid.owner = leaf
+	_pg_save(leaf, _IE_DIR + "/leaf.tscn")
+	var r := Node2D.new()
+	r.name = "Sub"
+	r.rotation = rotation
+	var a := Node2D.new()
+	a.name = "A"
+	r.add_child(a)
+	a.owner = r
+	var b := Node2D.new()
+	b.name = "B"
+	a.add_child(b)
+	b.owner = r
+	var nested: Node = (ResourceLoader.load(_IE_DIR + "/leaf.tscn", "", ResourceLoader.CACHE_MODE_IGNORE) as PackedScene).instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)
+	nested.name = "Nested"
+	r.add_child(nested)
+	nested.owner = r
+	_pg_save(r, path)
+
+
+## SceneState node path ("./Inst") -> its index.
+func _ie_rows(st: SceneState) -> Dictionary:
+	var at := {}
+	for i in st.get_node_count():
+		at[str(st.get_node_path(i))] = i
+	return at
+
+
+## The names of the properties a packed node stores.
+func _ie_props(st: SceneState, i: int) -> Array:
+	var out: Array = []
+	if i < 0:
+		return out
+	for j in st.get_node_property_count(i):
+		out.append(str(st.get_node_property_name(i, j)))
+	return out
+
+
+## The `[node name="<node_name>" ...]` header line of a saved .tscn.
+func _ie_line(text: String, node_name: String) -> String:
+	for line in text.split("\n"):
+		if line.begins_with("[node name=\"%s\"" % node_name):
+			return line
+	return ""
+
+
+## The source of `func fn(` up to the next top-level func.
+func _func_body(src: String, fn: String) -> String:
+	var at := src.find("func %s(" % fn)
+	if at == -1:
+		return ""
+	var end := src.find("\nfunc ", at + 1)
+	return src.substr(at, (end if end != -1 else src.length()) - at)
+
+
+## rename_node respells the NodePaths a rename breaks, in the same undo step: renaming Barbarian to Farmer in Pixvale
+## (2026-10-08) left the camera's exported `follow = NodePath("../Barbarian")` pointing at nothing. The handler needs an
+## editor for its undo step, so this drives the part that decides, SceneTools._path_renames, on a scene holding every
+## kind of path, applies its answer through a real UndoRedo in the handler's order, and asks what matters: does each
+## path still reach the node it reached before, and does one undo put the name and every path back. The handler's
+## refusals run for real against a stand-in scene, and the one undo action is checked in its source.
+func _t_rename_paths() -> bool:
+	print("[unit] rename_node: the NodePaths that name the renamed node are respelled in its undo step, and only those")
+	var gd := GDScript.new()
+	gd.source_code = "extends Node3D\n@export var follow: NodePath\n@export var targets: Array[NodePath] = []\n@export var by_key: Dictionary = {}\n@export var keep: Array[NodePath] = []\n"
+	gd.reload()
+	var root := Node3D.new()
+	root.name = "Main"
+	var view := _rn_add(root, Node.new(), "PixelView", root)
+	var sub := _rn_add(view, Node3D.new(), "SubViewport", root)
+	var cam := _rn_add(sub, Node3D.new(), "Camera3D", root)
+	var barb := _rn_add(sub, CharacterBody3D.new(), "Barbarian", root)
+	_rn_add(barb, Node3D.new(), "Model", root)
+	var weapon := _rn_add(barb, Node3D.new(), "Weapon", root)
+	var remote := _rn_add(sub, RemoteTransform3D.new(), "Remote", root) as RemoteTransform3D
+	var other := _rn_add(root, Node3D.new(), "Other", root)
+	_rn_add(other, Node3D.new(), "Barbarian", root)  # the same name in another branch
+	barb.unique_name_in_owner = true
+	weapon.unique_name_in_owner = true
+	cam.set_script(gd)
+	weapon.set_script(gd)
+	cam.set("follow", NodePath("../Barbarian"))  # the Pixvale case
+	cam.set("targets", _rn_paths(["../Barbarian/Model", "../Remote", "../Barbarian:position"]))
+	cam.set("by_key", {"hero": NodePath("%Barbarian"), "n": 3, "nested": [NodePath("../Barbarian/Weapon")]})
+	# Left alone: a unique node below it (%Weapon), a node of the same name elsewhere, a path that resolves to
+	# nothing, an absolute path (it only resolves in a running game).
+	cam.set("keep", _rn_paths(["%Weapon", "../../../Other/Barbarian", "../Nobody", "/root/Main/PixelView/SubViewport/Barbarian"]))
+	remote.remote_path = NodePath("../Barbarian/Model")  # a native NodePath property
+	weapon.set("follow", NodePath("../Model"))  # inside it, never naming it: right as it is
+	weapon.set("targets", _rn_paths(["../../Barbarian/Model", "..", "../../Barbarian:rotation"]))  # out of it and back in BY NAME
+	barb.set_meta("me", NodePath("../Barbarian"))  # the node naming itself
+	barb.set_meta("buddy", NodePath("../Camera3D"))
+	other.set_meta("hero", NodePath("../PixelView/SubViewport/Barbarian"))  # metadata is saved with the scene too
+	root.set_meta("deep", NodePath("PixelView/SubViewport/Barbarian/Weapon:position:x"))  # subnames stay
+
+	var reach := _rn_reach(root)
+	var rw: Array = SceneTools._path_renames(root, barb, "Farmer")
+	var got: Array = []
+	for r in rw:
+		for p in r["paths"]:
+			got.append("%s:%s %s -> %s" % [root.get_path_to(r["node"]), r["property"], p[0], p[1]])
+	got.sort()
+	var want := [
+		".:metadata/deep PixelView/SubViewport/Barbarian/Weapon:position:x -> PixelView/SubViewport/Farmer/Weapon:position:x",
+		"Other:metadata/hero ../PixelView/SubViewport/Barbarian -> ../PixelView/SubViewport/Farmer",
+		"PixelView/SubViewport/Barbarian/Weapon:targets ../../Barbarian/Model -> ../../Farmer/Model",
+		"PixelView/SubViewport/Barbarian/Weapon:targets ../../Barbarian:rotation -> ../../Farmer:rotation",
+		"PixelView/SubViewport/Barbarian:metadata/me ../Barbarian -> ../Farmer",
+		"PixelView/SubViewport/Camera3D:by_key %Barbarian -> %Farmer",
+		"PixelView/SubViewport/Camera3D:by_key ../Barbarian/Weapon -> ../Farmer/Weapon",
+		"PixelView/SubViewport/Camera3D:follow ../Barbarian -> ../Farmer",
+		"PixelView/SubViewport/Camera3D:targets ../Barbarian/Model -> ../Farmer/Model",
+		"PixelView/SubViewport/Camera3D:targets ../Barbarian:position -> ../Farmer:position",
+		"PixelView/SubViewport/Remote:remote_path ../Barbarian/Model -> ../Farmer/Model",
+	]
+	want.sort()
+	_ok(got == want, "exactly the %d paths that name Barbarian are respelled: exports, an Array[NodePath], a Dictionary (and an array in it), metadata, a native property, a unique name, subnames%s" % [want.size(), "" if got == want else "; got " + str(got)])
+	var targets_after: Variant = null
+	for r in rw:
+		if r["node"] == cam and str(r["property"]) == "targets":
+			targets_after = r["after"]
+	_ok(targets_after is Array and (targets_after as Array).is_typed() and (targets_after as Array).get_typed_builtin() == TYPE_NODE_PATH
+		and (cam.get("targets") as Array)[0] == NodePath("../Barbarian/Model") and barb.name == "Barbarian",
+		"an Array[NodePath] comes back as a typed copy, and nothing in the scene changes until the tool commits")
+
+	# Applied the way _rename_node applies it: one action, the name first, then each value.
+	var ur := UndoRedo.new()
+	ur.create_action("MCP rename_node")
+	ur.add_do_property(barb, "name", "Farmer")
+	ur.add_undo_property(barb, "name", barb.name)
+	for r in rw:
+		ur.add_do_property(r["node"], r["property"], r["after"])
+		ur.add_undo_property(r["node"], r["property"], r["before"])
+	ur.commit_action()
+	var resolving := reach.values().filter(func(id: int) -> bool: return id != 0).size()
+	_ok(barb.name == "Farmer" and _rn_reach(root) == reach, "after the rename every path reaches the node it reached before (%d paths, %d of them resolve)" % [reach.size(), resolving])
+	_ok(cam.get_node_or_null(cam.get("follow")) == barb and cam.get_node_or_null("%Farmer") == barb, "...the camera follows Farmer, and %Farmer is the renamed node")
+	ur.undo()
+	_ok(barb.name == "Barbarian" and _rn_reach(root) == reach and cam.get("follow") == NodePath("../Barbarian") and remote.remote_path == NodePath("../Barbarian/Model")
+		and (cam.get("by_key") as Dictionary)["hero"] == NodePath("%Barbarian"), "one undo puts the name and every path back")
+	ur.redo()
+	_ok(barb.name == "Farmer" and _rn_reach(root) == reach, "...and redo does it all again")
+	ur.undo()
+	ur.free()
+
+	# The handler's refusals, for real, against the stand-in scene: each would leave a path respelled for a name the
+	# node does not get, so it is refused before anything changes.
+	Reflect.scene_root_override = root
+	var scn := SceneTools.new()
+	var clash: Dictionary = scn._rename_node({"target": "PixelView/SubViewport/Barbarian", "name": "Camera3D"})
+	_ok(str(clash.get("error", "")).contains("already has a child named 'Camera3D'") and barb.name == "Barbarian" and cam.get("follow") == NodePath("../Barbarian"),
+		"a sibling's name is refused (Godot would number it quietly), and nothing changed: %s" % clash.get("error", ""))
+	var taken: Dictionary = scn._rename_node({"target": "PixelView/SubViewport/Barbarian", "name": "Weapon"})
+	_ok(str(taken.get("error", "")).contains("unique name %Weapon") and barb.name == "Barbarian", "a unique node cannot take another unique node's name: %s" % taken.get("error", ""))
+	var same: Dictionary = scn._rename_node({"target": "PixelView/SubViewport/Barbarian", "name": "Barbarian"})
+	_ok(not same.has("error") and str(same.get("text", "")).contains("nothing changed"), "the name it already has changes nothing")
+	Reflect.scene_root_override = null
+
+	# The handler: the name and every respelled path in ONE undo action, the name first.
+	var body := _func_body(FileAccess.get_file_as_string("res://addons/beckett/tools/scene_tools.gd"), "_rename_node")
+	var at_name := body.find("ur.add_do_property(node, \"name\", new_name)")
+	var at_loop := body.find("for r in rewrites:")
+	_ok(body.count("create_action(") == 1 and body.count("commit_action(") == 1 and body.contains("_path_renames(root, node, new_name)")
+		and at_name != -1 and at_loop > at_name and body.find("commit_action(") > at_loop
+		and body.contains("ur.add_do_property(r[\"node\"], r[\"property\"], r[\"after\"])") and body.contains("ur.add_undo_property(r[\"node\"], r[\"property\"], r[\"before\"])"),
+		"_rename_node commits the name and the respelled paths as one undo action, the name first")
+	_ok(body.contains("\"rewritten\": rows") and body.contains("Rewrote %d node path"), "...and its reply names every path it rewrote")
+	root.free()
+	return true
+
+
+func _rn_add(parent: Node, n: Node, node_name: String, owner: Node) -> Node:
+	n.name = node_name
+	parent.add_child(n)
+	n.owner = owner
+	return n
+
+
+func _rn_paths(list: Array) -> Array[NodePath]:
+	var out: Array[NodePath] = []
+	for p in list:
+		out.append(NodePath(p))
+	return out
+
+
+## Every NodePath the scene stores (properties, exports, metadata, inside arrays and dictionaries), keyed by the
+## node that holds it and where, with the instance id of the node it reaches (0 for none). Absolute paths are
+## skipped: they only resolve in a running game.
+func _rn_reach(root: Node) -> Dictionary:
+	var out := {}
+	var holders: Array = [root]
+	var i := 0
+	while i < holders.size():
+		var h: Node = holders[i]
+		i += 1
+		holders.append_array(h.get_children())
+		for p in h.get_property_list():
+			if int(p["usage"]) & (PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_EDITOR) == 0:
+				continue
+			var found: Array = []
+			_rn_collect(h.get(p["name"]), found, 0)
+			for k in found.size():
+				var np: NodePath = found[k]
+				if np.is_empty() or np.is_absolute():
+					continue
+				var t := h.get_node_or_null(np)
+				out["%d|%s|%d" % [h.get_instance_id(), p["name"], k]] = t.get_instance_id() if t != null else 0
+	return out
+
+
+func _rn_collect(v: Variant, found: Array, depth: int) -> void:
+	if depth > 8:
+		return
+	match typeof(v):
+		TYPE_NODE_PATH:
+			found.append(v)
+		TYPE_ARRAY:
+			for e in v:
+				_rn_collect(e, found, depth + 1)
+		TYPE_DICTIONARY:
+			for key in v:
+				_rn_collect(v[key], found, depth + 1)
 
 
 ## Source with comments and string literals removed, so a word inside prose or a path
@@ -8238,9 +13194,16 @@ func _t_export_parity() -> bool:
 	var coerce_rows := [
 		[1, TYPE_BOOL], [0.0, TYPE_BOOL], ["yes", TYPE_BOOL], ["maybe", TYPE_BOOL], [3, TYPE_BOOL], [3.0, TYPE_INT], [3.5, TYPE_INT], ["7", TYPE_INT], ["x", TYPE_INT], [2, TYPE_FLOAT], ["2.5", TYPE_FLOAT], [[1], TYPE_FLOAT],
 		[5, TYPE_STRING], [true, TYPE_STRING], [[1], TYPE_STRING], ["n", TYPE_STRING_NAME], [4, TYPE_STRING_NAME], ["a/b", TYPE_NODE_PATH],
+		["NodePath(\"a/b\")", TYPE_NODE_PATH], ["^\"a/b\"", TYPE_NODE_PATH], ["\"a/b\"", TYPE_NODE_PATH], ["NodePath()", TYPE_NODE_PATH], [&"a", TYPE_NODE_PATH], [4, TYPE_NODE_PATH],
+		["&\"n\"", TYPE_STRING_NAME], ["StringName(\"n\")", TYPE_STRING_NAME], [NodePath("a/b"), TYPE_STRING_NAME],
 		[[1, 2], TYPE_VECTOR2], [{"x": 1, "y": 2}, TYPE_VECTOR2], ["1 2", TYPE_VECTOR2], ["1,2", TYPE_VECTOR2], ["Vector2(1, 2)", TYPE_VECTOR2], [[1], TYPE_VECTOR2], [["a", 2], TYPE_VECTOR2], [[1.7, 2], TYPE_VECTOR2I], [[1, 2, 3], TYPE_VECTOR3], ["1 2 3", TYPE_VECTOR3I], [{"x": 1, "y": 2, "z": 3}, TYPE_VECTOR3],
 		[[1, 2, 3, 4], TYPE_VECTOR4], [{"x": 1, "y": 2, "z": 3, "w": 4}, TYPE_VECTOR4I],
+		["(1.0, 2.0)", TYPE_VECTOR2], ["[1, 2, 3]", TYPE_VECTOR3], ["(1, 2, 3)", TYPE_VECTOR3I], ["(1, 2", TYPE_VECTOR2], ["()", TYPE_VECTOR2],
 		["#ff0000", TYPE_COLOR], ["red", TYPE_COLOR], ["notacolor", TYPE_COLOR], [[1, 0, 0], TYPE_COLOR], [[1, 0, 0, 0.5], TYPE_COLOR], [{"r": 1, "g": 0, "b": 0}, TYPE_COLOR], [[1], TYPE_COLOR],
+		["1 0 0", TYPE_COLOR], ["(1.0, 0.0, 0.0, 0.5)", TYPE_COLOR], ["[0.5, 0.5, 0.5]", TYPE_COLOR], ["1 0", TYPE_COLOR], ["1 0 x", TYPE_COLOR],
+		["Color(1, 0.85, 0)", TYPE_COLOR], ["Color(1, 0, 0, 1)", TYPE_COLOR], ["Color.GOLD", TYPE_COLOR], ["Color(\"#ffd900\")", TYPE_COLOR], [" Color( 1 , 0.85 , 0 ) ", TYPE_COLOR], ["Colour(1, 0, 0)", TYPE_COLOR], ["Color()", TYPE_COLOR],
+		["Resource(\"C:/nowhere/p.beckettprobe\")", TYPE_VECTOR3], ["Vector3(1, 2, 3) Resource(\"C:/nowhere/p.beckettprobe\")", TYPE_VECTOR3], ["Vector3( 1 ,\n 2 , 3 )", TYPE_VECTOR3],
+		["Quaternion(0, 0, 0, 1)", TYPE_QUATERNION], ["Quaternion(Resource(\"C:/nowhere/p.beckettprobe\"))", TYPE_QUATERNION], ["Rect2(1, 2, 3, 4)", TYPE_RECT2], ["[1, Resource(\"C:/nowhere/p.beckettprobe\")]", TYPE_RECT2],
 		[[0, 0, 0, 1], TYPE_QUATERNION], [[1, 2, 3, 4], TYPE_RECT2], [[1, 2, 3, 4], TYPE_RECT2I], ["Rect2(1, 2, 3, 4)", TYPE_RECT2], [[1, 2], TYPE_RECT2],
 		[7, TYPE_NIL], [Vector2(1, 2), TYPE_VECTOR2],
 	]
@@ -8361,7 +13324,9 @@ func _t_export_parity() -> bool:
 	scene.add_child(sel_dummy)
 	_ok(T.resolve_target(scene, {"class": "Node", "name": "Pick"}) == sel_dummy and T.resolve_target(scene, {"name": "Deep"}) == deep and T.resolve_target(scene, {"class": "Node", "nth": 1}) == player and T.resolve_target(scene, {"name": "Deep", "nth": 5}) == null and T.resolve_target(scene, {}) == null and T.resolve_target(scene, {"path": "Player/Deep"}) == deep,
 		"resolve_target: a selector (class, name, nth, path) picks the node the runtime's resolver would")
-	var set_rows := [["health", 0], ["health", "5"], ["health", 2.0], ["x", 1.5], ["x", "2.5"], ["position:x", 4.0], ["position", [3, 4]], ["position", "nonsense"], ["no_such_prop", 1], ["position:q", 1], ["health", "abc"]]
+	var set_rows := [["health", 0], ["health", "5"], ["health", 2.0], ["x", 1.5], ["x", "2.5"], ["position:x", 4.0], ["position", [3, 4]], ["position", "nonsense"], ["no_such_prop", 1], ["position:q", 1], ["health", "abc"],
+		["position", "100 200"], ["position", "(3.0, 4.0)"], ["position", "Vector2(5, 6)"], ["position", [3]], ["position:y", "6"], ["tint", "1 0 0"], ["tint", "notacolor"], ["health", 2.5],
+		["visible", "maybe"], ["process_mode", "Always"]]
 	var set_bad: Array = []
 	for row in set_rows:
 		var node_a := _WriteProbe.new()
@@ -8375,7 +13340,8 @@ func _t_export_parity() -> bool:
 		node_a.free()
 		node_b.free()
 	_ok(set_bad.is_empty(), "write_property gives the runtime's set command's verdict, before / after and error on %d writes (coercion, a sub-property, a refusal)%s" % [set_rows.size(), "" if set_bad.is_empty() else ": " + str(set_bad.slice(0, 3))])
-	var call_rows := [["hit", [2]], ["hit", ["2"]], ["hit", []], ["hit", [1, 2]], ["hit", ["x"]], ["nope", []], ["get_class", []]]
+	var call_rows := [["hit", [2]], ["hit", ["2"]], ["hit", []], ["hit", [1, 2]], ["hit", ["x"]], ["nope", []], ["get_class", []],
+		["set", ["position", "7 8"]], ["set", ["position", "nonsense"]], ["set", ["health", "abc"]], ["set_indexed", ["position:y", "9"]], ["set", ["no_such_prop", 1]]]
 	var call_bad: Array = []
 	for row in call_rows:
 		var node_c := _WriteProbe.new()
@@ -8384,11 +13350,11 @@ func _t_export_parity() -> bool:
 		root.add_child(node_d)
 		var ca: Dictionary = rt._call_cmd(node_c, {"method": row[0], "args": row[1]})
 		var cb: Dictionary = T.call_method(node_d, row[0], row[1])
-		if bool(ca.get("ok", false)) != bool(cb.get("ok", false)) or (bool(ca.get("ok", false)) and str(ca.get("result")) != str(cb.get("result"))) or (not bool(ca.get("ok", false)) and str(ca.get("error", "")) != str(cb.get("error", ""))):
+		if bool(ca.get("ok", false)) != bool(cb.get("ok", false)) or (bool(ca.get("ok", false)) and str(ca.get("result")) != str(cb.get("result"))) or (not bool(ca.get("ok", false)) and str(ca.get("error", "")) != str(cb.get("error", ""))) or node_c.position != node_d.position:
 			call_bad.append("%s %s: %s vs %s" % [row[0], str(row[1]), str(ca).left(70), str(cb).left(70)])
 		node_c.free()
 		node_d.free()
-	_ok(call_bad.is_empty(), "call_method gives the runtime's call command's result and error on %d calls (coerced and mismatched arguments, an unknown method)%s" % [call_rows.size(), "" if call_bad.is_empty() else ": " + str(call_bad.slice(0, 3))])
+	_ok(call_bad.is_empty(), "call_method gives the runtime's call command's result, error and end state on %d calls (coerced and mismatched arguments, an unknown method, a set held to the property's type)%s" % [call_rows.size(), "" if call_bad.is_empty() else ": " + str(call_bad.slice(0, 3))])
 	var inj_rows := [{"set": [{"node": "A", "property": "p", "value": 1}], "frames": 2}, {"call": [{"node": "A", "method": "m"}]}, {}, {"set": []}, {"set": "x"}, {"set": [{"node": "A"}]}, {"call": [{"node": "A", "method": "m", "args": "x"}]}, null]
 	var inj_bad: Array = []
 	for s in inj_rows:
@@ -8691,7 +13657,7 @@ func _t_runner_frame_exact() -> bool:
 	_wf(_XF_DIR + "/player.gd", _XF_PLAYER)
 	_wf(_XF_DIR + "/arena.gd", _XF_ARENA)
 	_wf(_XF_DIR + "/arena.tscn", _XF_SCENE)
-	for f in ["core/path_guard.gd", "core/callargs.gd", "runtime/invariants.gd", "runtime/input_codec.gd", "runtime/game_state.gd", "runtime/physics_overlap.gd", "runtime/playtest_runner.gd", "runtime/playtest_runner.tscn"]:
+	for f in ["core/path_guard.gd", "core/callargs.gd", "core/typed_json.gd", "runtime/invariants.gd", "runtime/input_codec.gd", "runtime/game_state.gd", "runtime/physics_overlap.gd", "runtime/replay_perf.gd", "runtime/playtest_runner.gd", "runtime/playtest_runner.tscn"]:
 		_wf("%s/addons/beckett/%s" % [_XF_DIR, f], FileAccess.get_file_as_string("res://addons/beckett/" + f))
 	var walk := {"name": "walk", "scene": "res://arena.tscn", "events": [
 			{"type": "key", "keycode": "Right", "pressed": true, "f": 3.0}, {"type": "key", "keycode": "Right", "pressed": false, "f": 13.0}],
@@ -8743,6 +13709,13 @@ func _t_export_standalone_run() -> bool:
 	# --fixed-fps runs the engine as fast as it can instead of in real time: the physics frames are the same, so is the verdict
 	var fast := _xf_run(walk, "walk", {}, [], ["--fixed-fps", "60"])
 	_ok(fast["code"] == 0 and int((fast["result"] as Dictionary).get("passed", -1)) == 4 and int((fast["result"] as Dictionary).get("failed", -1)) == 0, "with --fixed-fps 60 (as fast as the machine allows) the same suite gives the same verdict: %s" % str(fast.get("result")))
+	# settle_frames 0: the events stamped with the last frame go in as the asserts are judged, as the editor's window puts them in at
+	# its close, so the walk released at f=13 ran frames 4..12, x 9 (a test that waited for the release to act ran one frame more)
+	var s0: Dictionary = walk.duplicate(true)
+	s0["name"] = "walk_settle0"
+	s0["asserts"] = [{"type": "expr", "condition": "get_node('Player').position.x == 9.0"}]
+	var s0ran := _xf_run(s0, "walk_settle0", {"settle_frames": 0})
+	_ok(s0ran["code"] == 0 and int((s0ran["result"] as Dictionary).get("passed", -1)) == 2, "settle_frames 0 judges after the frames the editor's replay runs (frames 0..12 for a last f of 13): %s" % str(s0ran.get("result")))
 
 	var broken: Dictionary = walk.duplicate(true)
 	broken["name"] = "walk_broken"
@@ -8830,6 +13803,16 @@ func _t_export_standalone_run() -> bool:
 	var fuk := _xf_run(flow_unknown, "flow_unknown")
 	_ok(fuk["code"] == 1 and str(fuk["out"]).contains("fail    steps[1] ?: unknown step: use one of click/type/wait/assert/input/inject/state") and str(fuk["out"]).contains("skip    steps[2] click: not run"),
 		"a step kind nobody knows fails the flow there (exit 1), as the editor's run does, and the rest is skipped")
+	# a ':' property path never names a node: the step fails at once (a 20 s step timeout is never waited out) and applies nothing
+	var flow_colon: Dictionary = flow.duplicate(true)
+	flow_colon["name"] = "flow_colon"
+	flow_colon["step_timeout_ms"] = 20000
+	flow_colon["steps"] = [{"inject": {"set": [{"node": "Player", "property": "health", "value": 0}, {"node": "Player:position", "property": "x", "value": 50}]}}, {"click": "Start"}]
+	var t_colon := Time.get_ticks_msec()
+	var fcran := _xf_run(flow_colon, "flow_colon")
+	var colon_took := Time.get_ticks_msec() - t_colon
+	_ok(fcran["code"] == 1 and str(fcran["out"]).contains("fail    steps[0] inject: inject set[1]: node 'Player:position' is not a node path: a ':' starts a property path") and str(fcran["out"]).contains("node=Player property=position:x") and str(fcran["out"]).contains("skip    steps[1] click: not run") and colon_took < 15000,
+		"an inject that names its node with a ':' property path fails the flow at once (exit 1, %d ms against a 20 s step timeout), with the split to use, as the editor's run does: %s" % [colon_took, str(fcran["out"]).get_slice("steps[0]", 1).left(160)])
 	var flow_viol: Dictionary = flow.duplicate(true)
 	flow_viol["name"] = "flow_viol"
 	flow_viol["invariants"] = [{"name": "alive", "expr": "get_node('Player').health > 0"}]
@@ -9115,7 +14098,7 @@ func _t_physics_overlap_runner() -> bool:
 		_rm_tree(_POR_DIR)
 		_wf(_POR_DIR + "/project.godot", "config_version=5\n\n[application]\n\nconfig/name=\"m5d_overlap_runner\"\n")
 		_wf(_POR_DIR + "/world.tscn", _POR_WORLD % str(variant[1]))
-		for f in ["core/path_guard.gd", "core/callargs.gd", "runtime/invariants.gd", "runtime/input_codec.gd", "runtime/game_state.gd", "runtime/physics_overlap.gd", "runtime/playtest_runner.gd", "runtime/playtest_runner.tscn"]:
+		for f in ["core/path_guard.gd", "core/callargs.gd", "core/typed_json.gd", "runtime/invariants.gd", "runtime/input_codec.gd", "runtime/game_state.gd", "runtime/physics_overlap.gd", "runtime/replay_perf.gd", "runtime/playtest_runner.gd", "runtime/playtest_runner.tscn"]:
 			_wf("%s/addons/beckett/%s" % [_POR_DIR, f], FileAccess.get_file_as_string("res://addons/beckett/" + f))
 		var suite := {"name": "scan", "scene": "res://world.tscn", "events": [{"type": "key", "keycode": "Right", "pressed": true, "f": 1.0}, {"type": "key", "keycode": "Right", "pressed": false, "f": 2.0}],
 			"asserts": [{"type": "no_overlap"}]}
@@ -9624,6 +14607,8 @@ class _WaitBridge extends RefCounted:
 	var connected := false
 	var paused := ""
 	var on_ready_queue: Array = []
+	var waiting_note := ""  # what the bridge says of an on_ready write the game has not answered yet (1.17)
+	var status: Dictionary = {}
 
 	func is_game_connected() -> bool:
 		return connected
@@ -9635,7 +14620,13 @@ class _WaitBridge extends RefCounted:
 		pass
 
 	func on_ready_status() -> Dictionary:
-		return {}
+		return status
+
+	func on_ready_settled() -> bool:
+		return on_ready_queue.is_empty() and waiting_note.is_empty()
+
+	func on_ready_wait_note() -> String:
+		return waiting_note
 
 
 ## wait_until condition=game_connected on a game that is paused in the debugger before it connected.
@@ -9661,6 +14652,537 @@ func _t_wait_break() -> bool:
 	wb.connected = false
 	var other: Dictionary = rt._wait_until({"condition": "seconds:0"})
 	_ok(str(other.get("text", "")).begins_with("condition met"), "other conditions are not touched by a pause")
+	return true
+
+
+# ---------------------------------------------------------------- 1.17 a busy game is late, not gone
+# The game reads the runtime channel once a frame and answers in order, so a long frame holds a command past any
+# timeout and the game still runs it when it catches up. These groups pin what the agent is told: the tail a timeout
+# gets from what its command does, the status polls that wait on, the on_ready write that is parked and read back, and
+# the frame clock behind playtest perf.
+
+## A loopback pair standing in for a connected game: [the editor's end, the game's end, the server], or [] when this
+## machine has no loopback listener.
+func _honest_pair() -> Array:
+	var srv := TCPServer.new()
+	if srv.listen(0, "127.0.0.1") != OK:
+		return []
+	var client := StreamPeerTCP.new()
+	client.connect_to_host("127.0.0.1", srv.get_local_port())
+	var game: StreamPeerTCP = null
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < 3000:
+		client.poll()
+		if game == null and srv.is_connection_available():
+			game = srv.take_connection()
+		if game != null and client.get_status() == StreamPeerTCP.STATUS_CONNECTED:
+			break
+		OS.delay_msec(5)
+	if game == null or client.get_status() != StreamPeerTCP.STATUS_CONNECTED:
+		srv.stop()
+		return []
+	return [client, game, srv]
+
+
+## What the game's end has received since it last looked.
+func _honest_wire(game: StreamPeerTCP) -> String:
+	OS.delay_msec(25)
+	game.poll()
+	var n := game.get_available_bytes()
+	return game.get_utf8_string(n) if n > 0 else ""
+
+
+## The game's end answers command `id`: one JSON line with the echoed _id.
+func _honest_answer(game: StreamPeerTCP, id: int, body: String) -> void:
+	game.put_data(('{"_id": %d, %s}\n' % [id, body]).to_utf8_buffer())
+
+
+func _honest_close(pair: Array) -> void:
+	(pair[0] as StreamPeerTCP).disconnect_from_host()
+	(pair[1] as StreamPeerTCP).disconnect_from_host()
+	(pair[2] as TCPServer).stop()
+
+
+func _t_honest_timeout_words() -> bool:
+	print("[unit] 1.17 a command with no answer: the timeout no longer says the game stopped, and a call site says what its command may still do")
+	var win := {"mode": "windowed", "placement": "own_window"}
+	var emb := {"mode": "embedded", "placement": "floating"}
+	var brk: String = RuntimeBridge.break_message({"broken": true, "sessions": 1, "broken_sessions": 1, "can_debug": false}, emb, 0x040600)
+	var longest := 0
+	var dashy := false
+	for gv in [win, emb]:
+		var head: String = RuntimeBridge._timeout_message(4000, gv)
+		_ok(head.begins_with("runtime timeout after 4000 ms: the game did not answer in time") and not head.contains("stopped answering") and not head.contains("retry"),
+			"the %s timeout says the game did not answer in time, never that it stopped, and never to retry" % str(gv["mode"]))
+		var t := {"ok": false, "error": head, "timeout": true}
+		var change: Dictionary = RuntimeBridge.with_kind(t, RuntimeBridge.KIND_CHANGE)
+		var read: Dictionary = RuntimeBridge.with_kind(t, RuntimeBridge.KIND_READ)
+		var ce := str(change["error"])
+		var re := str(read["error"])
+		_ok(ce.begins_with(head) and ce.contains("delivered, and the game may still run it when it catches up") and ce.contains("read the state back before you send it again") and bool(change.get("timeout", false)),
+			"%s: a change that timed out was delivered, may still run, and is read back before it is sent again" % str(gv["mode"]))
+		_ok(re.begins_with(head) and re.contains("only reads, so nothing changed") and re.ends_with("Ask again.") and not re.contains("read the state back"), "%s: a read that timed out changed nothing: ask again" % str(gv["mode"]))
+		_ok(not ce.contains(RuntimeBridge.BREAK_MARK) and not re.contains(RuntimeBridge.BREAK_MARK), "...and no timeout wording carries what a break check matches")
+		for text in [ce, re]:
+			longest = maxi(longest, text.length())
+			dashy = dashy or text.contains(String.chr(0x2014)) or text.contains(String.chr(0x2013))
+	_ok(longest <= 1000 and not dashy, "every timeout variant is at most 1000 characters (the longest is %d) and has no dash" % longest)
+	var late_brk := {"ok": false, "error": brk, "delivered": true}
+	var bc := str(RuntimeBridge.with_kind(late_brk, RuntimeBridge.KIND_CHANGE)["error"])
+	var br := str(RuntimeBridge.with_kind(late_brk, RuntimeBridge.KIND_READ)["error"])
+	_ok(bc.begins_with(brk) and bc.contains("delivered before the pause and runs when the game resumes") and bc.contains("read the state back"), "a break that began after the send: the change was delivered and runs when the game resumes")
+	_ok(br.ends_with("only reads, so nothing changed.") and not br.contains("Ask again"), "...and a read says nothing changed, with no 'ask again' (the pause comes first)")
+	var untouched := [{"ok": false, "error": brk}, {"ok": false, "error": "node not found: X"}, {"ok": false, "error": "game not running (no runtime connection)."}, {"ok": true, "after": 3}, {"ok": false, "timeout": true}]
+	var moved: Array = []
+	for r in untouched:
+		if RuntimeBridge.with_kind(r, RuntimeBridge.KIND_CHANGE) != r:
+			moved.append(str(r).left(60))
+	_ok(moved.is_empty(), "any answer but 'sent and not answered' comes back as it was: a pause before the send (nothing went out), a miss, no game, a success, a timeout with no text%s" % ("" if moved.is_empty() else ": " + str(moved)))
+	# Lite's own tools opt in as well: its reads say nothing changed, and set_debug_draw and game_logs clear=true change the game.
+	var ob = load("res://addons/beckett/tools/runtime_observe_tools.gd").new()
+	var osb := _SeqBridge.new()
+	var ofs := _FakeServer.new()
+	ofs.bridge = osb
+	ob.server = ofs
+	var t_late := {"ok": false, "error": RuntimeBridge._timeout_message(4000, win), "timeout": true}
+	osb.replies = {"get": t_late, "tree": t_late, "debug_draw": t_late, "logs": t_late}
+	var reads_ok: bool = str(ob._runtime_get({"path": "P", "property": "x"}).get("error", "")).ends_with("Ask again.") and str(ob._get_remote_tree({}).get("error", "")).ends_with("Ask again.") \
+		and str(ob._game_logs({}).get("error", "")).ends_with("Ask again.")
+	var changes_ok: bool = str(ob._set_debug_draw({"mode": "wireframe"}).get("error", "")).contains("may still run it") and str(ob._game_logs({"clear": true}).get("error", "")).contains("may still run it")
+	_ok(reads_ok and changes_ok, "Lite's tools opt in too: runtime_get_property, get_remote_tree and game_logs say nothing changed; set_debug_draw and game_logs clear=true may still run")
+	if ResourceLoader.exists(_PLAYTEST_TOOLS_PATH):
+		var PT = load(_PLAYTEST_TOOLS_PATH)
+		var worded: Dictionary = RuntimeBridge.with_kind({"ok": false, "error": RuntimeBridge._timeout_message(4000, win), "timeout": true}, RuntimeBridge.KIND_CHANGE)
+		_ok(PT.is_channel_error(str(worded["error"])) and not PT.is_break(str(worded["error"])), "playtest still reads a worded timeout as a channel error, not a pause")
+	return true
+
+
+func _t_honest_on_ready_busy() -> bool:
+	print("[unit] 1.17 play_scene on_ready on a busy game: a write answered late is parked, read back, and reported landed or failed, never failed for the wait")
+	var pair := _honest_pair()
+	if pair.is_empty():
+		print("  skip  no loopback pair on this machine")
+		return true
+	var game: StreamPeerTCP = pair[1]
+	var b = RuntimeBridge.new()
+	b.lite = false
+	b._peer = pair[0]
+	b.on_ready_wait_ms = 80
+	b.queue_on_ready([{"path": "A", "property": "x", "value": 1}, {"path": "B", "property": "position", "value": [1, 2, 3]}, {"path": "C", "property": "on", "value": true}])
+	_honest_answer(game, int(b._seq) + 1, "\"ok\": true, \"after\": 1")  # the game answers write 1 at once
+	b._drain_on_ready()
+	var wire := _honest_wire(game)
+	var st: Dictionary = b.on_ready_status()
+	_ok(wire.count("\"cmd\":\"set\"") == 2 and b.on_ready_report.size() == 1 and bool((b.on_ready_report[0] as Dictionary)["ok"]),
+		"write 1 is answered and reported; write 2 goes out and gets no answer in 80 ms; write 3 is not sent behind it")
+	_ok(not b.on_ready_settled() and int(st.get("pending", 0)) == 2 and int(st.get("failed", -1)) == 0 and str((st.get("waiting", {}) as Dictionary).get("target", "")) == "B" and b.on_ready_queue.size() == 1,
+		"...and nothing is called failed: status.waiting names B, pending counts it, and wait_until's condition is not met: %s" % str(st))
+	_ok(b.on_ready_wait_note().contains("on_ready write B.position") and b.on_ready_wait_note().contains("1 more queued"), "the note wait_until carries names the write and what waits behind it: %s" % b.on_ready_wait_note())
+	b._drain_on_ready()
+	_ok(_honest_wire(game).is_empty(), "while the game says nothing, the drain sends nothing: no read, no next write")
+	# The game catches up: write 2's late answer, then (in order) the answer to the read that follows it.
+	var s1: int = b._seq
+	_honest_answer(game, s1, "\"ok\": true, \"after\": \"(1, 2, 3)\"")
+	_honest_answer(game, s1 + 1, "\"ok\": true, \"value\": \"(1, 2, 3)\"")
+	OS.delay_msec(25)
+	b._drain_on_ready()
+	var wire2 := _honest_wire(game)
+	var w2: Dictionary = b.on_ready_report[1] if b.on_ready_report.size() > 1 else {}
+	_ok(wire2.contains("\"cmd\":\"get\"") and wire2.contains("\"prop\":\"position\"") and wire2.count("\"cmd\":\"set\"") == 1, "once the game answers again, B.position is read back, then write 3 goes out")
+	_ok(bool(w2.get("ok", false)) and int(w2.get("late_ms", -1)) >= 80 and str(w2.get("after", "")) == "(1, 2, 3)" and not w2.has("error"), "write 2 is reported LANDED, late (late_ms %d), with the value read back" % int(w2.get("late_ms", -1)))
+	# Write 3 met the same busy game: parked too, and this time the value read back is not the one written.
+	var s2: int = b._seq
+	_honest_answer(game, s2, "\"ok\": true, \"after\": true")
+	_honest_answer(game, s2 + 1, "\"ok\": true, \"value\": false")
+	OS.delay_msec(25)
+	b._drain_on_ready()
+	var w3: Dictionary = b.on_ready_report[2] if b.on_ready_report.size() > 2 else {}
+	_ok(not bool(w3.get("ok", true)) and str(w3.get("error", "")).contains("reads back as false, not the true written") and w3.get("after") == false and int(w3.get("late_ms", -1)) >= 80 and not w3.has("unknown"),
+		"a value read back that is not the one written is FAILED, with the value read: %s" % str(w3.get("error", "")))
+	var done: Dictionary = b.on_ready_status()
+	_ok(b.on_ready_settled() and int(done["failed"]) == 1 and int(done["pending"]) == 0 and not done.has("waiting") and not done.has("unknown"), "the batch settles: three reported, one failed, nothing waiting")
+	# A late answer saying the node is not there yet: the write did not land, so it goes out again, and the spawning
+	# grace starts over (the time it waited went to the game's stall).
+	b.queue_on_ready([{"path": "Late", "property": "x", "value": 2}])
+	b._drain_on_ready()
+	_honest_wire(game)
+	var s3: int = b._seq
+	_honest_answer(game, s3, "\"ok\": false, \"error\": \"node not found: Late\"")
+	_honest_answer(game, s3 + 1, "\"ok\": false, \"error\": \"node not found: Late\"")
+	OS.delay_msec(25)
+	var before := Time.get_ticks_msec()
+	b._drain_on_ready()
+	var wire3 := _honest_wire(game)
+	_ok(b.on_ready_report.is_empty() and wire3.contains("\"cmd\":\"get\"") and wire3.contains("\"cmd\":\"set\"") and int(b._on_ready_deadline) >= before + RuntimeBridge.ON_READY_GRACE_MS - 50,
+		"a late 'node not found': nothing is reported, the write goes out again, and its spawning grace starts over")
+	_honest_close(pair)
+	b.free()
+	return true
+
+
+func _t_honest_on_ready_unknown() -> bool:
+	print("[unit] 1.17 on_ready: a write with no answer by the cap is unknown (never failed), what waits behind it is not sent, and a debugger pause does not use up the wait")
+	var pair := _honest_pair()
+	if pair.is_empty():
+		print("  skip  no loopback pair on this machine")
+		return true
+	var game: StreamPeerTCP = pair[1]
+	var b = RuntimeBridge.new()
+	b.lite = false
+	b._peer = pair[0]
+	b.on_ready_wait_ms = 60
+	b.on_ready_late_ms = 400
+	b.queue_on_ready([{"path": "A", "property": "x", "value": 1}, {"path": "B", "property": "y", "value": 2}])
+	b._drain_on_ready()
+	var watch := _FakeWatch.new()
+	b.break_watch = watch
+	watch.state = {"broken": true, "sessions": 1, "broken_sessions": 1, "can_debug": false}
+	b._drain_on_ready()
+	OS.delay_msec(450)
+	b._drain_on_ready()
+	_ok(not b.on_ready_settled() and b.on_ready_report.is_empty() and _honest_wire(game).count("\"cmd\"") == 1, "paused in the debugger past the cap: still waiting, nothing asked, nothing reported (a pause is not the game's delay)")
+	watch.state = {}
+	b._drain_on_ready()
+	_ok(not b.on_ready_settled() and b.on_ready_report.is_empty(), "...and once it resumes the clock goes on from where the pause stopped it")
+	OS.delay_msec(420)
+	b._drain_on_ready()
+	var rep: Array = b.on_ready_report
+	var st: Dictionary = b.on_ready_status()
+	var e0 := str((rep[0] as Dictionary).get("error", "")) if rep.size() > 0 else ""
+	var e1 := str((rep[1] as Dictionary).get("error", "")) if rep.size() > 1 else ""
+	_ok(rep.size() == 2 and bool((rep[0] as Dictionary).get("unknown", false)) and not bool(rep[0]["ok"]) and e0.contains("has not answered this write in 400 ms") and e0.contains("runtime_get_property"),
+		"past the cap the write is UNKNOWN, with the way to check it: %s" % e0)
+	_ok(e1 == "not sent: the game has not answered an earlier on_ready write in 400 ms" and b.on_ready_settled() and int(st.get("unknown", 0)) == 1 and int(st.get("failed", 0)) == 1,
+		"...the write behind it is NOT SENT, the batch settles, and the status counts one unknown and one failed: %s" % str(st))
+	_ok(_honest_wire(game).contains("\"cmd\":\"get\""), "...after one last read at the cap, which the game did not answer either")
+	_honest_close(pair)
+	b.free()
+	return true
+
+
+func _t_honest_on_ready_lost() -> bool:
+	print("[unit] 1.17 on_ready: a game that pauses or goes away is reported as such, and its writes never reach the next game")
+	var pair := _honest_pair()
+	if pair.is_empty():
+		print("  skip  no loopback pair on this machine")
+		return true
+	var game: StreamPeerTCP = pair[1]
+	var b = RuntimeBridge.new()
+	b.lite = false
+	b._peer = pair[0]
+	b.on_ready_wait_ms = 60
+	var watch := _FakeWatch.new()
+	b.break_watch = watch
+	watch.state = {"broken": true, "sessions": 1, "broken_sessions": 1, "can_debug": false}
+	b.queue_on_ready([{"path": "A", "property": "x", "value": 1}, {"path": "B", "property": "y", "value": 2}])
+	b._drain_on_ready()
+	var rep: Array = b.on_ready_report
+	var all_paused := rep.size() == 2 and rep.all(func(e): return str((e as Dictionary).get("error", "")) == "not sent: the game is paused in the debugger")
+	_ok(all_paused and b.on_ready_settled() and _honest_wire(game).is_empty(), "paused in the debugger before a write went out: every write is NOT SENT, with why, and nothing reached the game: %s" % str(rep))
+	_ok(int(b.on_ready_status()["failed"]) == 2 and not b.on_ready_status().has("unknown"), "...counted as not landed (failed), not as unknown")
+	watch.state = {}
+	# The game disconnects while a write waits.
+	b.queue_on_ready([{"path": "A", "property": "x", "value": 1}, {"path": "B", "property": "y", "value": 2}])
+	b._drain_on_ready()
+	b.running = true
+	game.disconnect_from_host()
+	var t0 := Time.get_ticks_msec()
+	while b._peer != null and Time.get_ticks_msec() - t0 < 3000:
+		b.poll_once()
+		OS.delay_msec(10)
+	b.running = false
+	var lost: Array = b.on_ready_report
+	_ok(b._peer == null and lost.size() == 2 and bool((lost[0] as Dictionary).get("unknown", false)) and str(lost[0].get("error", "")).begins_with("the game disconnected before it answered this write")
+		and str(lost[1].get("error", "")) == "not sent: the game disconnected" and b.on_ready_settled(),
+		"the game disconnects while a write waits: that write is UNKNOWN, the one behind it NOT SENT, and the queue is empty, so nothing rides into the next game: %s" % str(lost))
+	# A batch no game has taken yet is for the next one: a drop or a takeover does not touch it.
+	b.queue_on_ready([{"path": "Z", "property": "x", "value": 1}])
+	b._on_ready_lost(pair[0], "the game disconnected")
+	_ok(b.on_ready_queue.size() == 1 and b.on_ready_report.is_empty(), "a batch queued for the next game is untouched when the last one goes")
+	# The next game takes it when it is promoted: one that says hello and drops before a write is tried (a crash on its
+	# first frame) has the batch reported, and the game after it (the person's own F5 run carries the token too) gets none.
+	b._pending = pair[0]
+	b._promote()
+	b._on_ready_lost(pair[0], "the game disconnected")
+	_ok(b.on_ready_settled() and b.on_ready_report.size() == 1 and str((b.on_ready_report[0] as Dictionary).get("error", "")) == "not sent: the game disconnected",
+		"the launched game drops before its first write is tried: the batch is reported not sent, never handed to the next game: %s" % str(b.on_ready_report))
+	# A batch a game has taken, when another game connects: reported, not handed over.
+	var p2 := _honest_pair()
+	var p3 := _honest_pair()
+	if p2.is_empty() or p3.is_empty():
+		print("  skip  a second loopback pair did not connect")
+		_honest_close(pair)
+		b.free()
+		return true
+	var c = RuntimeBridge.new()
+	c.lite = false
+	c._peer = p2[0]
+	c.on_ready_wait_ms = 60
+	c.queue_on_ready([{"path": "A", "property": "x", "value": 1}, {"path": "B", "property": "y", "value": 2}])
+	c._drain_on_ready()
+	c._pending = p3[0]
+	c._promote()
+	var over: Array = c.on_ready_report
+	_ok(c._peer == p3[0] and over.size() == 2 and str(over[0].get("error", "")).begins_with("another game connected before it answered this write") and str(over[1].get("error", "")) == "not sent: another game connected" and c.on_ready_settled(),
+		"another game takes the channel while a write waits: reported, and the new game is never handed the old batch: %s" % str(over))
+	_honest_close(pair)
+	_honest_close(p2)
+	_honest_close(p3)
+	b.free()
+	c.free()
+	return true
+
+
+func _t_honest_read_back() -> bool:
+	print("[unit] 1.17 on_ready read-back: the value read back is judged with the coercion the game's own write uses")
+	var rows := [
+		[[1, 2, 3], "(1, 2, 3)", 1], ["Vector3(1, 2, 3)", "(1, 2, 3)", 1], ["1 2 3", "(1, 2, 3)", 1], [{"x": 1, "y": 2, "z": 3}, "(1, 2, 3)", 1],
+		["(1, 2, 3)", "(1, 2, 3)", 1], [[1, 2, 3.5], "(1, 2, 3)", 0], ["nonsense", "(1, 2, 3)", 0], [[1, 2], "(1, 2)", 1],
+		["#ff0000", "(1, 0, 0, 1)", 1], ["red", "(1, 0, 0, 1)", 1], [[1, 0, 0], "(1, 0, 0, 1)", 1], [[0, 1, 0], "(1, 0, 0, 1)", 0],
+		[0.1, 0.1, 1], [5, 5.0, 1], ["5", 5.0, 1], [5, 6.0, 0], ["many", 5.0, 0],
+		[true, true, 1], ["true", true, 1], [1, true, 1], [true, false, 0],
+		["hello", "hello", 1], ["hello", "world", 0], [null, null, 1], ["x", null, -1], ["Player", "<Node#123>", -1], [{"a": 1}, [1, 2], -1],
+	]
+	# A struct str() prints in brackets, as the game's get answers it: var_to_str writes a matrix by rows and str() by
+	# columns, so a rotated one pins the order. Then the spellings a StringName or NodePath write takes, and a cleared path.
+	var t3 := Transform3D(Basis(Vector3.UP, 0.5), Vector3(0, 6, 11))
+	var t2 := Transform2D(0.3, Vector2(5, 5))
+	var bs := Basis(Vector3(1, 0, 0), 0.25)
+	var at := str(Transform3D(Basis.IDENTITY, Vector3(0, 6, 11)))
+	rows.append_array([
+		[var_to_str(t3), str(t3), 1], ["Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 6, 11)", at, 1], ["Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 6, 12)", at, 0],
+		[var_to_str(t2), str(t2), 1], [var_to_str(bs), str(bs), 1], [var_to_str(bs), str(Basis.IDENTITY), 0], [[0, 6, 11], at, 0],
+		[[0, 0, 10, 10], str(Rect2(0, 0, 10, 10)), 1], ["Rect2(0, 0, 10, 10)", str(Rect2(0, 0, 10, 10)), 1], [[0, 0, 10, 11], str(Rect2(0, 0, 10, 10)), 0],
+		["Rect2i(0, 0, 10, 10)", str(Rect2i(0, 0, 10, 10)), 1], ["AABB(0, 0, 0, 1, 1, 1)", str(AABB(Vector3.ZERO, Vector3.ONE)), 1],
+		["Plane(0, 1, 0, 2)", str(Plane(0, 1, 0, 2)), 1], ["Plane(0, 1, 0, 3)", str(Plane(0, 1, 0, 2)), 0], ["Quaternion(0, 0, 0, 1)", str(Quaternion.IDENTITY), 1],
+		["x", "[X: (1.0, 2.0), Y: (inf, 0.0)]", -1], ["[Note: bye]", "[Note: hi]", 0],
+		["&\"walkable\"", "walkable", 1], ["StringName(\"walkable\")", "walkable", 1], ["^\"A/B\"", "A/B", 1], [null, "", 1], [null, "A/B", 0],
+	])
+	var bad: Array = []
+	for row in rows:
+		var v: int = RuntimeBridge.read_back_verdict(row[0], row[1])
+		if v != int(row[2]):
+			bad.append("%s vs %s -> %d, wanted %d" % [str(row[0]), str(row[1]), v, int(row[2])])
+	_ok(bad.is_empty(), "%d spellings of a written value judged against what the game reads back: same 1, different 0, cannot tell -1%s" % [rows.size(), "" if bad.is_empty() else ": " + "; ".join(PackedStringArray(bad))])
+	return true
+
+
+func _t_honest_wait_busy() -> bool:
+	print("[unit] 1.17 wait_until game_connected names the on_ready write a busy game has not answered, and get_play_state shows it")
+	var wb := _WaitBridge.new()
+	wb.connected = true
+	wb.waiting_note = "the game is connected, and on_ready write CameraRig.position was sent 3.1 s ago and is not answered yet: a busy game answers late, and the report then says how late"
+	var fs := _FakeServer.new()
+	fs.bridge = wb
+	var rt = RunTools.new()
+	rt.server = fs
+	var t0 := Time.get_ticks_msec()
+	var busy: Dictionary = rt._wait_until({"condition": "game_connected", "timeout_ms": 100})
+	_ok(str(busy.get("error", "")) == "not yet: game_connected (%s). Call wait_until again." % wb.waiting_note and Time.get_ticks_msec() - t0 >= 90,
+		"a connected game with an unanswered write: 'not yet', naming the write, not the per-call cap")
+	wb.waiting_note = ""
+	_ok(str(rt._wait_until({"condition": "game_connected"}).get("text", "")).begins_with("condition met: game_connected"), "...and met once the write has settled")
+	wb.connected = false
+	_ok(str(rt._wait_until({"condition": "game_connected", "timeout_ms": 100}).get("error", "")).contains("per-call cap"), "a game not connected yet keeps the old answer")
+	wb.connected = true
+	wb.status = {"applied": [], "pending": 1, "failed": 0, "waiting": {"target": "CameraRig", "property": "position", "waited_ms": 3100}}
+	var prt := _PlayRT.new()
+	prt.server = fs
+	var state: Dictionary = (prt._get_play_state({}) as Dictionary)["json"]
+	_ok(str(((state.get("on_ready", {}) as Dictionary).get("waiting", {}) as Dictionary).get("target", "")) == "CameraRig", "get_play_state shows the write the game has not answered yet")
+	return true
+
+
+func _t_honest_frame_clock() -> bool:
+	print("[unit] 1.17 perf frame clock: frame_ms is the wall time from one frame to the next, timed by the game, not Godot's once-a-second monitor")
+	var c = ReplayPerf.new()
+	c.begin()
+	c.frame(1000000)
+	c.frame(1010000)
+	c.frame(1026000)
+	c.end()
+	c.frame(1500000)
+	var s: Dictionary = c.summary()
+	_ok(int(s["frames"]) == 2 and is_equal_approx(float(s["frame_ms_min"]), 10.0) and is_equal_approx(float(s["frame_ms_max"]), 16.0),
+		"two intervals between three frame starts (10 and 16 ms): the first call only sets the start, and end() stops the clock")
+	var even := PackedFloat64Array()
+	for i in 120:
+		even.append(10.0)
+	_ok(is_equal_approx(ReplayPerf.fps_min_of(even), 100.0), "120 frames of 10 ms: fps_min 100")
+	var short := PackedFloat64Array()
+	for i in 30:
+		short.append(1000.0 / 60.0)
+	_ok(is_equal_approx(ReplayPerf.fps_min_of(short), 60.0), "a window shorter than a second reads its own rate (60)")
+	var hitch := PackedFloat64Array()
+	for i in 60:
+		hitch.append(1000.0 / 60.0)
+	hitch.append(300.0)
+	for i in 60:
+		hitch.append(1000.0 / 60.0)
+	var fm: float = ReplayPerf.fps_min_of(hitch)
+	_ok(fm >= 42.5 and fm <= 43.5, "a 300 ms hitch among 60 fps frames: the slowest second runs at about 43 fps (%s)" % str(fm))
+	_ok(is_equal_approx(ReplayPerf.fps_min_of(PackedFloat64Array([1200.0])), 0.8) and ReplayPerf.fps_min_of(PackedFloat64Array()) == 0.0, "one 1200 ms frame reads 0.8 fps; nothing timed reads 0")
+	c.begin()
+	for i in ReplayPerf.CAP + 12:
+		c.frame(i * 1000)
+	_ok(c._ms.size() == ReplayPerf.CAP, "a runaway window keeps at most CAP intervals (%d)" % c._ms.size())
+	c.begin()
+	var t := 0
+	c.frame(t)
+	for i in 3:
+		t += 16667
+		c.frame(t)
+	var r: Dictionary = c.summary()
+	_ok(is_equal_approx(float(r["frame_ms_avg"]), 16.67) and is_equal_approx(float(r["fps_avg"]), 60.0), "ms to 0.01 and fps to 0.1: 16.667 ms reads 16.67, at 60.0 fps")
+	var rt = MCPRuntime.new()
+	var fp: Dictionary = rt._dispatch({"cmd": "fingerprint"})
+	_ok(str(fp.get("perf_clock", "")) == str(ReplayPerf.CLOCK) and ReplayPerf.CLOCK == 2, "the game's fingerprint names the clock that timed its frames (perf_clock %s)" % str(fp.get("perf_clock", "")))
+	rt.free()
+	return true
+
+
+## A node that spends 5 ms in every _process: what every frame interval must hold.
+class _HonestSlowFrame extends Node:
+	func _process(_delta: float) -> void:
+		OS.delay_msec(5)
+
+
+func _t_honest_frame_clock_live() -> bool:
+	print("[unit] 1.17 perf frame clock in a running runtime: the replay window times each real frame, and replay_status carries it at the close")
+	await process_frame
+	var slow := _HonestSlowFrame.new()
+	root.add_child(slow)
+	var rt = MCPRuntime.new()
+	rt._port = 9067  # nothing listens there: this runtime's dial must not reach an editor on the default port
+	root.add_child(rt)
+	await process_frame
+	if rt._step_clock() == null:
+		print("  skip  the replay window runs on the tick clock (Lite trims runtime/step_clock.gd)")
+		rt.queue_free()
+		slow.queue_free()
+		await process_frame
+		return true
+	var t_open := Time.get_ticks_usec()
+	var opened: Dictionary = rt._dispatch({"cmd": "replay_open", "events": [], "settle_frames": 20})
+	var mid: Dictionary = rt._dispatch({"cmd": "replay_status"})
+	_ok(bool(opened.get("ok", false)) and bool(mid.get("replaying", false)) and (mid.get("perf", {"x": 1}) as Dictionary).is_empty(), "while the window runs, replay_status carries no perf: it is read once, at the close")
+	var t0 := Time.get_ticks_msec()
+	while rt._step_clock().is_replay() and Time.get_ticks_msec() - t0 < 4000:
+		await process_frame
+	var t_close := Time.get_ticks_usec()
+	var done: Dictionary = rt._dispatch({"cmd": "replay_status"})
+	var perf: Dictionary = done.get("perf", {}) if done.get("perf", {}) is Dictionary else {}
+	var series: PackedFloat64Array = rt._replay_perf._ms
+	var total := 0.0
+	for v in series:
+		total += v
+	var wall := float(t_close - t_open) / 1000.0
+	_ok(not bool(done.get("replaying", true)) and int(perf.get("frames", 0)) >= 10 and int(perf.get("frames", 0)) == series.size(), "after the close, perf counts the frames timed in the window (%d)" % int(perf.get("frames", 0)))
+	_ok(float(perf.get("frame_ms_min", 0.0)) >= 4.5, "every interval holds the 5 ms a node spends in each _process (min %.2f ms): measured, whatever the pacing" % float(perf.get("frame_ms_min", 0.0)))
+	_ok(float(perf.get("frame_ms_max", 0.0)) >= float(perf.get("frame_ms_p95", 0.0)) and float(perf.get("frame_ms_p95", 0.0)) >= float(perf.get("frame_ms_min", 0.0))
+		and absf(float(perf.get("fps_avg", 0.0)) - 1000.0 / maxf(0.01, float(perf.get("frame_ms_avg", 0.0)))) <= 0.5,
+		"min <= p95 <= max, and fps_avg is the same clock (%.1f fps at %.2f ms)" % [float(perf.get("fps_avg", 0.0)), float(perf.get("frame_ms_avg", 0.0))])
+	_ok(total <= wall + 1.0 and total >= 0.5 * wall, "the intervals add up to the window's wall time and no more (%.1f of %.1f ms)" % [total, wall])
+	_ok(not rt._replay_perf.active, "the clock stops when the window closes")
+	paused = false  # the window re-pauses the tree when it closes, as it does in a game
+	rt.queue_free()
+	slow.queue_free()
+	await process_frame
+	return true
+
+
+func _t_honest_status_polls() -> bool:
+	print("[unit] 1.17 status polls: one poll a busy game answers late is 'not yet', not the end of the step, the flow or the replay")
+	var rt_path := "res://addons/beckett/tools/runtime_tools.gd"
+	if not ResourceLoader.exists(rt_path):
+		print("  skip  runtime_tools.gd is a Full module (Lite build)")
+		return true
+	var late := {"ok": false, "error": RuntimeBridge._timeout_message(1500, {"mode": "windowed"}), "timeout": true}
+	var sb := _SeqBridge.new()
+	var fs := _FakeServer.new()
+	fs.bridge = sb
+	var drive = load(rt_path).new()
+	drive.server = fs
+	sb.replies = {"tc_step_status": [late, {"ok": true, "in_step": true, "frames": 1}, {"ok": true, "in_step": false, "frames": 3, "physics_frames_after": 13, "paused": true}]}
+	var stepped: Dictionary = drive._tc_poll_window(2000)
+	_ok(not stepped.has("error") and int(stepped.get("frames", 0)) == 3 and sb.sent.count("tc_step_status") == 3, "time_control step: a status poll answered late is waited past, and the closed window is reported (%s)" % str(stepped).left(80))
+	sb.clear()
+	var brk: String = RuntimeBridge.break_message({"broken": true, "sessions": 1, "broken_sessions": 1, "can_debug": false}, {"mode": "windowed"}, 0x040600)
+	sb.replies = {"tc_step_status": [{"ok": false, "error": brk}]}
+	_ok(str(drive._tc_poll_window(2000).get("error", "")) == brk and sb.sent.count("tc_step_status") == 1, "...while a game paused in the debugger still ends the poll at once, with the pause")
+	sb.clear()
+	sb.replies = {"tc_step_status": [late]}
+	var mute: Dictionary = drive._tc_poll_window(200)
+	_ok(str(mute.get("error", "")).begins_with("the game answered no status poll while stepping") and str(mute["error"]).contains("time_control op=status"), "...and a game that answers no poll within the cap is told the step still runs: %s" % str(mute.get("error", "")))
+	sb.clear()
+	sb.replies = {"ui_do_open": {"ok": true, "started": true}, "ui_do_status": [late, {"ok": true, "done": false, "current": 0, "total": 1}, {"ok": true, "done": true, "failed": false, "total": 1, "results": [{"status": "pass"}]}]}
+	var flow: Dictionary = drive._ui_do({"steps": [{"wait": {"ms": 1}}]})
+	_ok(flow.has("json") and bool((flow["json"] as Dictionary).get("done", false)) and int((flow["json"] as Dictionary).get("completed", 0)) == 1, "ui_do op=run: a late status poll is not the end of the flow (%s)" % str(flow).left(80))
+	sb.clear()
+	sb.replies = {"type_text": {"ok": true, "per_frame": true, "queued": 3, "path": "Edit"}, "type_status": [late, {"ok": true, "done": false, "typed": 1}, {"ok": true, "done": true, "typed": 3, "path": "Edit", "text_after": "abc"}]}
+	var typed: Dictionary = drive._type_text({"text": "abc", "per_frame": true, "path": "Edit"})
+	_ok(str(typed.get("text", "")).begins_with("typed 3 char(s) into Edit frame-by-frame"), "type_text per_frame: a late status poll is waited past (%s)" % str(typed).left(80))
+	sb.clear()
+	sb.replies = {"type_text": {"ok": true, "per_frame": true, "queued": 1, "path": "Edit"}, "type_status": [late]}
+	var never: Dictionary = drive._type_text({"text": "a", "per_frame": true, "path": "Edit"})
+	_ok(str(never.get("error", "")).contains("answered no status poll") and str(never["error"]).contains("read the field back"), "...and with no status at all it says the game may still be typing")
+	sb.clear()
+	sb.replies = {"set": late}
+	_ok(str(drive._runtime_set({"path": "P", "property": "x", "value": 1}).get("error", "")).contains("may still run it when it catches up"), "runtime_set_property: a timeout says the write may still land, so read it back before sending it again")
+	sb.clear()
+	sb.replies = {"tc_status": late}
+	_ok(str(drive._time_control({"op": "status"}).get("error", "")).ends_with("Ask again."), "time_control op=status: a timeout says nothing changed")
+	sb.clear()
+	sb.replies = {"input": [{"ok": true, "dispatched": 1}, late]}
+	var replayed_in: Dictionary = drive._replay_input({"events": [{"type": "key"}, {"type": "key"}, {"type": "key"}]})
+	_ok(str(replayed_in.get("error", "")).begins_with("event 2 of 3 got no answer, so 1 event(s) after it were not sent (1 replayed before it). runtime timeout")
+		and str(replayed_in["error"]).contains("may still run it when it catches up") and sb.sent.count("input") == 2,
+		"replay_input: an event with no answer ends the replay, and what was not sent is said, not counted as replayed: %s" % str(replayed_in.get("error", "")).left(100))
+	var pt = _pt_with(sb)
+	sb.clear()
+	sb.replies = {"replay_open": {"ok": true, "end_frame": 2}, "replay_status": [late, {"ok": true, "replaying": true}, {"ok": true, "replaying": false, "injected": 0, "frames": 3, "perf": {}}]}
+	var replayed: Dictionary = pt._replay_window([], 2)
+	_ok(not replayed.has("error") and str(replayed.get("mode", "")) == "deterministic" and sb.sent.count("replay_status") == 3, "playtest: a replay_status poll answered late is waited past (%s)" % str(replayed).left(80))
+	sb.clear()
+	sb.replies = {"ui_do_open": {"ok": true}, "ui_do_status": [late, {"ok": true, "done": true, "failed": false, "results": [{"status": "pass"}]}], "tc_freeze": {"ok": true}}
+	var steps_run: Dictionary = pt._run_steps("zz_unit_late", {}, [{"wait": {"ms": 1}}], [])
+	_ok(steps_run.has("json") and str((steps_run["json"] as Dictionary).get("verdict", "")) == "pass", "playtest: a ui_do_status poll answered late is waited past too (%s)" % str(steps_run).left(80))
+	return true
+
+
+func _t_honest_perf_clock_baseline() -> bool:
+	print("[unit] 1.17 perf baselines: one timed by the old clock is labelled not comparable, through the clock the game names")
+	var PT = load(_PLAYTEST_TOOLS_PATH)
+	var fp := {"os": "Windows", "gpu": "GPU A", "display": "windows", "suite": "abc"}
+	var now := fp.duplicate()
+	now["perf_clock"] = "2"
+	var old: Dictionary = PT.fingerprint_compare(fp, now)
+	_ok(old["comparable"] == false and (old["mismatch"] as Dictionary).keys() == ["perf_clock"] and old["mismatch"]["perf_clock"] == ["1", "2"],
+		"a baseline that names no clock was timed by clock 1: not comparable with a clock-2 run, named [\"1\", \"2\"]")
+	var legacy: Dictionary = PT.fingerprint_compare(null, now)
+	_ok(legacy["comparable"] == false and (legacy["mismatch"] as Dictionary).get("perf_clock") == ["1", "2"], "...and so is a baseline from before 1.16 with no fingerprint at all, once this run names its clock")
+	_ok(PT.fingerprint_compare(now, now.duplicate())["comparable"] == true, "two clock-2 fingerprints compare as before")
+	_ok(PT.fingerprint_compare(null, fp)["comparable"] == "unknown" and PT.fingerprint_compare(fp, fp)["comparable"] == true, "a run whose game names no clock (an older runtime) compares exactly as before")
+	var behind: Dictionary = PT.fingerprint_compare(now, fp)
+	var behind_note: String = PT.comparability_note(behind)
+	_ok(behind["comparable"] == false and behind["mismatch"].get("perf_clock") == ["2", "1"] and behind_note.contains("perf_clock 2 -> 1") and behind_note.contains("older than Beckett 1.17")
+		and behind_note.contains("Restart the game") and not behind_note.contains("save_baseline"),
+		"a clock-2 baseline read by a game still on an older runtime is not comparable either, and the note says to restart the game, not to re-capture: %s" % behind_note)
+	var other := now.duplicate()
+	other["gpu"] = "GPU B"
+	var note: String = PT.comparability_note(PT.fingerprint_compare(fp, other))
+	_ok(note.contains("NOT COMPARABLE") and note.contains("once-a-second") and note.contains("1.17") and note.contains("perf_clock 1 -> 2") and note.contains("gpu GPU A -> GPU B")
+		and note.contains("save_baseline=true") and note.contains("Absolute perf asserts are not affected") and not note.contains(String.chr(0x2014)),
+		"the note says the old baseline is another measurement, names what else differs, and how to fix it: %s" % note)
+	var pt = PT.new()
+	var fsv := _FakeServer.new()
+	var fb := _FakeBridge.new()
+	fb.reply = {"ok": true, "gpu": "GPU A", "display": "windows", "perf_clock": "7"}
+	fsv.bridge = fb
+	pt.server = fsv
+	_ok(str(pt._fingerprint({"events": []}).get("perf_clock", "")) == "7", "op=run stamps the clock the GAME names into the fingerprint, not one of its own")
+	fb.reply = {"ok": true, "gpu": "GPU A", "display": "windows"}
+	_ok(not pt._fingerprint({"events": []}).has("perf_clock"), "...and a game that names none (an older runtime) gets none")
 	return true
 
 
@@ -10001,7 +15523,7 @@ func _t_review_early_end() -> bool:
 
 	# --- the headless runner (a node inside the game's tree), in a project that has only what it needs
 	_wf(_XF_DIR + "/project.godot", "config_version=5\n\n[application]\n\nconfig/name=\"review_runner_fixture\"\n")
-	for f in ["core/path_guard.gd", "core/callargs.gd", "runtime/invariants.gd", "runtime/input_codec.gd", "runtime/game_state.gd", "runtime/physics_overlap.gd", "runtime/playtest_runner.gd", "runtime/playtest_runner.tscn"]:
+	for f in ["core/path_guard.gd", "core/callargs.gd", "core/typed_json.gd", "runtime/invariants.gd", "runtime/input_codec.gd", "runtime/game_state.gd", "runtime/physics_overlap.gd", "runtime/replay_perf.gd", "runtime/playtest_runner.gd", "runtime/playtest_runner.tscn"]:
 		_wf("%s/addons/beckett/%s" % [_XF_DIR, f], FileAccess.get_file_as_string("res://addons/beckett/" + f))
 	_wf(_XF_DIR + "/quitter.gd", _EE_QUITTER)
 	_wf(_XF_DIR + "/quitter.tscn", _ee_scene("quitter.gd"))
@@ -10407,6 +15929,145 @@ func _t_review_untrusted_replies() -> bool:
 	return true
 
 
+# ---------------------------------------------------------------- ':' targets: a NodePath's subnames are a property path
+#
+# get_node_or_null(NodePath("Ground:material_override")) ignores the subname and answers with Ground, so through 1.16.0 an editor
+# tool target spelled Node:prop WAS the node: describe_object described the MeshInstance3D (seen live on 4.6.2), set_resource reported
+# a Shader assigned to a Sprite2D, delete_node deleted the node. A ':' target now walks into what the property holds or matches
+# nothing, and a lookup that needs a node never takes one. A plain engine run has no EditorInterface, so the tool checks below stay
+# on what the tools answer before an edited scene is asked for: resource targets, and misses.
+
+## A running game whose resolver answers "describe" for the node a ':' path starts with, as the real one does.
+class _ColonGame extends RefCounted:
+	var sent: Array = []
+
+	func is_game_connected() -> bool:
+		return true
+
+	func send_command(cmd: Dictionary, _timeout_ms: int = 0) -> Dictionary:
+		sent.append(str(cmd.get("cmd", "")))
+		return {"ok": true, "class": "MeshInstance3D", "resolved": "Ground", "properties": {}}
+
+
+## What the reflection and resource tools ask of their server: no undo history here, so they write directly.
+class _ColonServer extends RefCounted:
+	var bridge
+
+	func get_undo_redo():
+		return null
+
+
+func _t_colon_targets() -> bool:
+	print("[unit] ':' targets: Node:prop is the object the property holds, or nothing, never the node")
+	await process_frame
+	var scene := Node.new()
+	scene.name = "ZzColonScene"
+	root.add_child(scene)
+	var fx := Sprite2D.new()
+	fx.name = "ZzFx"
+	scene.add_child(fx)
+	var shader := Shader.new()
+	shader.code = "shader_type canvas_item;\nuniform float strength : hint_range(0.0, 1.0) = 0.5;\nvoid fragment() { COLOR.a *= strength; }\n"
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	fx.material = mat
+	var view := SubViewportContainer.new()  # the live repro's path: PixelView/SubViewport/Ground
+	view.name = "PixelView"
+	scene.add_child(view)
+	var sub := SubViewport.new()
+	sub.name = "SubViewport"
+	view.add_child(sub)
+	var ground := MeshInstance3D.new()
+	ground.name = "Ground"
+	ground.mesh = BoxMesh.new()
+	var mat3 := ShaderMaterial.new()
+	ground.material_override = mat3
+	var surface := StandardMaterial3D.new()
+	ground.set_surface_override_material(0, surface)
+	sub.add_child(ground)
+	var panel := Panel.new()
+	panel.name = "ZzPanel"
+	scene.add_child(panel)
+	var box := StyleBoxFlat.new()
+	panel.add_theme_stylebox_override("panel", box)
+	Reflect.scene_root_override = scene
+
+	# --- the resolver
+	_ok(Reflect.resolve("PixelView/SubViewport/Ground:material_override") == mat3, "the live repro: Ground:material_override is the ShaderMaterial, not the MeshInstance3D")
+	_ok(Reflect.resolve("PixelView/SubViewport/Ground/material_override") == mat3 and Reflect.resolve("Ground:material_override") == mat3,
+		"...the '/' spelling reaches the same object, and so does a bare node name before the ':' (the '/' walk needs the full path)")
+	_ok(Reflect.resolve("ZzFx:material:shader") == shader and Reflect.resolve("ZzFx/material:shader") == shader and Reflect.resolve("ZzFx/material/shader") == shader,
+		"each ':' segment is one more property, and a '/' walk can come before them")
+	_ok(Reflect.resolve("PixelView/SubViewport/Ground:surface_material_override/0") == surface and Reflect.resolve("ZzPanel:theme_override_styles/panel") == box,
+		"a property name with a '/' in it is one segment after a ':' (the '/' walk splits it in two and misses)")
+	var landed: Array = []
+	for t in ["ZzFx:position", "ZzFx:nope", "ZzFx:texture", "ZzFx:", "ZzFx::material", "ZzFx:material:", ":material", "ZzNope:material", "ZzFx:material:shader:code"]:
+		if Reflect.resolve(t) != null or Reflect.scene_node(t) != null:
+			landed.append(t)
+	_ok(landed.is_empty(), "a ':' path that does not end on an object matches nothing, never the node before it%s" % ("" if landed.is_empty() else ", landed: " + str(landed)))
+	_ok(Reflect.scene_node("ZzFx:material") == null and Reflect.scene_node("ZzFx") == fx and Reflect.scene_node("PixelView/SubViewport/Ground") == ground,
+		"a lookup that needs a node takes no ':' path, even one that resolves")
+
+	# --- what a miss says
+	var on_value := Reflect.miss("ZzFx:position")
+	_ok(on_value.begins_with("Could not resolve target: ZzFx:position (") and on_value.contains("holds a Vector2") and on_value.contains("target=ZzFx and property=position"),
+		"a path that ends on a value names the type, and the target and property that reach it: %s" % on_value)
+	_ok(Reflect.miss("ZzFx:nope").contains("ZzFx is a Sprite2D with no property 'nope'") and Reflect.miss("ZzFx:texture").contains("ZzFx:texture is null"),
+		"...an unknown property and an empty slot are told apart")
+	_ok(Reflect.miss("ZzFx:material:nope").contains("ZzFx:material is a ShaderMaterial with no property 'nope'") and Reflect.miss("ZzFx::material").contains("no property name"),
+		"...a deeper hop is named by the path to it, and an empty segment is called that")
+	_ok(Reflect.miss("ZzFx:material", "parent").ends_with("(a ':' reads a property of ZzFx, and this takes a node path)") and Reflect.miss("ZzNope:material") == "Could not resolve target: ZzNope:material",
+		"a ':' path handed to a tool that needs a node says so, and a node part that is not there keeps the plain words")
+
+	# --- set_resource: a property the target does not have is refused, before anything is loaded or made
+	var srv := _ColonServer.new()
+	var rs := ResourceTools.new()
+	rs.server = srv
+	var on_node: Dictionary = rs._set_resource({"target": "ZzFx", "property": "shader", "class": "Shader"})
+	_ok(str(on_node.get("error", "")) == "Sprite2D has no property 'shader'" and str(on_node.get("suggestion", "")).contains("describe_object target=ZzFx") and fx.get("shader") == null and mat.shader == shader,
+		"set_resource refuses a property the node does not have (it reported the Shader assigned): %s" % str(on_node))
+	var typo: Dictionary = rs._set_resource({"target": "ZzFx/material", "property": "shadr", "resource": "res://zz_no_such_file.tres"})
+	_ok(str(typo.get("error", "")) == "ShaderMaterial has no property 'shadr'", "...a sub-resource's too, and before it looks for the resource to load: %s" % str(typo))
+	var walked: Dictionary = rs._set_resource({"target": "ZzFx:material", "property": "shader", "class": "Shader"})
+	var walked_ok: bool = str(walked.get("text", "")) == "assigned Shader to ZzFx:material.shader" and mat.shader is Shader and mat.shader != shader
+	mat.shader = shader  # back first: the headless renderer prints an error listing a material that holds the blank Shader just made
+	var slashed: Dictionary = rs._set_resource({"target": "ZzFx/material", "property": "shader", "class": "Shader"})
+	var slashed_ok: bool = str(slashed.get("text", "")) == "assigned Shader to ZzFx/material.shader" and mat.shader != shader
+	mat.shader = shader
+	_ok(walked_ok and slashed_ok and fx.get("shader") == null,
+		"set_resource on Fx:material or Fx/material lands on the material, and the node is untouched: %s" % str(walked))
+
+	# --- set_property, call_method, describe_object and the node-only tools on a ':' target
+	var rt := ReflectionTools.new()
+	rt.server = srv
+	var param: Dictionary = rt._set_property({"target": "ZzFx:material", "property": "shader_parameter/strength", "value": 0.8})
+	_ok(param.has("text") and is_equal_approx(float(mat.get_shader_parameter("strength")), 0.8), "set_property on Fx:material sets the material's uniform: %s" % str(param))
+	var called: Dictionary = rt._call_method({"target": "ZzFx:material", "method": "set_shader_parameter", "args": ["strength", 0.25]})
+	_ok(called.has("json") and is_equal_approx(float(mat.get_shader_parameter("strength")), 0.25), "call_method on Fx:material calls the material's method")
+	var described: Dictionary = rt._describe_object({"target": "PixelView/SubViewport/Ground:material_override"})
+	_ok(described.has("json") and str(described["json"]["class"]) == "ShaderMaterial", "describe_object on the live repro's target describes the ShaderMaterial (it described the MeshInstance3D)")
+	var off_value: Dictionary = rt._set_property({"target": "ZzFx:position", "property": "x", "value": 1})
+	_ok(str(off_value.get("error", "")).contains("holds a Vector2") and not off_value.has("suggestion") and fx.position == Vector2.ZERO,
+		"set_property on a path that ends on a value says what it ran into, with no did-you-mean of the node it found: %s" % str(off_value))
+	var game := _ColonGame.new()
+	srv.bridge = game
+	var ghost: Dictionary = rt._describe_object({"target": "/root/ZzLive/Ground:material_override"})
+	_ok(ghost.has("error") and not game.sent.has("describe") and str(ghost.get("suggestion", "")).contains("runtime_get_property"),
+		"with a game running, a ':' target the open scene lacks is not asked of the game (its resolver would answer for the node), and the answer points at runtime_get_property (sent: %s)" % str(game.sent))
+	var live: Dictionary = rt._describe_object({"target": "/root/ZzLive/Ground"})
+	_ok(live.has("json") and str(live["json"]["scope"]).begins_with("runtime") and game.sent.has("describe"), "...while a plain live path still is")
+	var del: Dictionary = SceneTools.new()._delete_node({"target": "ZzFx:material"})
+	_ok(str(del.get("error", "")).contains("this takes a node path") and is_instance_valid(fx) and fx.get_parent() == scene and fx.material == mat,
+		"delete_node target=Fx:material refuses, and Fx is still there (it deleted Fx): %s" % str(del))
+	var sigs: Dictionary = SignalTools.new()._list_signals({"target": "ZzFx:material"})
+	_ok(str(sigs.get("error", "")).contains("this takes a node path"), "list_signals on a ':' path refuses instead of listing the node's signals")
+
+	Reflect.scene_root_override = null
+	root.remove_child(scene)
+	scene.free()
+	return true
+
+
 # ---------------------------------------------------------------- 1.16 fold: Beckett's own objects are off limits to its tools
 #
 # A 2026-10-07 audit drove a running game from the free edition with call_method alone: the bridge's absolute path as the target,
@@ -10572,6 +16233,8 @@ func _t_internals_guard() -> bool:
 	bridge.set("_peer", StreamPeerTCP.new())  # what the game answers on: an object with no script of its own, so only where the walk came from can refuse it
 	_ok(Reflect.resolve("../ZzFakePlugin/ZzFakeBridge/_peer") == null and Reflect.refusal_for("../ZzFakePlugin/ZzFakeBridge/_peer").contains(Internals.OFF_LIMITS), "a path that walks from one of Beckett's nodes to the socket the game answers on is refused at the node")
 	_ok(Reflect.resolve("ZzPlayer/held/_peer") == null and Reflect.refusal_for("ZzPlayer/held/_peer").contains(Internals.OFF_LIMITS), "...and so is one that reaches the node through a property of the player's own and goes on to the socket")
+	for t in ["ZzPlayer:held", "ZzPlayer:held:_peer", "ZzPlayer/held:_peer", "../ZzFakePlugin/ZzFakeBridge:_peer", "../ZzFakePlugin/ZzFakeBridge:anything"]:
+		_ok(Reflect.resolve(t) == null and Reflect.refusal_for(t).contains(Internals.OFF_LIMITS) and Reflect.miss(t).contains(Internals.OFF_LIMITS), "...and the ':' spelling of the same walks is refused the same way: %s" % t)
 	bridge.set("_peer", null)
 	player.held = null
 	_ok(Reflect.scene_node("") == scene and Reflect.scene_node(".") == scene and Reflect.scene_node("ZzPlayer") == player, "scene_node: '', '.' and a name answer as the scene tools always did")
@@ -10689,7 +16352,8 @@ func _t_runtime_off_limits() -> bool:
 	game.add_child(fake_3d)
 
 	var state := func() -> Array:
-		return [rt._recording, rt._stepping, rt._replaying, rt._step_kind, rt._step_target, rt._step_inputs.size(), rt._step_injected, rt._resume_paused, rt._typing_done, rt._rec.size()]
+		var ck: Variant = rt._clock  # null in Lite (no tick clock); in Full, a window opened by a write would show in its phase, kind and ticks
+		return [rt._recording, [] if ck == null else [ck._phase, ck._kind, ck._ticks, ck], rt._held.size(), rt._typing_done, rt._rec.size(), rt._reload_old_id]
 	var before: Array = state.call()
 	var nth := -1
 	for i in 80:
@@ -10716,13 +16380,21 @@ func _t_runtime_off_limits() -> bool:
 		if bool(reply.get("ok", true)) or not err.contains(Internals.OFF_LIMITS) or RuntimeBridge.is_target_missing(err):
 			landed.append(str(sel))
 	_ok(landed.is_empty(), "a set is refused for %d spellings of the runtime (path, bare name, name, class + name, class + nth, under, and a node of the game that runs one of Beckett's scripts), with the reason, and the reason is no 'not found' that on_ready would retry%s" % [selectors.size(), "" if landed.is_empty() else ", not refused: " + "; ".join(PackedStringArray(landed))])
-	var vars := {"_stepping": true, "_step_inputs": [[{"type": "key", "keycode": "A", "pressed": true}]], "_step_kind": "count", "_step_target": 8, "_replaying": true, "_replay_events": [], "_resume_paused": false}
+	var vars := {"_clock": null, "_held": {"key:65:65": "x"}, "_recording": true, "_rec": [{"type": "key"}], "_typing_done": false, "_reload_old_id": 7}
 	var wrote: Array = []
 	for v in vars:
 		var rv: Dictionary = rt._dispatch({"cmd": "set", "path": impl_path, "prop": v, "value": vars[v]})
 		if bool(rv.get("ok", true)):
 			wrote.append(v)
-	_ok(wrote.is_empty() and state.call() == before, "...the audit's own variables (_stepping, _step_inputs, _step_kind, _step_target, _replaying ...) stay as they were: %s" % str(state.call()))
+	_ok(wrote.is_empty() and state.call() == before, "...the runtime's own state (_clock, _held, _recording, _rec, _typing_done, _reload_old_id) stays as it was: %s" % str(state.call()))
+	if rt._clock != null:
+		probe.held = rt._clock
+		var phase0: int = rt._clock._phase
+		var clock_hop: Dictionary = rt._dispatch({"cmd": "set", "path": "ZzOffProbe", "prop": "held:_phase", "value": 1})
+		_ok(not bool(clock_hop.get("ok", true)) and str(clock_hop.get("error", "")).contains(Internals.OFF_LIMITS) and rt._clock._phase == phase0, "a property path whose hop lands on the tick clock (held:_phase) is refused, and the clock is untouched")
+		probe.held = null
+	else:
+		print("  skip  this build has no tick clock (Lite trims runtime/step_clock.gd)")
 	var hop := {"cmd": "set", "path": "ZzOffProbe", "prop": "held:_recording", "value": true}
 	probe.held = rt
 	_ok(not bool(rt._dispatch(hop).get("ok", true)) and str(rt._dispatch(hop).get("error", "")).contains(Internals.OFF_LIMITS) and rt._recording == false, "a property path whose hop lands on the runtime (held:_recording) is refused too")
@@ -10732,7 +16404,7 @@ func _t_runtime_off_limits() -> bool:
 
 	# --- the other arms that write or call
 	var arms: Array = [
-		{"cmd": "call", "path": impl_path, "method": "_close_step", "args": ["x"]},
+		{"cmd": "call", "path": impl_path, "method": "_tc_freeze", "args": ["x"]},
 		{"cmd": "call", "name": "BeckettRuntimeImpl", "method": "set", "args": ["_recording", true]},
 		{"cmd": "call", "path": "ZzOffProbe", "method": "add_child", "args": [impl_path]},
 		{"cmd": "click_control", "path": "ZzFakeCtl"},
@@ -10763,6 +16435,220 @@ func _t_runtime_off_limits() -> bool:
 
 	root.remove_child(holder)
 	holder.free()
+	root.remove_child(game)
+	game.free()
+	return true
+
+
+## The runtime bridge with its socket swapped for a runtime node in this process: every command goes straight to that
+## node's dispatch, so the editor's own readers (the on_ready drain, wait_for_node, click_control's wait, a playtest
+## assert) meet the game's real answers.
+class _DispatchBridge extends "res://addons/beckett/core/runtime_bridge.gd":
+	var rt: Node = null
+
+	func is_game_connected() -> bool:
+		return true
+
+	func send_command(cmd: Dictionary, _timeout_ms: int = 4000) -> Dictionary:
+		return rt._dispatch(cmd)
+
+
+## A runtime path names a node. The engine's get_node_or_null reads a ':' as the start of a property path (NodePath
+## subnames), drops it and answers with the node before it, so Ground:material_override used to act on Ground itself:
+## a get read Ground's own property, a set or a call landed on Ground, a click clicked it, and each said ok. The runtime
+## refuses a ':' in a path, with words that say to move the property part into property, and every reader that waits on
+## a node that is not there yet (the on_ready drain, wait_for_node, click_control's wait, the ui_do steps) takes the
+## refusal as final instead of waiting out its budget.
+func _t_runtime_subpath() -> bool:
+	print("[unit] runtime: a ':' in a path is a property path, refused with where it goes, never waited on as a node not there yet")
+	await process_frame
+	var game := Node.new()
+	game.name = "ZzSubGame"
+	root.add_child(game)
+	var ground := MeshInstance3D.new()
+	ground.name = "ZzGround"
+	ground.mesh = BoxMesh.new()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1, 0, 0)
+	ground.material_override = mat
+	game.add_child(ground)
+	var btn := Button.new()
+	btn.name = "ZzSubBtn"
+	btn.text = "ZzSubGo"
+	game.add_child(btn)
+	var presses := [0]
+	btn.pressed.connect(func() -> void: presses[0] += 1)
+	var edit := LineEdit.new()
+	edit.name = "ZzSubEdit"
+	game.add_child(edit)
+	var rt = MCPRuntime.new()
+	root.add_child(rt)
+	current_scene = game  # the runtime's resolver starts from the current scene
+	var mark: String = MCPRuntime.PROPERTY_PATH
+
+	# --- the engine fact behind the bug, and the resolver
+	_ok(game.get_node_or_null(NodePath("ZzGround:material_override")) == ground, "the engine's own lookup drops the ':' part and answers with the node before it: the cause, on this engine")
+	var resolved: Array = []
+	for p in ["ZzGround:material_override", "/root/ZzSubGame/ZzGround:visible", "ZzGround:material_override:albedo_color", ":visible", "ZzGround:", "%ZzGround:mesh", "res://ZzGround.tscn"]:
+		if rt._resolve(p) != null:
+			resolved.append(p)
+	_ok(resolved.is_empty(), "_resolve answers nothing for a path with a ':' in it (relative, absolute, two hops, a property of the root, a bare ':', a unique name, a file path)%s" % ("" if resolved.is_empty() else ", resolved: " + str(resolved)))
+	_ok(rt._resolve("ZzGround") == ground and rt._resolve("/root/ZzSubGame/ZzGround") == ground and rt._resolve("ZzSubBtn") == btn and rt._resolve(".") == game, "...and a path without one resolves as before (a name, an absolute path, '.')")
+
+	# --- the words: where the property part goes
+	var w1: String = MCPRuntime.subpath_refusal("path", "Ground:material_override", "shader_parameter/tint")
+	_ok(w1 == "path 'Ground:material_override' is not a node path: a ':' starts a property path, and path names a node. Put the node in path and the property part in property: path=Ground property=material_override:shader_parameter/tint", "the refusal names the rule and the split to use: %s" % w1)
+	_ok(MCPRuntime.subpath_refusal("path", "Ground:material_override", "", false).ends_with("Pass path=Ground") and MCPRuntime.subpath_refusal("path", ":visible").ends_with("path=. property=visible") and MCPRuntime.subpath_refusal("path", "Ground:").ends_with("Pass path=Ground"),
+		"...a field with no property beside it is told the node alone, a property of the root splits to '.', and a ':' with nothing after it names just the node")
+	_ok(MCPRuntime.subpath_refusal("path", "Ground") == "" and MCPRuntime.subpath_refusal("path", "res://ground.tscn") == "" and MCPRuntime.subpath_refusal("path", "") == "", "a path with no ':' and a file path are no property paths: no sentence (a file path is still refused by _resolve, with the plain miss)")
+	var long_words: String = MCPRuntime.subpath_refusal("path", "A:b\n" + "c".repeat(500))
+	_ok(not long_words.contains("\n") and long_words.length() < 700, "a line break in the path is not echoed, and a long path is cut (%d characters)" % long_words.length())
+
+	# --- every command that takes a path: refused, with the reason, and the node untouched
+	var get_r: Dictionary = rt._dispatch({"cmd": "get", "path": "ZzGround:material_override", "prop": "albedo_color"})
+	var gerr := str(get_r.get("error", ""))
+	_ok(not bool(get_r.get("ok", true)) and gerr.contains(mark) and gerr.ends_with("path=ZzGround property=material_override:albedo_color"), "get path=ZzGround:material_override prop=albedo_color is refused, and says where the property part goes: %s" % gerr)
+	var leak: Dictionary = rt._dispatch({"cmd": "get", "path": "ZzGround:material_override", "prop": "visible"})
+	_ok(not bool(leak.get("ok", true)) and not leak.has("value"), "THE bug: a get of a property the NODE has (visible) through ZzGround:material_override no longer answers with the node's value")
+	var wrote: Dictionary = rt._dispatch({"cmd": "set", "path": "ZzGround:material_override", "prop": "visible", "value": false})
+	_ok(not bool(wrote.get("ok", true)) and ground.visible and str(wrote.get("error", "")).contains(mark), "...a set through it does not land on the node: ZzGround is still visible")
+	var called: Dictionary = rt._dispatch({"cmd": "call", "path": "ZzGround:material_override", "method": "hide"})
+	_ok(not bool(called.get("ok", true)) and ground.visible and str(called.get("error", "")).ends_with("Pass path=ZzGround"), "...nor does a call (hide): refused and told the node alone, ZzGround still visible: %s" % str(called.get("error", "")))
+	var described: Dictionary = rt._dispatch({"cmd": "describe", "path": "ZzGround:material_override"})
+	_ok(not bool(described.get("ok", true)) and not described.has("properties") and str(described.get("error", "")).contains(mark), "describe does not describe the MeshInstance3D for ZzGround:material_override")
+	var ex: Dictionary = rt._dispatch({"cmd": "exists", "path": "ZzGround:material_override"})
+	_ok(not bool(ex.get("ok", true)) and ex.get("exists") == false and str(ex.get("error", "")).contains(mark), "exists answers no WITH the reason, so a wait on it can stop")
+	var ex_yes: Dictionary = rt._dispatch({"cmd": "exists", "path": "ZzGround"})
+	var ex_no: Dictionary = rt._dispatch({"cmd": "exists", "path": "ZzNope"})
+	_ok(bool(ex_yes.get("ok", false)) and bool(ex_yes.get("exists", false)) and bool(ex_no.get("ok", false)) and not bool(ex_no.get("exists", true)), "...while a plain path exists or not as before (ok:true, exists true / false)")
+	var arms: Array = [
+		{"cmd": "click_control", "path": "ZzSubBtn:text"}, {"cmd": "click_node3d", "path": "ZzGround:mesh"}, {"cmd": "control_rect", "path": "ZzSubBtn:size"},
+		{"cmd": "type_text", "path": "ZzSubEdit:text", "text": "typed"}, {"cmd": "scroll", "path": "ZzSubBtn:size", "amount": 1}, {"cmd": "render_probe", "path": "ZzGround:material_override"},
+		{"cmd": "tree", "path": "ZzSubGame:name"}, {"cmd": "find", "path": "ZzSubBtn:theme", "class": "Node"}, {"cmd": "ui_snapshot", "path": "ZzSubBtn:theme"}, {"cmd": "ui_audit", "path": "ZzSubBtn:theme"},
+		{"cmd": "click_text", "text": "ZzSubGo", "under": "ZzSubGame:name"}, {"cmd": "click_control", "class": "Button", "under": "ZzSubGame:name"}, {"cmd": "get", "class": "Button", "under": "/root:name", "prop": "text"},
+	]
+	var through: Array = []
+	for a in arms:
+		var out: Dictionary = rt._dispatch(a)
+		var e := str(out.get("error", ""))
+		if bool(out.get("ok", true)) or not e.contains(mark) or RuntimeBridge.is_target_missing(e):
+			through.append("%s -> %s" % [a["cmd"], str(out).left(90)])
+	_ok(through.is_empty() and presses[0] == 0 and edit.text == "", "%d more commands refuse a ':' in path or under (the clicks, type_text, control_rect, scroll, render_probe, and the tree / find / ui_snapshot / ui_audit scopes), nothing was clicked or typed, and no reason reads as a node not there yet%s" % [arms.size(), "" if through.is_empty() else ": " + "; ".join(PackedStringArray(through))])
+	var arg: Dictionary = rt._dispatch({"cmd": "call", "path": "ZzSubGame", "method": "remove_child", "args": ["ZzGround:material_override"]})
+	_ok(not bool(arg.get("ok", true)) and ground.get_parent() == game, "an object argument with a ':' is not resolved to the node before it either: remove_child(\"ZzGround:material_override\") removed nothing: %s" % str(arg.get("error", "")))
+
+	# --- a ':' inside property is untouched: the same write, split the way the refusal says, lands
+	var split: Dictionary = rt._dispatch({"cmd": "set", "path": "ZzGround", "prop": "material_override:albedo_color", "value": "#00ff00"})
+	_ok(bool(split.get("ok", false)) and mat.albedo_color.is_equal_approx(Color(0, 1, 0)), "path=ZzGround property=material_override:albedo_color, as the refusal says, writes the material's colour: %s" % str(split))
+	var read_back: Dictionary = rt._dispatch({"cmd": "get", "path": "ZzGround", "prop": "material_override:albedo_color"})
+	var hop: Dictionary = rt._dispatch({"cmd": "set", "path": "ZzGround", "prop": "position:y", "value": 2.0})
+	_ok(bool(read_back.get("ok", false)) and str(read_back.get("value", "")) == str(Color(0, 1, 0)) and bool(hop.get("ok", false)) and is_equal_approx(ground.position.y, 2.0), "...and reads it back, and a struct hop (position:y) still writes")
+
+	# --- the on_ready drain: a refusal is reported at once, a target that is not there yet stays queued
+	var br := _DispatchBridge.new()
+	br.rt = rt
+	br.queue_on_ready([{"path": "ZzGround:material_override", "property": "albedo_color", "value": "#0000ff"}, {"path": "ZzNotYet", "property": "visible", "value": true}])
+	br._drain_on_ready()
+	var rep: Array = br.on_ready_report
+	_ok(rep.size() == 1 and not bool(rep[0]["ok"]) and str(rep[0].get("error", "")).contains(mark) and str(rep[0]["error"]).ends_with("path=ZzGround property=material_override:albedo_color"), "the on_ready drain reports the ':' write failed at once, with the split to use: %s" % str(rep))
+	_ok(br.on_ready_queue.size() == 1 and str(br.on_ready_queue[0]["path"]) == "ZzNotYet" and mat.albedo_color.is_equal_approx(Color(0, 1, 0)), "...while a target that is merely not there yet stays queued for the grace window, and the material was not touched")
+	var odd: Dictionary = rt._dispatch({"cmd": "set", "path": "UI/not found:text", "prop": "text", "value": "x"})
+	_ok(str(odd.get("error", "")).contains("not found") and str(odd["error"]).contains(mark) and not RuntimeBridge.is_target_missing(str(odd["error"])), "a path that itself says 'not found' does not turn its refusal into a retry: only the start of an error is read")
+	_ok(RuntimeBridge.is_target_missing(str(rt._dispatch({"cmd": "set", "path": "ZzNotYet", "prop": "visible", "value": true}).get("error", ""))) and RuntimeBridge.is_target_missing(str(rt._dispatch({"cmd": "set", "class": "ZzNoClass", "prop": "visible", "value": true}).get("error", ""))),
+		"...and the game's two misses (a path, a selector) are still read as not there yet")
+
+	# --- wait_for_node stops on the refusal; runtime_get_property hands over the split
+	var fs := _FakeServer.new()
+	fs.bridge = br
+	var obs = load("res://addons/beckett/tools/runtime_observe_tools.gd").new()
+	obs.server = fs
+	var t0 := Time.get_ticks_msec()
+	var waited: Dictionary = obs._wait_for_node({"path": "ZzGround:material_override", "timeout_ms": 5000})
+	var took := Time.get_ticks_msec() - t0
+	_ok(str(waited.get("error", "")).contains(mark) and took < 2000, "wait_for_node answers with the refusal at once (%d ms of a 5000 ms timeout), not 'timeout waiting for node'" % took)
+	_ok(str(obs._wait_for_node({"path": "ZzNotYet", "timeout_ms": 150}).get("error", "")).begins_with("timeout waiting for node") and obs._wait_for_node({"path": "ZzGround", "timeout_ms": 150}).has("text"), "...while a node that never appears still times out, and one that is there is found")
+	var got: Dictionary = obs._runtime_get({"path": "ZzGround:material_override", "property": "albedo_color"})
+	_ok(str(got.get("error", "")).ends_with("path=ZzGround property=material_override:albedo_color"), "runtime_get_property hands the agent the split: %s" % str(got.get("error", "")))
+	var tools_path := "res://addons/beckett/tools/runtime_tools.gd"
+	if ResourceLoader.exists(tools_path):
+		var drive = load(tools_path).new()
+		drive.server = fs
+		var t1 := Time.get_ticks_msec()
+		var clicked: Dictionary = drive._click_control({"path": "ZzSubBtn:text"})
+		var click_took := Time.get_ticks_msec() - t1
+		_ok(str(clicked.get("error", "")).contains(mark) and click_took < 1500 and presses[0] == 0, "click_control does not auto-wait on the refusal (wait_ms defaults to 2000): it answered in %d ms, nothing clicked" % click_took)
+		var set_tool: Dictionary = drive._runtime_set({"path": "ZzGround:material_override", "property": "albedo_color", "value": "#ffffff"})
+		_ok(str(set_tool.get("error", "")).ends_with("path=ZzGround property=material_override:albedo_color") and mat.albedo_color.is_equal_approx(Color(0, 1, 0)), "runtime_set_property refuses, and hands the agent the split: %s" % str(set_tool.get("error", "")))
+	else:
+		print("  skip  runtime_tools.gd is trimmed from this build (Lite): click_control and runtime_set_property are Full tools")
+
+	# --- ui_do: a step that names its node with a ':' fails at once as malformed, and applies nothing
+	var ud = UiDo.new()
+	var step_rows: Array = [
+		[{"wait": {"node": "ZzGround:material_override"}}, "Pass node=ZzGround"],
+		[{"assert": {"node": "ZzGround:material_override", "property": "albedo_color", "equals": 1}}, "Pass node=ZzGround"],
+		[{"state": {"node": "ZzGround:material_override", "path": "hp", "value": 1}}, "Pass node=ZzGround"],
+		[{"inject": {"set": [{"node": "ZzGround", "property": "visible", "value": false}, {"node": "ZzGround:material_override", "property": "albedo_color", "value": "#ffffff"}]}}, "inject set[1]: node 'ZzGround:material_override'"],
+		[{"inject": {"call": [{"node": "ZzGround:material_override", "method": "hide"}]}}, "inject call[0]: "],
+		[{"click": {"path": "ZzSubBtn:text"}}, "Pass path=ZzSubBtn"],
+		[{"click": {"class": "Button", "under": "ZzSubGame:name"}}, "Pass under=ZzSubGame"],
+		[{"type": {"path": "ZzSubEdit:text", "text": "typed"}}, "Pass path=ZzSubEdit"],
+	]
+	var waited_out: Array = []
+	for row in step_rows:
+		var t2 := Time.get_ticks_msec()
+		var st: Dictionary = await _ud_run(ud, rt, [row[0]], 3000)
+		var results: Array = st.get("results", [])
+		var r0: Dictionary = results[0] if not results.is_empty() else {}
+		if str(r0.get("status", "")) != "fail" or not str(r0.get("error", "")).contains(mark) or not str(r0.get("error", "")).contains(str(row[1])) or Time.get_ticks_msec() - t2 >= 1500:
+			waited_out.append("%s -> %s" % [str(row[0]).left(60), str(r0).left(160)])
+	_ok(waited_out.is_empty() and ground.visible and presses[0] == 0 and edit.text == "" and mat.albedo_color.is_equal_approx(Color(0, 1, 0)), "%d ui_do steps (wait, assert, state, inject set and call, click by path and by under, type) fail at once, as malformed, in the runtime's words, and nothing was applied (the inject's good write held back too)%s" % [step_rows.size(), "" if waited_out.is_empty() else ": " + "; ".join(PackedStringArray(waited_out))])
+	var inj_split: Dictionary = await _ud_run(ud, rt, [{"inject": {"set": [{"node": "ZzGround:material_override", "property": "albedo_color", "value": "#ffffff"}]}}], 3000)
+	_ok(str((inj_split["results"] as Array)[0].get("error", "")).ends_with("node=ZzGround property=material_override:albedo_color"), "...and an inject write is told the split with its property, the shape inject set takes")
+
+	# --- the Full-only twins: the physics overlap paths, and the exported standalone test
+	if ResourceLoader.exists(_PHYSICS_OVERLAP_PATH):
+		var Ov = load(_PHYSICS_OVERLAP_PATH)
+		var nrm: Dictionary = Ov.normalize({"paths": ["ZzGround:shape"]})
+		var judged: Dictionary = Ov.judge(rt._dispatch({"cmd": "physics_overlap", "paths": ["ZzSubGame:name"]}))
+		_ok(not bool(nrm["ok"]) and str(nrm["error"]).contains("property path") and not Ov.spec_error({"type": "no_overlap", "paths": ["A:b"]}).is_empty(), "a no_overlap paths entry with a ':' is malformed, so playtest op=save refuses it: %s" % str(nrm.get("error", "")))
+		_ok(str(judged["status"]) == "fail", "...and a run that meets one judges it a loud fail, not a blocked miss: %s" % str(judged.get("detail", "")))
+	else:
+		print("  skip  the physics overlap oracle is trimmed from this build (Lite)")
+	if ResourceLoader.exists(_STANDALONE_PATH) and ResourceLoader.exists(_PLAYTEST_TOOLS_PATH):
+		var T = load(_STANDALONE_PATH)
+		var word_rows: Array = [
+			["path", "ZzGround:material_override", "shader_parameter/tint", true], ["path", "ZzGround:material_override", "", true], ["path", "ZzGround:material_override", "", false],
+			["node", ":visible", "", true], ["under", "A/B:c:d", "", false], ["path", "Ground:", "", true], ["path", "Ground:", "x", true], ["path", "res://a.tscn", "", true],
+			["path", "Plain", "x", true], ["path", "a\nb:c", "", true], ["path", "X:" + "y".repeat(300), "", true],
+		]
+		var word_bad: Array = []
+		for w in word_rows:
+			if T.subpath_refusal(w[0], w[1], w[2], w[3]) != MCPRuntime.subpath_refusal(w[0], w[1], w[2], w[3]):
+				word_bad.append(str(w).left(50))
+		var specs: Array = [
+			{"path": "ZzGround:material_override", "prop": "albedo_color"}, {"path": "ZzGround:material_override"}, {"class": "Button", "under": "A:b"}, {"path": "A:b", "under": "C:d"},
+			{"path": "ZzNope"}, {"class": "Button", "name": "x"}, {},
+		]
+		for s in specs:
+			if T.target_refusal(s) != MCPRuntime._target_refusal(s) or T.not_found_text(s) != rt._not_found(s):
+				word_bad.append(str(s))
+		for p in ["ZzGround:material_override", "/root/ZzSubGame/ZzGround:visible", ":visible", "ZzGround:", "ZzGround", "/root/ZzSubGame/ZzGround", "."]:
+			if T.resolve_node(game, p) != rt._resolve(p):
+				word_bad.append("resolve " + p)
+		_ok(word_bad.is_empty(), "the exported standalone test refuses the same paths with the same words: subpath_refusal, target_refusal, not_found_text and resolve_node agree with the runtime%s" % ("" if word_bad.is_empty() else ", differ: " + str(word_bad)))
+		var a_ns := {"type": "node_state", "target": "ZzGround:material_override", "property": "albedo_color", "equals": 1}
+		var mine: Dictionary = T.eval_assert(a_ns, game)
+		var editor_side: Dictionary = _pt_with(br)._eval_assert(a_ns)
+		_ok(str(mine["status"]) == "fail" and str(mine["detail"]).contains(mark) and str(editor_side.get("status", "")) == "fail" and str(editor_side.get("detail", "")) == str(mine["detail"]),
+			"a node_state assert on a ':' target fails, in the exported test and in the editor's run alike, with the same words: %s" % str(mine["detail"]))
+	else:
+		print("  skip  the exported standalone test is trimmed from this build (Lite)")
+
+	current_scene = null
+	root.remove_child(rt)
+	rt.free()
+	br.free()
 	root.remove_child(game)
 	game.free()
 	return true
@@ -11017,7 +16903,8 @@ func _t_lite_text_labels() -> bool:
 	# The working notes the Lite server hands over at initialize carry the boundary, and every Full-only name in them is labeled.
 	var srv = MCPServer.new()
 	srv._max_effort = 4
-	var notes: String = srv._instructions()
+	# Without the identity line (1.17): it quotes this checkout's folder, and a folder name is not Lite's text.
+	var notes: String = srv._instructions().replace(srv._identity_line(), "")
 	srv.free()
 	_ok(notes.contains("free Lite edition") and notes.contains("Full-edition features") and _full_names_in(notes, full_only, true).is_empty(), "the Lite instructions name the boundary and label what they name")
 	# The one-line description in plugin.cfg: edition-neutral, the Full-only parts marked, short, and no dashes.

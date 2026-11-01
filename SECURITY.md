@@ -6,13 +6,13 @@ Beckett is an MCP server that runs inside the Godot editor, so a connected AI ag
 
 Use GitHub's private vulnerability reporting. Open the Security tab of [beckettlab/beckett-godot-mcp](https://github.com/beckettlab/beckett-godot-mcp/security) and choose "Report a vulnerability". The report stays between you and the maintainer until a fix is out. Please do not file a public issue for a vulnerability.
 
-A useful report has the Beckett version (`doctor` returns `beckett_version`), the Godot version and OS, the steps that reproduce the problem, and what you expected to happen. The Lite and Full editions share this code, so one report covers both.
+A useful report has the Beckett version and build (`doctor` returns `beckett_version` and `beckett_build`), the Godot version and OS, the steps that reproduce the problem, and what you expected to happen. The Lite and Full editions share this code, so one report covers both.
 
 Fixes ship in a normal release and are named in its release notes. Run the latest release, since that is where fixes land.
 
 ## What Beckett exposes
 
-- The MCP endpoint is HTTP on `127.0.0.1:8770/mcp`, served by the plugin from inside the editor process. When the port is busy the server tries the next nine ports in turn. `BECKETT_PORT` or the project setting `beckett/port` changes the base port. The server starts when you enable the plugin, and `beckett/autostart=false` or `BECKETT_ENABLE=0` stops that.
+- The MCP endpoint is HTTP on `127.0.0.1:8770/mcp`, served by the plugin from inside the editor process. When the port is busy the server tries the next nine ports in turn, and the project setting `beckett/port` changes the base port. A port set with `BECKETT_PORT` is exact: when another program holds it, the server stays off and says so instead of serving unnoticed on another port (`BECKETT_PORT_WALK=1` brings the walk back). A script aimed at that port still reaches whatever holds it; the `Beckett-Project` header (see "Which project") is what makes another editor refuse it. The server starts when you enable the plugin, and `beckett/autostart=false` or `BECKETT_ENABLE=0` stops that.
 - The runtime bridge is a second listener on `127.0.0.1:8771`. The game you launch from the editor dials into it, which is how tools screenshot and inspect a running game and, in the Full edition, drive it. It speaks a line protocol, not HTTP, and each editor session mints a secret that the game must present first (`BECKETT_AUTH=0` turns that secret off).
 - Both listeners bind loopback only, so no other machine can reach them.
 
@@ -36,6 +36,12 @@ Requests carry the token as `Authorization: Bearer <token>` or in the URL path (
 
 `BECKETT_AUTH=0` turns auth off. Use it for local testing only: with auth off, any process on the machine can call the server. A project that already has a Beckett entry in its client configs but no token file keeps auth off until you switch it on in the dock, so its clients do not start getting 401. `doctor` warns while auth is off.
 
+### Which project
+
+A request can name the project folder it is meant for with the header `Beckett-Project: <folder>`. An editor that serves another folder runs nothing. A request with an id gets JSON-RPC error -32010 with the folder, port and process the editor does serve, and a notification, an event-stream GET or a DELETE gets HTTP 412 with the same words. The check runs after the Host, Origin and token checks, so a caller without the token learns nothing from it. Folders compare by the rule the read confinement uses: on Windows either slash and any letter case, elsewhere the exact text. A request without the header is served as before.
+
+`res://.beckett/endpoint.json` tells a script which editor serves a folder: whether it serves, the folder, the port, the process id, the build and the header to send. It never holds the token, and it sits in the same self-ignoring `.beckett/` folder as the token file.
+
 ### Access controls
 
 These decide what a connected client may do. They run when a tool is called.
@@ -57,11 +63,13 @@ The Lite edition ships the game-side runtime, `runtime/mcp_runtime.gd`, as MIT s
 
 Reads and writes ask one shared check (`core/path_guard.gd`), so the rule cannot drift from tool to tool.
 
-Writes go only under `res://` or `user://`. `write_file`, `write_script`, `script_patch`, `create_resource`, `save_scene` and `apply_template` follow that rule, and so do the files `asset_lib_install` extracts (Full edition), the playtest baseline, suite, report and `.actual.png` files (Full edition), and `compare_screenshots` (Full edition). A path with `..` or a control character is refused. So is a path that goes through a symbolic link or junction whose target lies outside the project and `user://`: the OS follows the link, the file lands somewhere else, and a cloned repository can ship such a link. `screenshot` with `save_to` gets the same link check when the path is a `res://` or `user://` one.
+Writes go only under `res://` or `user://`. `write_file`, `write_script`, `script_patch`, `create_resource`, `set_property` with `save=true`, `save_scene` and `apply_template` follow that rule, and so do the files `asset_lib_install` extracts (Full edition), the playtest baseline, suite, report and `.actual.png` files (Full edition), and `compare_screenshots` (Full edition). A path with `..` or a control character is refused. So is a path that goes through a symbolic link or junction whose target lies outside the project and `user://`: the OS follows the link, the file lands somewhere else, and a cloned repository can ship such a link. `screenshot` with `save_to` gets the same link check when the path is a `res://` or `user://` one.
 
 Reads are confined to the project. `read_file`, `read_script`, `list_dir`, `logs_read`, `apply_template`, `build_csharp`, `validate_script` with a path, `load_skill` (Full edition), `test_run` (Full edition), and every tool that opens a scene, script or resource by path accept `res://`, `user://`, or an absolute path inside the project folder or the project's `user://` folder. Anything else is a tool error that names the path: a folder elsewhere on the machine, a relative path (it could mean any folder), a path with `..`, a control character, or a path through a link that leaves the project. A link that stays inside the project is fine. A link that cannot be followed (dangling, looping, unreadable, or on Windows pointing at a network share) is refused. Windows paths compare without regard to case and accept both slashes, and `C:foo` counts as relative. `logs_read` with no path reads the file that `debug/file_logging/log_path` names, under the same rule, because `project.godot` comes with a cloned repository.
 
 The tools that walk the project (`search_files`, `get_project_statistics`, `rescan_filesystem`, the `assets://list` resource, and in the Full edition `find_unused_resources`, `detect_circular_dependencies`, `test_run` and `list_skills`) do not follow a link that leaves it. They list what they skipped in `skipped_links`.
+
+A value is never read in a way that opens a file. Godot's `str_to_var` loads whatever resource a `Resource("...")` in its text names, from any folder. A value a tool converts (a vector or `Transform3D` argument, a property write, a project setting) reaches `str_to_var` only as one constructor holding plain numbers, such as `Vector3(0, 6, 11)`. An expression in a playtest assert or a `ui_do` or steps-flow condition (Full edition), in `time_control op=step_until` or an invariant (Full edition), and in `runtime_call expr=` (Full edition), may not call `str_to_var` or `bytes_to_var_with_objects`: it is refused before it runs. That ban is the only check an expression gets (see What is not a security boundary). The editor reads the running game's replies with `bytes_to_var`, which never builds an object, and the game sends its objects as text.
 
 You can opt out for reads only. Set the project setting `beckett/allow_outside_reads=true` (under `[beckett]` in `project.godot`), or start the editor with `BECKETT_ALLOW_OUTSIDE_READS=1`. The environment variable wins in both directions: `BECKETT_ALLOW_OUTSIDE_READS=0` puts the confinement back over a setting that a repository committed. While reads are open, each reply to an outside read carries an `outside_read` note, `doctor` reports `security.file_reads` and warns, and writes stay confined whatever the setting says. The setting belongs to you: `set_project_setting` refuses to turn it on, so an agent cannot lift its own confinement with a call.
 
@@ -89,7 +97,9 @@ Beckett sends no telemetry. The Lite edition makes no requests to the internet i
 
 - The effort dial trims what `tools/list` advertises, to save context. A tool the dial hides still runs when a client calls it by name, so the dial restricts nothing. The access controls above do that job.
 - Token auth keeps other local processes and web pages from calling the server. The agent you connected holds the token and can use every tool the access controls allow.
+- The `Beckett-Project` check stops a request meant for one copy of a project from acting on another copy by mistake. A caller can name any folder it likes, so access control stays with the token.
 - `allow_native` (a parameter of `asset_lib_install`, Full edition) covers native libraries. Any addon is code, and its scripts run in your editor once you enable the plugin.
+- An expression is not sandboxed. In the Full edition, `runtime_call expr=`, a playtest `expr` assert or invariant, and a `ui_do` or `time_control op=step_until` condition each run one GDScript expression in your game, with the reach of the game's scene tree: it can call any method a node has, load a scene from any folder with `change_scene_to_file`, write a file through an Image's `save_png`, and reach any node through `get_node` or `instance_from_id`, Beckett's own runtime included. The engine singletons are not names it knows and `str_to_var` and `bytes_to_var_with_objects` are refused, but nothing else is. The boundary is the Full edition: Lite never sends an expression, and its bridge refuses the commands that carry one.
 - In the Full edition a playtest suite is code, and `playtest op=export_gd` writes a GDScript file that runs it under `godot --script`. A suite's `expr` asserts, per-frame rules and `inject` steps run inside your game. Replaying or exporting a suite from a repository you did not write runs whatever it holds, so read it first.
 - The split between the Lite and Full editions is a product boundary, not a sandbox. Lite is MIT source and carries the game-side runtime, and code an agent writes runs with your user rights, so the split keeps Lite's tools from driving a game and nothing more.
 

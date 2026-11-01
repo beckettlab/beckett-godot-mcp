@@ -116,6 +116,11 @@ static func _read(server: TCPServer, pid: int, token: String) -> Dictionary:
 					msgs.append(m)
 					if str(m[0]) == "debug_enter" and grace_until < 0:
 						grace_until = Time.get_ticks_msec() + BREAK_GRACE_MS
+						# A compile error breaks BEFORE it is printed, so the break is the only report and it has no line.
+						# The stopped child answers this from its break loop (well inside the grace window), and for a
+						# compile error its one frame is the error's file and line (GDScriptLanguage::debug_get_stack_level_*).
+						# A message to the child is [command, thread, data], the thread being the one that broke.
+						peer.put_var(["get_stack_dump", m[1], []])
 			elif not OS.is_process_running(pid):
 				# A child that broke into the debugger and then went away has said all it will say.
 				return {"messages": msgs, "ended": "break" if grace_until > 0 else "exited"}
@@ -142,11 +147,15 @@ static func shape(messages: Array, target_path: String) -> Dictionary:
 	var warnings: Array = []
 	var errors: Array = []
 	var breaks: Array = []
+	var break_line := 0  # from the stack dump _read asks for after a break: [frames * 3, file, line, function, ...]
 	for m in messages:
 		if not (m is Array) or (m as Array).size() < 3:
 			continue
 		var data: Variant = m[2]
 		match str(m[0]):
+			"stack_dump":
+				if data is Array and (data as Array).size() >= 4 and _is_target(str(data[1]), target_path):
+					break_line = maxi(int(data[2]), 0)
 			"error":
 				if not (data is Array) or (data as Array).size() < 10:
 					continue
@@ -170,7 +179,7 @@ static func shape(messages: Array, target_path: String) -> Dictionary:
 				known = true
 				break
 		if not known:
-			errors.append({"line": 0, "message": b})
+			errors.append({"line": break_line, "message": b})
 	warnings.sort_custom(func(a, b): return int(a["line"]) < int(b["line"]))
 	return {"warnings": warnings, "errors": errors}
 

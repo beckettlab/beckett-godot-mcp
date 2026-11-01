@@ -53,10 +53,17 @@ const PROJECT_CONFIG_FILES := ["res://.mcp.json", "res://.cursor/mcp.json", "res
 ## This is the port we ASK for. The port actually bound can differ (start_server walks up to
 ## 10 ports past a busy one), so anything reporting on a RUNNING server must read http.port.
 static func configured_port() -> int:
-	var penv := OS.get_environment("BECKETT_PORT")
-	if penv != "" and penv.is_valid_int():
-		return penv.to_int()
+	if env_port_set():
+		return OS.get_environment("BECKETT_PORT").to_int()
 	return int(ProjectSettings.get_setting("beckett/port", DEFAULT_PORT))
+
+
+## Does BECKETT_PORT name the port (a whole number)? The one test for it: configured_port takes the port
+## from it, and mcp_server.port_source makes that port exact (1.17), so the port bound and the rule applied
+## to it can never disagree about whether the variable counts.
+static func env_port_set() -> bool:
+	var penv := OS.get_environment("BECKETT_PORT")
+	return penv != "" and penv.is_valid_int()
 
 
 ## The one place the endpoint URL is built. With auth on (v1.9), the token rides as a URL

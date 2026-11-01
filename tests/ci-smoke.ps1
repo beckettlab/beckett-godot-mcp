@@ -9,11 +9,19 @@
       1. boots the headless editor with the plugin autostarting on the given port
          (BECKETT_ENABLE=1, isolated BECKETT_PORT / BECKETT_RUNTIME_PORT, and
          BECKETT_AUTO_CONFIG=0 so a CI boot never rewrites the repo's .mcp.json),
-      2. waits for the embedded HTTP/JSON-RPC server to answer,
-      3. POSTs initialize to http://127.0.0.1:<port>/mcp and asserts the response
-         carries protocolVersion + serverInfo, titled as the -Edition under test,
-      4. POSTs tools/list and asserts EXACTLY the expected tool count, and
-      5. ALWAYS kills the editor process on the way out (finally block).
+      2. reads the folder the editor serves from <project>/.beckett/endpoint.json (the
+         editor's own spelling: on Linux and macOS the physical path, links resolved)
+         and names it on every request (Beckett-Project), so an editor of another
+         project that holds the port refuses the probe instead of answering it,
+      3. waits for the embedded HTTP/JSON-RPC server to answer,
+      4. POSTs initialize to http://127.0.0.1:<port>/mcp and asserts the response
+         carries protocolVersion + serverInfo, titled as the -Edition under test, with
+         serverInfo.version = the plugin.cfg version + "+" + 8 hex digits (the build),
+      5. POSTs tools/list and asserts EXACTLY the expected tool count, and prints
+         doctor's build state (pristine / modified / source) as information only: a
+         pull request changes the files on purpose, and release.ps1 -Build is where a
+         package's stamp is enforced,
+      6. ALWAYS kills the editor process on the way out (finally block).
 
     Compatible with BOTH Windows PowerShell 5.1 (local dev) and PowerShell 7
     (shell: pwsh on ubuntu / macos / windows runners): no ternary, no ??, no
@@ -106,11 +114,24 @@ function Check([bool]$ok, [string]$what) {
     else     { $script:fail++; Write-Host "  FAIL $what" -ForegroundColor Red }
 }
 
+# The folder the booted editor serves, as its endpoint.json spells it (empty until read).
+$script:ProjectHeader = ''
+
 function Invoke-Rpc([hashtable]$payload) {
     # -Compress keeps the body one line; Depth covers nested params. Works on 5.1 + 7.
     $json = $payload | ConvertTo-Json -Depth 12 -Compress
-    return Invoke-RestMethod -Uri $Endpoint -Method Post -Body $json `
+    $headers = @{}
+    if ($script:ProjectHeader -ne '') { $headers['Beckett-Project'] = $script:ProjectHeader }
+    return Invoke-RestMethod -Uri $Endpoint -Method Post -Body $json -Headers $headers `
         -ContentType 'application/json' -TimeoutSec 20
+}
+
+# A property of a parsed JSON object, or $null when it has none (Set-StrictMode forbids reading a missing one).
+function Get-Prop($obj, [string]$name) {
+    if ($null -eq $obj) { return $null }
+    $p = $obj.PSObject.Properties[$name]
+    if ($null -eq $p) { return $null }
+    return $p.Value
 }
 
 # Kill a process AND its descendants. On Windows the *_console.exe launches the real
@@ -154,15 +175,36 @@ if (Test-Path -LiteralPath $logErr) { Remove-Item -LiteralPath $logErr -Force }
 # the server in _enter_tree. Redirecting stdout/stderr both keeps the runner log clean
 # and gives us the boot log to dump on failure. Start-Process is available on all OSes
 # under PowerShell 7 and on Windows PowerShell 5.1.
+$bootStart = Get-Date
 $proc = Start-Process -FilePath $GodotExe `
     -ArgumentList @('--headless', '--editor', '--path', $ProjectPath) `
     -PassThru -RedirectStandardOutput $logOut -RedirectStandardError $logErr
 
 try {
-    # 1. Wait for the embedded server to listen. Poll ping; tolerate connection
+    $deadline = (Get-Date).AddSeconds($BootTimeoutSec)
+    # 1. The editor writes .beckett/endpoint.json when it starts: which folder it serves, in its own spelling,
+    #    and whether it serves at all (a taken BECKETT_PORT leaves it off, with the reason). Read it back
+    #    rather than sending this script's own spelling of the project path.
+    $endpointFile = Join-Path (Join-Path $ProjectPath '.beckett') 'endpoint.json'
+    $ep = $null
+    while ($null -eq $ep -and (Get-Date) -lt $deadline -and -not $proc.HasExited) {
+        if ((Test-Path -LiteralPath $endpointFile) -and (Get-Item -LiteralPath $endpointFile).LastWriteTime -ge $bootStart) {
+            try { $ep = [System.IO.File]::ReadAllText($endpointFile) | ConvertFrom-Json } catch { $ep = $null }
+        }
+        if ($null -eq $ep) { Start-Sleep -Milliseconds 500 }
+    }
+    Check ($null -ne $ep) "the editor wrote .beckett/endpoint.json"
+    if ($null -ne $ep) {
+        $epServing = (Get-Prop $ep 'serving') -eq $true
+        $epWhy = if ($epServing) { '' } else { ": $(Get-Prop $ep 'error')" }
+        Check $epServing "endpoint.json says the editor serves$epWhy"
+        $script:ProjectHeader = "$(Get-Prop (Get-Prop $ep 'request_header') 'Beckett-Project')"
+        Write-Host "  folder  : $(Get-Prop $ep 'folder')"
+    }
+
+    # 2. Wait for the embedded server to listen. Poll ping; tolerate connection
     #    refused while the editor is still importing.
     $up = $false
-    $deadline = (Get-Date).AddSeconds($BootTimeoutSec)
     while ((Get-Date) -lt $deadline) {
         if ($proc.HasExited) {
             Write-Host "  editor exited early (code $($proc.ExitCode)) before the server came up" -ForegroundColor Red
@@ -196,18 +238,32 @@ try {
     Check ($titleSaysLite -eq ($Edition -eq 'Lite')) `
         "serverInfo.title names the $Edition edition ($($init.serverInfo.title))"
     # The version a client sees is the one the addon on disk declares: plugin.cfg, the file release.ps1 -Bump stamps.
-    # Through v1.15.2 initialize said 1.0.0 for every release, because nothing compared the two.
+    # Through v1.15.2 initialize said 1.0.0 for every release, because nothing compared the two. Since 1.17 it is the
+    # build: that version, "+", and 8 hex digits of the addon's fingerprint.
     $cfgText = Get-Content -LiteralPath (Join-Path $ProjectPath 'addons/beckett/plugin.cfg') -Raw
     $cfgVersion = [regex]::Match($cfgText, '(?m)^\s*version\s*=\s*"([^"]+)"').Groups[1].Value
-    $reportedVersion = ''
-    if ($null -ne $init.serverInfo.PSObject.Properties['version']) { $reportedVersion = "$($init.serverInfo.version)" }
-    Check ($cfgVersion -ne '' -and $reportedVersion -eq $cfgVersion) `
-        "serverInfo.version is the plugin.cfg version ($cfgVersion; got '$reportedVersion')"
+    $reportedVersion = "$(Get-Prop $init.serverInfo 'version')"
+    Check ($cfgVersion -ne '' -and $reportedVersion -match ('^' + [regex]::Escape($cfgVersion) + '\+[0-9a-f]{8}$')) `
+        "serverInfo.version is the plugin.cfg version plus the build's 8 hex digits ($cfgVersion; got '$reportedVersion')"
+    # Which editor answered: initialize's _meta names the folder endpoint.json names.
+    $ident = Get-Prop (Get-Prop $init '_meta') 'io.github.beckettlab/identity'
+    Check ($null -ne $ident -and $null -ne $ep -and "$(Get-Prop $ident 'folder')" -eq "$(Get-Prop $ep 'folder')") `
+        "initialize _meta names the folder this editor serves ($(Get-Prop $ident 'folder'))"
 
     # 3. tools/list: EXACTLY the surface of the edition under test.
     $tools = (Invoke-Rpc @{ jsonrpc = '2.0'; id = 3; method = 'tools/list'; params = @{} }).result.tools
     $count = @($tools).Count
     Check ($count -eq $ExpectedTools) "tools/list advertises exactly $ExpectedTools tools (got $count)"
+
+    # 4. The build state, printed and never judged: a pull request edits these files on purpose, so a tree
+    #    that no longer matches its build.cfg is expected here (release.ps1 -Build enforces a package's stamp).
+    try {
+        $doc = Get-Prop (Invoke-Rpc @{ jsonrpc = '2.0'; id = 4; method = 'tools/call'; params = @{ name = 'doctor'; arguments = @{} } }).result 'structuredContent'
+        $buildInfo = Get-Prop $doc 'build'
+        Write-Host ("  build   : {0} ({1}): {2}" -f (Get-Prop $doc 'beckett_build'), (Get-Prop $buildInfo 'tree'), (Get-Prop $buildInfo 'note')) -ForegroundColor DarkCyan
+    } catch {
+        Write-Host "  build   : doctor did not answer ($($_.Exception.Message))" -ForegroundColor DarkYellow
+    }
     if ($count -ne $ExpectedTools) {
         $names = (@($tools | ForEach-Object { $_.name }) | Sort-Object) -join ', '
         Write-Host "  tools were: $names" -ForegroundColor DarkYellow

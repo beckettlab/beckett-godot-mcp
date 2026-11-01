@@ -59,7 +59,7 @@ jobs:
         #   4.6.3    previous stable, all three OSes
         #   4.7.2    current stable, all three OSes - what the editor's own updater
         #            is pushing people onto, so it is the lane that must be honest
-        #   4.8-dev7 next-engine snapshot, Linux only, WARN-ONLY (see continue-on-error)
+        #   4.8-beta2 next-engine snapshot, Linux only, WARN-ONLY (see continue-on-error)
         # Measured billable minutes are 0 on BOTH repos this file lands in (public Lite
         # and the private monorepo; actions/runs/<id>/timing reports 0 for every OS on
         # each), and the jobs run in parallel under a ceiling of 20, so dropping mac/win
@@ -82,7 +82,7 @@ jobs:
           - os: windows-latest
             godot: '4.7.2'
           - os: ubuntu-latest
-            godot: '4.8-dev7'
+            godot: '4.8-beta2'
             experimental: true
 
     env:

@@ -148,16 +148,16 @@ func _start_serving() -> void:
 	# Default OFF for safety (opt-in start, like best-ue-mcp). Env var is the
 	# headless/CI on-ramp; a Start button on the dock panel is the interactive one.
 	var port := _port()
+	var served := true  # false only when a start was tried here and could not bind
 	# Easiest install: enabling the plugin starts the server (localhost-only, Origin-checked).
 	# Opt out with project setting beckett/autostart=false or env BECKETT_ENABLE=0. (A human
 	# who pressed Start on the dock before the editor settled already has a running server.)
 	if _autostart() and not _server.is_running():
-		var err := _server.start_server(port)
-		if err == OK:
+		# A port from BECKETT_PORT is exact (port_is_strict); a failed start reports itself everywhere.
+		served = _server.start_server(port, MCPServerScript.port_is_strict()) == OK
+		if served:
 			print("[beckett] server listening on " + MCPClientConfig.mcp_url(_server.http.port, _server.auth_token())
 				+ (" (token auth on)" if _server.auth_enabled() else ""))
-		else:
-			push_error("[beckett] failed to start server: %s" % error_string(err))
 
 	# Zero-click connect: write/merge configs for the clients that actually exist here
 	# (.mcp.json always; .cursor when Cursor is installed; an existing .vscode/mcp.json entry is
@@ -165,7 +165,10 @@ func _start_serving() -> void:
 	# clobber. Claude Desktop stays button-only (global file + npx bridge), see panel.
 	# The auth token (when on) rides in the URL, and the LIVE port is used (B5: it may
 	# have walked past a busy one), so configs stay in lockstep with both.
-	if _auto_write_config():
+	# A start that did not serve writes none (1.17): the port it asked for is another program's, and a
+	# URL naming it would send this project's clients there. Its error names any config that already does.
+	# With autostart off nothing was tried, so the configs name the port a Start will ask for, as before.
+	if _auto_write_config() and served:
 		var wrote: Array = MCPClientConfig.ensure_auto(_server.http.port if _server.is_running() else port, _server.auth_token())
 		# A refused write (a symlinked config, a file held open) is not an error to the editor, but
 		# a client left on a stale URL is invisible without a line saying why.

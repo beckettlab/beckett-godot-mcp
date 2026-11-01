@@ -105,7 +105,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Invoke a method on a resolved object. args = a positional array, coerced to the declared param types: vectors accept [x,y,z] / {\"x\":..} / \"x y z\", colors hex or [r,g,b,a], object params a node name/path or res:// path. Wrong types or counts return an ERROR (never a silent no-op). Returns the result as JSON.",
+        "description":  "Invoke a method on a resolved object. args = a positional array, coerced to the declared param types: vectors accept [x,y,z] / {\"x\":..} / \"x y z\", colors hex or [r,g,b,a], object params a node name/path or res:// path. set / set_deferred / set_indexed hold the value to the property\u0027s type, as set_property does. Wrong types or counts return an ERROR (never a silent no-op). Returns the result as JSON.",
         "inputSchema":  {
                             "properties":  {
                                                "args":  {
@@ -727,7 +727,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Instantiate a packed scene (res://*.tscn) as a child in the open scene (undoable).",
+        "description":  "Instantiate a packed scene (res://*.tscn, or an imported model such as .glb) as a child in the open scene (undoable). It instances the scene the way the editor does, so the saved scene stores it as an instance of the file and later edits to the file show up in this scene.",
         "inputSchema":  {
                             "properties":  {
                                                "name":  {
@@ -737,7 +737,7 @@
                                                               "type":  "string"
                                                           },
                                                "scene":  {
-                                                             "description":  "res:// path to a .tscn/.scn",
+                                                             "description":  "res:// path to a .tscn/.scn, or an imported model such as .glb",
                                                              "type":  "string"
                                                          }
                                            },
@@ -973,7 +973,7 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Rename a node in the open scene (undoable).",
+        "description":  "Rename a node in the open scene (undoable). Like the Scene dock, it also respells every relative NodePath in the scene that leads through the node (an exported NodePath, Array[NodePath] or Dictionary entries, RemoteTransform3D.remote_path, a %unique path) in the same undo step, and the reply lists them. It refuses a sibling\u0027s name, and a %unique name that another node already holds. Characters a node name cannot hold are replaced the way Godot replaces them, and the reply gives the name the node ended up with.",
         "inputSchema":  {
                             "properties":  {
                                                "name":  {
@@ -1131,11 +1131,11 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  true
                         },
-        "description":  "Capture an image the agent can see. target=game (default) captures the RUNNING game; target=editor captures the 2D editor viewport (PNG only). A bare call caps the long edge at max_dim=1280 — pass scale, region, max_dim=0, format or save_to to opt out. annotate=ui draws numbered Set-of-Mark boxes and returns the legend. For pure functional state ui_snapshot is cheaper. Token dials + delivery: help(tool=\"screenshot\").",
+        "description":  "Capture an image the agent can see. target=game (default) captures the RUNNING game; target=editor the editor\u0027s 2D or 3D view (PNG only). A bare call caps the long edge at max_dim=1280: pass scale, region, max_dim=0, format or save_to to opt out. annotate=ui draws numbered Set-of-Mark boxes and returns the legend. For pure functional state ui_snapshot is cheaper. Token dials, game pixels, delivery: help(tool=\"screenshot\").",
         "inputSchema":  {
                             "properties":  {
                                                "annotate":  {
-                                                                "description":  "\u0027ui\u0027 = draw numbered marks on interactive controls + return the legend (game target)",
+                                                                "description":  "ui = numbered marks on interactive controls + their legend (game target)",
                                                                 "type":  "string"
                                                             },
                                                "deliver":  {
@@ -1147,7 +1147,7 @@
                                                               "type":  "string"
                                                           },
                                                "max_dim":  {
-                                                               "description":  "cap the long edge in px (default 1280 on a call with no other framing argument; 0 = no cap)",
+                                                               "description":  "long-edge cap in px (default 1280 on a bare call; 0 = no cap)",
                                                                "type":  "integer"
                                                            },
                                                "max_marks":  {
@@ -1163,17 +1163,21 @@
                                                               "type":  "array"
                                                           },
                                                "save_to":  {
-                                                               "description":  "also write the frame to this path (res://, user:// or absolute); mints a diff baseline",
+                                                               "description":  "also write the frame here (res://, user:// or absolute): a diff baseline",
                                                                "type":  "string"
                                                            },
                                                "scale":  {
-                                                             "description":  "0.05..1.0 downscale before encode (game target; default 1.0)",
+                                                             "description":  "0.05..1.0 downscale before encode (default 1.0)",
                                                              "type":  "number"
                                                          },
                                                "target":  {
                                                               "description":  "game | editor",
                                                               "type":  "string"
-                                                          }
+                                                          },
+                                               "viewport":  {
+                                                                "description":  "SubViewport (or its container) path: its own game pixels, not the window",
+                                                                "type":  "string"
+                                                            }
                                            },
                             "type":  "object"
                         },
@@ -1295,12 +1299,16 @@
                             "openWorldHint":  false,
                             "readOnlyHint":  false
                         },
-        "description":  "Set a property on a resolved object (undoable). value is coerced to the property\u0027s type (vectors accept \"x y z\" or [x,y,z]).",
+        "description":  "Set a property on a resolved object (undoable). value is converted to the type the property declares: vectors take [x,y,z], \"x y z\" or \"(x, y, z)\", colors \"#rrggbb\", a name or [r,g,b,a], an enum its number, an object property a res:// path (loaded) or null. A value that does not fit is an ERROR and nothing is written. Every spelling: help(tool=\"set_property\").",
         "inputSchema":  {
                             "properties":  {
                                                "property":  {
                                                                 "type":  "string"
                                                             },
+                                               "save":  {
+                                                            "description":  "also write the resource\u0027s own .tres/.res file now",
+                                                            "type":  "boolean"
+                                                        },
                                                "target":  {
                                                               "type":  "string"
                                                           },

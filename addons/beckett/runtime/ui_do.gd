@@ -22,11 +22,14 @@ extends RefCounted
 ## Every step result carries a `status` (v1.16), the same words a playtest assert uses:
 ##   pass     the step did what it says (an assert held)
 ##   fail     an assert was EVALUATED and was false when its timeout ran out, or the step itself is
-##            malformed (unknown step, a wait with nothing to wait for): the suite author's to fix
+##            malformed (unknown step, a wait with nothing to wait for, a node named by a ':' property
+##            path): the suite author's to fix
 ##   blocked  the step could not get to a judgement: its target never appeared, a control was never
 ##            clickable, a wait timed out, an inject could not be applied. Nothing was judged.
 
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")  # the assert condition's result can be any type
+const TypedJson := preload("res://addons/beckett/core/typed_json.gd")  # the node/property/equals assert: the one node_state rule (same())
+const Invariants := preload("res://addons/beckett/runtime/invariants.gd")  # which calls a condition may not make (unsafe_call)
 const GameState := preload("res://addons/beckett/runtime/game_state.gd")  # the `state` step: read and judge a node's _beckett_state()
 
 const INJECT_MAX_FRAMES := 600
@@ -199,7 +202,17 @@ func _try(step: Dictionary) -> Dictionary:
 	return {"ok": false, "status": "fail", "error": "unknown step: use one of click/type/wait/assert/input/inject/state"}
 
 
+## A step that names its node with a ':' property path fails at once, as malformed: such a path never resolves, so
+## waiting on it would only run the step's timeout out. The words are the runtime's (mcp_runtime.subpath_refusal),
+## the same a runtime tool gets for the same path. {} for any other target.
+func _subpath_fail(why: String) -> Dictionary:
+	return {} if why.is_empty() else {"ok": false, "status": "fail", "error": why}
+
+
 func _try_click(msg: Dictionary) -> Dictionary:
+	var bad := _subpath_fail(_rt._target_refusal(msg))
+	if not bad.is_empty():
+		return bad
 	var r: Dictionary = _rt._click_control(msg)
 	if bool(r.get("clicked", false)):
 		var d := {"ok": true, "detail": "clicked %s" % str(r.get("path", ""))}
@@ -221,6 +234,9 @@ func _try_type(msg: Dictionary) -> Dictionary:
 	# its own attempt, so strip it here (one-frame typing still fires every signal once).
 	var m := msg.duplicate()
 	m.erase("per_frame")
+	var bad := _subpath_fail(_rt._target_refusal(m))
+	if not bad.is_empty():
+		return bad
 	var r: Dictionary = _rt._type_text(m)
 	if bool(r.get("ok", false)):
 		if r.has("warning"):
@@ -244,6 +260,9 @@ func _try_wait(w: Dictionary) -> Dictionary:
 		_last_wait = "waiting %d ms" % int(w["ms"])
 		return {}
 	if w.has("node"):
+		var bad := _subpath_fail(_rt.subpath_refusal("node", str(w["node"]), "", false))
+		if not bad.is_empty():
+			return bad
 		if _rt._resolve(str(w["node"])) != null:
 			return {"ok": true, "detail": "node appeared: %s" % str(w["node"])}
 		_last_wait = "node not found yet: %s" % str(w["node"])
@@ -259,6 +278,10 @@ func _try_assert(a: Dictionary) -> Dictionary:
 	if a.has("condition"):
 		return _eval_eventually(str(a["condition"]), "assert")
 	if a.has("node") and a.has("property"):
+		# Told the node alone: this step reads its property with a plain get, which takes no ':' path of its own.
+		var bad := _subpath_fail(_rt.subpath_refusal("node", str(a["node"]), "", false))
+		if not bad.is_empty():
+			return bad
 		var n: Node = _rt._resolve(str(a["node"]))
 		if n == null:
 			_last_wait = "assert target not found yet: %s" % str(a["node"])
@@ -267,13 +290,17 @@ func _try_assert(a: Dictionary) -> Dictionary:
 		_evaluated = true
 		if _values_equal(actual, a.get("equals")):
 			return {"ok": true, "detail": "%s.%s == %s" % [str(a["node"]), str(a["property"]), str(a.get("equals"))]}
-		_last_wait = "%s.%s = %s (want %s)" % [str(a["node"]), str(a["property"]), str(actual), str(a.get("equals"))]
+		# The value as a read returns it (a vector [0, 6, 12]), as the playtest asserts print it too.
+		_last_wait = "%s.%s = %s (want %s)" % [str(a["node"]), str(a["property"]), str(TypedJson.render(actual)), str(a.get("equals"))]
 		return {}
 	return {"ok": false, "status": "fail", "error": "assert needs condition, or node+property+equals"}
 
 
 func _eval_eventually(src: String, what: String) -> Dictionary:
 	if _cond == null or _cond_src != src:
+		var unsafe := Invariants.unsafe_call(src)
+		if not unsafe.is_empty():
+			return {"ok": false, "status": "fail", "error": "%s condition refused: %s" % [what, unsafe]}
 		_cond = Expression.new()
 		_cond_src = src
 		if _cond.parse(src) != OK:
@@ -289,7 +316,7 @@ func _eval_eventually(src: String, what: String) -> Dictionary:
 	_evaluated = true
 	if CallArgs.to_bool(v):
 		return {"ok": true, "detail": "%s: %s -> true" % [what, src]}
-	_last_wait = "%s: %s -> %s" % [what, src, str(v)]
+	_last_wait = "%s: %s -> %s" % [what, src, str(TypedJson.render(v))]
 	return {}
 
 
@@ -303,6 +330,9 @@ func _try_state(spec: Dictionary) -> Dictionary:
 	var bad := GameState.spec_error(spec)
 	if not bad.is_empty():
 		return {"ok": false, "status": "fail", "error": bad}
+	var sub_bad := _subpath_fail(_rt.subpath_refusal("node", str(spec["node"]), "", false))
+	if not sub_bad.is_empty():
+		return sub_bad
 	var n: Node = _rt._resolve(str(spec["node"]))
 	if n == null:
 		_last_wait = "state node not found yet: %s" % str(spec["node"]).left(80)
@@ -335,6 +365,18 @@ func _try_inject(spec: Dictionary) -> Dictionary:
 			return {"ok": false, "status": "fail", "error": bad}
 		var sets: Array = spec.get("set", []) if spec.get("set", []) is Array else []
 		var calls: Array = spec.get("call", []) if spec.get("call", []) is Array else []
+		# Before anything is applied: a write names its property beside the node, so its split carries both.
+		for i in sets.size():
+			var sd: Dictionary = sets[i]
+			var sbad := _subpath_fail(_rt.subpath_refusal("node", str(sd["node"]), str(sd["property"]), true))
+			if not sbad.is_empty():
+				sbad["error"] = "inject set[%d]: %s" % [i, sbad["error"]]
+				return sbad
+		for i in calls.size():
+			var cbad := _subpath_fail(_rt.subpath_refusal("node", str((calls[i] as Dictionary)["node"]), "", false))
+			if not cbad.is_empty():
+				cbad["error"] = "inject call[%d]: %s" % [i, cbad["error"]]
+				return cbad
 		for e in sets + calls:
 			if _rt._resolve(str((e as Dictionary)["node"])) == null:
 				_last_wait = "inject target not found yet: %s" % str((e as Dictionary)["node"]).left(80)
@@ -410,8 +452,7 @@ func _sel(v: Variant) -> Dictionary:
 	return (v as Dictionary).duplicate() if v is Dictionary else {}
 
 
-## Numeric-tolerant equality (mirrors playtest_tools/_runner): JSON numbers are floats.
+## The assert step's node/property/equals: TypedJson.same, the rule every node_state assert judges by (1.17). A number
+## matches its JSON float, and a vector matches [0, 6, 11], "0 6 11" or the "(0.0, 6.0, 11.0)" a read printed before.
 static func _values_equal(actual: Variant, expected: Variant) -> bool:
-	if (actual is int or actual is float) and (expected is int or expected is float):
-		return is_equal_approx(float(actual), float(expected))
-	return str(actual) == str(expected)
+	return TypedJson.same(actual, expected)

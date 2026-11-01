@@ -25,6 +25,8 @@ const CapturesScript := preload("res://addons/beckett/core/captures.gd")  # deli
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")  # flags arrive as text from lenient clients
 const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # save_to: no write through a link that leaves the project
 const GameState := preload("res://addons/beckett/runtime/game_state.gd")  # state_fields: the caps a game's state answer is held to again
+const CaptureSource := preload("res://addons/beckett/runtime/capture_source.gd")  # the sizing math both capture targets share (1.17)
+const RuntimeBridge := preload("res://addons/beckett/core/runtime_bridge.gd")  # with_kind: what a command with no answer may still do (1.17)
 
 ## Long-edge cap applied to a screenshot call that asked for no framing of its own (1.13).
 ## A bare capture of a 1440p game moved 5.5 MB of base64 for a picture the model reads just
@@ -35,8 +37,8 @@ const DEFAULT_MAX_DIM := 1280
 func _register(registry) -> void:
 	registry.register({
 		"name": "screenshot",
-		"description": "Capture an image the agent can see. target=game (default) captures the RUNNING game; target=editor captures the 2D editor viewport (PNG only). A bare call caps the long edge at max_dim=1280 — pass scale, region, max_dim=0, format or save_to to opt out. annotate=ui draws numbered Set-of-Mark boxes and returns the legend. For pure functional state ui_snapshot is cheaper. Token dials + delivery: help(tool=\"screenshot\").",
-		"help": "Token-cost dials (game target):\n  scale=0.5        quarters the pixels\n  max_dim=N        caps the LONG EDGE in px. A call passing NO framing argument defaults to max_dim=1280, because a bare 1440p capture was measured at 5,583,634 bytes of result body for a picture the model reads just as well smaller. Opt out with scale, region, max_dim=0, format or save_to: any of those means you already decided what you wanted back.\n  format=jpeg|webp with quality (default 0.8) compresses far below PNG on a game frame\n  region=[x, y, w, h]  crops, clamped to the frame\n\nannotate=ui draws numbered Set-of-Mark boxes over every visible interactive control AND returns the legend as structured {marks:[{i, path, rect, text?}]}. One glance answers both \"does it look right\" and \"what can I click where\"; follow up with click_control path=<the legend path> (Full). The 1280 cap is folded into the same factor that draws the boxes, so an annotated capture stays pixel-accurate at any size.\n\ndeliver (1.14) chooses the CHANNEL, not the framing:\n  inline (default)  the image rides in the result, as it always has\n  link              the frame is parked in the capture store and you get a capture:// resource_link plus the absolute path, with no base64 in the transcript at all\n  both              link and image\nA client older than MCP 2025-06-18 cannot read a resource_link, so deliver=link degrades to both rather than returning a picture nobody can see.\n\nsave_to also writes the frame to a path of your choosing (res://, user:// or absolute) so later captures can be diffed against it (compare_screenshots, Full). That is how a baseline is minted, which is why it opts out of the size cap.",
+		"description": "Capture an image the agent can see. target=game (default) captures the RUNNING game; target=editor the editor's 2D or 3D view (PNG only). A bare call caps the long edge at max_dim=1280: pass scale, region, max_dim=0, format or save_to to opt out. annotate=ui draws numbered Set-of-Mark boxes and returns the legend. For pure functional state ui_snapshot is cheaper. Token dials, game pixels, delivery: help(tool=\"screenshot\").",
+		"help": "Token-cost dials:\n  scale=0.5        quarters the pixels\n  max_dim=N        caps the LONG EDGE in px. A call passing NO framing argument defaults to max_dim=1280, because a bare 1440p capture was measured at 5,583,634 bytes of result body for a picture the model reads just as well smaller. Opt out with scale, region, max_dim=0, format or save_to: any of those means you already decided what you wanted back.\n  format=jpeg|webp with quality (default 0.8) compresses far below PNG on a game frame\n  region=[x, y, w, h]  crops, clamped to the frame\n\nGame pixels (viewport=, 1.17):\n  A pixel-art game draws its world into a SubViewport at game resolution and shows it enlarged through a stretch SubViewportContainer, so a window capture repeats each game pixel N x N times. viewport=<that SubViewport, or the container that shows it> captures the SubViewport's own frame: 288x162 game pixels cost about a quarter of the image tokens of their 1152x648 window. It leaves out whatever the window draws outside the SubViewport (a HUD on a CanvasLayer, a popup). No viewport, or viewport=window, is the window as always; a window capture of such a layout names the viewport= to pass, once per game run.\n  A frame with a short side under 200 px is enlarged in whole nearest steps (each game pixel a k x k block, at most 8x, the long edge within max_dim or else 1280) until it reaches 200: 288x162 comes back as 576x324. scale (which only shrinks) or save_to opts out, and save_to writes the native game pixels.\n  region counts game pixels, so a small region is a zoom; annotate=ui marks the controls inside the SubViewport.\n  The line gives the mapping in GUI px, the space ui_snapshot's rects are in and the Full edition's simulate_input, drag and scroll position= take: \"1 px here = 2 GUI px from (X, Y)\" puts picture pixel (x, y) at (X + 2x, Y + 2y) there, and from is left out when it is (0, 0). It says when the frame may be old (its container is hidden, or its update mode is Disabled or Once), when an HDR frame was converted to 8 bits, and where the OS cursor is when it is over the picture, since no capture draws it.\n  compare_screenshots (Full) takes viewport= too: capture its baseline the same way.\n  PNG suits game pixels: an enlarged frame compresses well, and JPEG blurs every edge.\n\ntarget=editor captures the 2D view when the editor shows it, else the 3D view on screen (the first one shown in a split layout): the editor camera with its gizmos, as the editor last drew it. The Script, AssetLib and Game screens have nothing to capture: ask the user to switch the editor to 2D or 3D, or use target=game. scale, max_dim (1280 on a bare call), region, deliver and save_to apply there; viewport, annotate and format do not.\n\nannotate=ui draws numbered Set-of-Mark boxes over every visible interactive control AND returns the legend as structured {marks:[{i, path, rect, text?}]}. One glance answers both \"does it look right\" and \"what can I click where\"; follow up with click_control path=<the legend path> (Full). The 1280 cap is folded into the same factor that draws the boxes, so an annotated capture stays pixel-accurate at any size.\n\ndeliver (1.14) chooses the CHANNEL, not the framing:\n  inline (default)  the image rides in the result, as it always has\n  link              the frame is parked in the capture store and you get a capture:// resource_link plus the absolute path, with no base64 in the transcript at all\n  both              link and image\nA client older than MCP 2025-06-18 cannot read a resource_link, so deliver=link degrades to both rather than returning a picture nobody can see.\n\nsave_to also writes the frame to a path of your choosing (res://, user:// or absolute) so later captures can be diffed against it (compare_screenshots, Full). That is how a baseline is minted, which is why it opts out of the size cap.",
 		"readonly": true,
 		# Bootstrap set (tool_registry.gd) and the heaviest member of it (~1.6 KB, most of it the
 		# argument list): it is the half of run-and-see that no other tool can stand in for, and the
@@ -45,14 +47,15 @@ func _register(registry) -> void:
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string", "description": "game | editor"},
 			"region": {"type": "array", "description": "[x,y,w,h] pixel crop"},
-			"scale": {"type": "number", "description": "0.05..1.0 downscale before encode (game target; default 1.0)"},
-			"max_dim": {"type": "integer", "description": "cap the long edge in px (default 1280 on a call with no other framing argument; 0 = no cap)"},
+			"scale": {"type": "number", "description": "0.05..1.0 downscale before encode (default 1.0)"},
+			"max_dim": {"type": "integer", "description": "long-edge cap in px (default 1280 on a bare call; 0 = no cap)"},
 			"format": {"type": "string", "description": "png (default) | jpeg | webp (game target)"},
 			"quality": {"type": "number", "description": "jpeg/webp quality 0.1..1.0 (default 0.8)"},
-			"annotate": {"type": "string", "description": "'ui' = draw numbered marks on interactive controls + return the legend (game target)"},
+			"annotate": {"type": "string", "description": "ui = numbered marks on interactive controls + their legend (game target)"},
 			"max_marks": {"type": "integer", "description": "cap on annotate marks (default 40)"},
-			"save_to": {"type": "string", "description": "also write the frame to this path (res://, user:// or absolute); mints a diff baseline"},
+			"save_to": {"type": "string", "description": "also write the frame here (res://, user:// or absolute): a diff baseline"},
 			"deliver": {"type": "string", "description": "inline (default) | link (a capture:// resource_link, no base64) | both"},
+			"viewport": {"type": "string", "description": "SubViewport (or its container) path: its own game pixels, not the window"},
 		}},
 		"handler": Callable(self, "_screenshot"),
 	})
@@ -74,7 +77,7 @@ func _register(registry) -> void:
 	registry.register({
 		"name": "ui_snapshot",
 		"description": "One-call UI snapshot of the RUNNING game: every visible Control as structured data (path, class, text, rect, and the semantic state pixels cannot tell you: disabled, focused, checked, value, selected, editable, tooltip) plus per-control honesty flags. For FUNCTIONAL UI checks this replaces a screenshot plus a read per control; keep screenshot for visual/render bugs. Every field, and the free since_hash re-read: help(tool=\"ui_snapshot\").",
-		"help": "Per control: path, class (plus a custom class_name when it has one), text, rect [x, y, w, h] in gui space as ints, and the semantic state a picture cannot carry —\n  disabled, focused, checked (toggles), value + range (sliders / spin / progress), selected (+ selected_text / tabs / item_count), editable / placeholder / secret (text fields), tooltip, mouse_ignore.\n\nInteractive controls also carry honesty flags:\n  clipped        scrolled out of view\n  occluded_by    another control would swallow the click (popup, modal, overlay)\n\nTop level: the focus owner, open popup / dialog windows (exclusive = modal), the viewport size, and a stable content 'hash'.\n\nThe hash is the cheap re-read: pass it back as since_hash and an UNCHANGED UI returns {unchanged:true} instead of the payload. Polling a menu costs almost nothing that way.\n\nScope: walks the whole SceneTree root, so autoload HUD layers and popups are included. Narrow with path=, slim with interactive_only=true, cap with max_nodes.",
+		"help": "Per control: path, class (plus a custom class_name when it has one), text, rect [x, y, w, h] as ints in the root viewport's GUI space, and the semantic state a picture cannot carry:\n  disabled, focused, checked (toggles), value + range (sliders / spin / progress), selected (+ selected_text / tabs / item_count), editable / placeholder / secret (text fields), tooltip, mouse_ignore.\n\nrect is where the control is drawn, in the space the Full edition's clicks, drag and scroll take: CanvasLayer transforms, a Camera2D, SubViewportContainer stretch and embedded windows are applied (1.17). A control that a click from the screen cannot reach the same way (inside a SubViewport no container shows, or in a native window) carries space=<that viewport's path>, and its rect is in that viewport's own pixels. windows[].rect is a window's position and size in the root's GUI space; a native window (native=true) gives its screen position instead.\n\nInteractive controls also carry honesty flags:\n  clipped        scrolled out of view\n  occluded_by    another control would swallow the click (popup, modal, overlay)\n\nTop level: the focus owner, open popup / dialog windows (exclusive = modal), the viewport size, and a stable content 'hash'.\n\nThe hash is the cheap re-read: pass it back as since_hash and an UNCHANGED UI returns {unchanged:true} instead of the payload. Polling a menu costs almost nothing that way.\n\nScope: walks the whole SceneTree root, so autoload HUD layers and popups are included. Narrow with path=, slim with interactive_only=true, cap with max_nodes.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"path": {"type": "string", "description": "subtree root to scope the walk (name, relative, or /root/...)"},
@@ -138,7 +141,7 @@ func _register(registry) -> void:
 			"window_ms": {"type": "integer"}, "interval_ms": {"type": "integer"},
 			"series": {"type": "array"},
 		}, "required": ["target"]},
-		"help": "target=game is the default whenever a play session is connected; target=editor reads the editor process instead.\n\nduration_s > 0 (game only, max 30) SAMPLES OVER TIME: it polls every interval_ms (default 100, minimum 30) while the game keeps running, then returns per-monitor stats {min, avg, p95, max}. That is how you get fps.p95 or process_time.max across a stress window rather than one lucky instant.\n\nseries=true also returns the raw per-sample series. It is token-heavy — ask for it only when you need the shape of the curve, not its bounds.\n\nEditor-target sampling is refused honestly rather than faked: a tool call blocks the editor's own loop, so an over-time editor read would measure nothing but a stalled editor.",
+		"help": "target=game is the default whenever a play session is connected; target=editor reads the editor process instead.\n\nWhat the time monitors hold (Godot's own, passed on as they are): process_time and physics_process_time are TIME_PROCESS and TIME_PHYSICS_PROCESS, in seconds. Godot sets them once a second, to the slowest frame of the second before (the scene's process pass plus rendering) and to its slowest physics tick, so neither is the time of one frame, and both read 0 in the game's first second. Navigation's per-frame step counts in process_time on Godot 4.6 and later, and in physics_process_time on 4.4 and older. fps is TIME_FPS: the frames drawn in the last whole second, also set once a second. For the time of every frame, a playtest run (Full) times each frame of its replay window (frame_ms_*).\n\nduration_s > 0 (game only, max 30) SAMPLES OVER TIME: it polls every interval_ms (default 100, minimum 30) while the game keeps running, then returns per-monitor stats {min, avg, p95, max}. process_time.max is then the slowest frame of the seconds the window spans, the second before it included; the memory, object and draw-call figures are read at each poll.\n\nseries=true also returns the raw per-sample series. It is token-heavy, so ask for it only when you need the shape of the curve, not its bounds.\n\nEditor-target sampling is refused honestly rather than faked: a tool call blocks the editor's own loop, so an over-time editor read would measure nothing but a stalled editor.",
 		"readonly": true,
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string", "description": "game | editor | auto"},
@@ -199,16 +202,32 @@ func _screenshot(args: Dictionary) -> Dictionary:
 	if not (args.has("scale") or args.has("region") or args.has("max_dim") \
 			or args.has("format") or args.has("save_to")):
 		cmd["max_dim"] = DEFAULT_MAX_DIM
+	# viewport= (1.17) reads one SubViewport's own game pixels. Without it the game sends the window, exactly as before,
+	# and is asked to name a pixel-art layout it sees there (once per game run). Game pixels are enlarged to a readable
+	# size unless the caller sized the picture itself (scale) or wants the native frame (save_to, a diff baseline).
+	var vsel := viewport_arg(args)
+	if vsel.is_empty():
+		cmd["hint"] = true
+	else:
+		cmd["viewport"] = vsel
+		if not (args.has("scale") or args.has("save_to")):
+			cmd["fit"] = true
 	# Big frames + jpeg/webp encode + the annotate walk can push a cold heavy scene
 	# past the 4 s default — same reasoning as ui_snapshot's longer deadline.
-	var r: Dictionary = server.bridge.send_command(cmd, 10000)
+	var r: Dictionary = _read(cmd, 10000)
 	if not bool(r.get("ok", false)):
 		return {"error": str(r.get("error", "screenshot failed"))}
+	if not vsel.is_empty() and not r.has("src"):
+		# A game started before this Beckett ignores the argument and sends the window: never pass that off as game pixels.
+		return {"error": PREDATES_VIEWPORT % vsel.left(200)}
 	var desc := "game screenshot %dx%d (%s)" % [int(r.get("w", 0)), int(r.get("h", 0)), str(r.get("mime", "image/png"))]
 	if int(r.get("w", 0)) != int(r.get("full_w", r.get("w", 0))) or int(r.get("h", 0)) != int(r.get("full_h", r.get("h", 0))):
 		desc += " (from %dx%d)" % [int(r.get("full_w", 0)), int(r.get("full_h", 0))]
+	if r.has("src"):
+		desc = pixels_line(r)
 	if r.has("note"):
 		desc += " — " + str(r.get("note", ""))
+	desc += hint_line(r)
 	var b64 := str(r.get("data", r.get("png", "")))
 	var out := {"image_base64": b64, "image_mime": str(r.get("mime", "image/png"))}
 	# Hold the bytes in a LOCAL across delivery. deliver=link erases image_base64 from `out`,
@@ -236,13 +255,160 @@ func _screenshot(args: Dictionary) -> Dictionary:
 	return out
 
 
+## The text of a viewport= argument as a SubViewport path, or "" for the window (absent, empty, null or "window").
+static func viewport_arg(args: Dictionary) -> String:
+	var v: Variant = args.get("viewport", "")
+	if v == null:
+		return ""
+	var s := str(v).strip_edges()
+	return "" if s.to_lower() == "window" else s
+
+
+## The error for viewport= answered by a game whose runtime predates it (it sent the window instead).
+const PREDATES_VIEWPORT := "viewport=%s: the running game started before this Beckett, so it sent the window, not game pixels. Restart it (stop_scene, then play_scene) and capture again"
+
+
+## The line under a capture of a SubViewport's game pixels, worded from the runtime's facts: which SubViewport and its
+## size, the region cut and the enlargement, the picture's size and type, how many GUI px one picture pixel stands for
+## (and from where, when the picture's corner is not the root's (0, 0)), then the notes that apply. GUI px are the root
+## viewport's GUI space, the one simulate_input, drag, scroll position= and get_control_rect's gui_center use.
+static func pixels_line(r: Dictionary) -> String:
+	var line := "game pixels of %s (%dx%d)" % [one_line(r.get("src", "")), int(r.get("full_w", 0)), int(r.get("full_h", 0))]
+	var rg: Variant = r.get("region")
+	if rg is Array and (rg as Array).size() == 4:
+		line += " region [%d, %d, %d, %d]" % [int(rg[0]), int(rg[1]), int(rg[2]), int(rg[3])]
+	if int(r.get("k", 1)) > 1:
+		line += " at %dx" % int(r.get("k", 1))
+	line += ": %dx%d (%s)" % [int(r.get("w", 0)), int(r.get("h", 0)), one_line(r.get("mime", "image/png"))]
+	if r.get("px") is float or r.get("px") is int:
+		line += "; 1 px here = %s GUI px" % _num(float(r["px"]))
+		var at: Variant = r.get("px_from")
+		if at is Array and (at as Array).size() == 2:
+			line += " from (%d, %d)" % [int(at[0]), int(at[1])]
+	if r.has("stale"):
+		line += "; may be an old frame (%s)" % one_line(r.get("stale", ""))
+	if bool(r.get("hdr", false)):
+		line += "; HDR frame converted to 8 bits"
+	var cur: Variant = r.get("cursor")
+	if cur is Array and (cur as Array).size() == 2:
+		line += "; OS cursor at (%d, %d) here, not drawn" % [int(cur[0]), int(cur[1])]
+	return line
+
+
+## The once-per-game-run line a window capture gets when the game reports a pixel-art layout: the viewport= that
+## reads its game pixels, the size they come back at, and about what share of this picture's image tokens they cost.
+## "" when there is no report, or when the game pixels would not cost at most half (CaptureSource.hint_share, the
+## same test the game passes before it spends its once-per-run hint, so a hint it sends is a hint shown).
+static func hint_line(r: Dictionary) -> String:
+	var hint: Variant = r.get("pixel_hint")
+	if not (hint is Dictionary):
+		return ""
+	var hw := int((hint as Dictionary).get("w", 0))
+	var hh := int((hint as Dictionary).get("h", 0))
+	var share := CaptureSource.hint_share(int(r.get("w", 0)), int(r.get("h", 0)), hw, hh)
+	if share < 2:
+		return ""
+	var k := CaptureSource.pixel_upscale(hw, hh, DEFAULT_MAX_DIM)
+	var size := "%dx%d" % [hw, hh]
+	if k > 1:
+		size += " as %dx%d" % [hw * k, hh * k]
+	return "; game pixels: viewport=%s (%s, about 1/%d the image tokens; leaves out anything drawn outside it)" % [one_line((hint as Dictionary).get("path", "")), size, share]
+
+
+## A value from the game's reply, as text fit for a line: one line, at most 200 characters.
+static func one_line(v: Variant) -> String:
+	return str(v).replace("\n", " ").replace("\r", " ").left(200)
+
+
+## A factor as short text: 2 for 2.0, 0.5, 4.01.
+static func _num(v: float) -> String:
+	var t := "%.2f" % snappedf(v, 0.01)
+	while t.contains(".") and (t.ends_with("0") or t.ends_with(".")):
+		t = t.left(t.length() - 1)
+	return t
+
+
+## Names the editor's main screens get in the target=editor error.
+const _SCREEN_NAMES := {"CanvasItemEditor": "2D", "Node3DEditor": "3D", "ScriptEditor": "Script", "EditorAssetLibrary": "AssetLib", "GameView": "Game"}
+
+
+## Which editor view target=editor captures: {kind: "2D"} when the 2D view is on screen, else {kind: "3D", index, of}
+## for the first 3D view shown (of = how many a split layout shows), else {error} naming the screen that is up (its
+## class, `screen`). Pure, so the unit suite pins every branch. The tool never switches the screen itself: that is the
+## user's editor, and a view switched to has not drawn yet.
+static func editor_view_pick(shown_2d: bool, shown_3d: Array, screen: String) -> Dictionary:
+	if shown_2d:
+		return {"kind": "2D"}
+	var first := -1
+	var count := 0
+	for i in shown_3d.size():
+		if bool(shown_3d[i]):
+			count += 1
+			if first < 0:
+				first = i
+	if first >= 0:
+		return {"kind": "3D", "index": first, "of": count}
+	var name := str(_SCREEN_NAMES.get(screen, screen))
+	if name.is_empty():
+		name = "current"
+	return {"error": "target=editor: the editor shows its %s screen, which has no 2D or 3D view to capture. Ask the user to switch the editor to 2D or 3D, or use target=game for the running game" % name}
+
+
+## The class of the editor's main screen on show (CanvasItemEditor, Node3DEditor, ScriptEditor ...), "" when unreadable.
+static func _main_screen_class() -> String:
+	var holder: Control = EditorInterface.get_editor_main_screen()
+	if holder == null:
+		return ""
+	for c in holder.get_children():
+		if c is Control and (c as Control).visible:
+			# The Script and Game screens sit in a WindowWrapper (what lets them float): name the editor inside it.
+			for inner in c.get_children():
+				if _SCREEN_NAMES.has(inner.get_class()):
+					return inner.get_class()
+			return str(c.get_class())
+	return ""
+
+
+## The long-edge cap of a target=editor capture: max_dim as given, else DEFAULT_MAX_DIM unless scale, region or save_to
+## opts out, as on the game target. format is no opt-out here: an editor capture is always PNG, so a format=jpeg call
+## (one asking for a smaller payload) keeps the cap, and the line names format as ignored.
+static func editor_max_dim(args: Dictionary) -> int:
+	if args.has("scale") or args.has("region") or args.has("max_dim") or args.has("save_to"):
+		return int(args.get("max_dim", 0))
+	return DEFAULT_MAX_DIM
+
+
+## True when an editor view's container is on screen: a hidden main screen hides it, and the editor stops drawing it.
+static func _on_screen(vp: Viewport) -> bool:
+	var p := vp.get_parent()
+	return p is Control and (p as Control).is_visible_in_tree()
+
+
+## target=editor: the 2D view when the editor shows it, else the 3D view on screen (get_editor_viewport_3d, called by
+## name so the script parses on a build without it). Before 1.17 it read the 2D view alone, which the editor stops
+## drawing while another screen is up, so the 3D screen came back as a blank 2x2 frame. Sized like a game capture:
+## the 1280 cap on a bare call, scale and max_dim.
 func _editor_screenshot(args: Dictionary) -> Dictionary:
-	var vp := EditorInterface.get_editor_viewport_2d()
-	if vp == null:
-		return {"error": "no editor 2D viewport available"}
-	var img := vp.get_texture().get_image()
+	var vp2: Viewport = EditorInterface.get_editor_viewport_2d()
+	var views_3d: Array = []
+	var shown_3d: Array = []
+	if EditorInterface.has_method("get_editor_viewport_3d"):
+		for i in 4:
+			var v: Variant = EditorInterface.call("get_editor_viewport_3d", i)
+			views_3d.append(v)
+			shown_3d.append(v is Viewport and _on_screen(v as Viewport))
+	var pick := editor_view_pick(vp2 != null and _on_screen(vp2), shown_3d, _main_screen_class())
+	if pick.has("error"):
+		return {"error": str(pick["error"])}
+	var vp: Viewport = vp2
+	if str(pick["kind"]) == "3D":
+		vp = views_3d[int(pick["index"])]
+	var img: Image = null
+	if vp != null and vp.get_texture() != null:
+		img = vp.get_texture().get_image()
 	if img == null:
 		return {"error": "could not read editor viewport (headless / no RHI?)"}
+	var full := Vector2i(img.get_width(), img.get_height())
 	var rg = args.get("region", null)
 	if rg is Array and rg.size() >= 4:
 		var x := clampi(int(rg[0]), 0, img.get_width() - 1)
@@ -250,8 +416,24 @@ func _editor_screenshot(args: Dictionary) -> Dictionary:
 		var w := clampi(int(rg[2]), 1, img.get_width() - x)
 		var h := clampi(int(rg[3]), 1, img.get_height() - y)
 		img = img.get_region(Rect2i(x, y, w, h))
+	# The game target's sizing: an editor view on a HiDPI screen is as large as any game frame.
+	var s := CaptureSource.capped_scale(float(args.get("scale", 1.0)), img.get_width(), img.get_height(), editor_max_dim(args))
+	if s < 1.0:
+		img.resize(maxi(1, roundi(img.get_width() * s)), maxi(1, roundi(img.get_height() * s)), Image.INTERPOLATE_BILINEAR)
 	var b64 := Marshalls.raw_to_base64(img.save_png_to_buffer())
-	var desc := "editor viewport %dx%d" % [img.get_width(), img.get_height()]
+	var desc := "editor %s view %dx%d" % [str(pick["kind"]), img.get_width(), img.get_height()]
+	if img.get_width() != full.x or img.get_height() != full.y:
+		desc += " (from %dx%d)" % [full.x, full.y]
+	if int(pick.get("of", 1)) > 1:
+		desc += " (view %d of %d shown)" % [int(pick["index"]) + 1, int(pick["of"])]
+	var ignored: Array = []
+	for a in ["viewport", "annotate"]:
+		if args.has(a):
+			ignored.append(a)
+	if args.has("format") and str(args["format"]).to_lower() != "png":
+		ignored.append("format")
+	if not ignored.is_empty():
+		desc += "; ignored for target=editor: %s" % ", ".join(PackedStringArray(ignored))
 	var out := {"image_png_base64": b64}
 	# The editor path takes `deliver` too. It shipped in 1.14.0 wired only into the game
 	# path, so target=editor silently ignored the argument — the exact dishonesty class
@@ -343,7 +525,7 @@ func _ui_snapshot(args: Dictionary) -> Dictionary:
 			cmd[k] = args[k]
 	# A cold heavy scene can stall frames past the default 4 s deadline (measured on a
 	# real RPG right after load) — a snapshot is worth the longer wait, never a desync.
-	var r: Dictionary = server.bridge.send_command(cmd, 10000)
+	var r: Dictionary = _read(cmd, 10000)
 	if not bool(r.get("ok", false)):
 		return {"error": str(r.get("error", "ui_snapshot failed"))}
 	var out := r.duplicate()
@@ -357,7 +539,7 @@ func _get_remote_tree(args: Dictionary) -> Dictionary:
 	for k in ["path", "depth", "max_nodes", "max_children", "collapse"]:
 		if args.has(k):
 			cmd[k] = args[k]
-	var r: Dictionary = server.bridge.send_command(cmd)
+	var r: Dictionary = _read(cmd)
 	if not bool(r.get("ok", false)):
 		return {"error": str(r.get("error", "tree failed"))}
 	var out := {"tree": r.get("tree", {}), "node_count": r.get("node_count", 0)}
@@ -448,10 +630,15 @@ func _find_nodes(args: Dictionary) -> Dictionary:
 	for k in ["class", "name", "path", "recursive", "max"]:
 		if args.has(k):
 			cmd[k] = args[k]
-	var r: Dictionary = server.bridge.send_command(cmd)
+	var r: Dictionary = _read(cmd)
 	if not bool(r.get("ok", false)):
 		return {"error": str(r.get("error", "find failed"))}
 	return {"json": {"nodes": r.get("nodes", []), "count": r.get("count", 0)}}
+
+
+## send_command for a command that only reads: a timeout says nothing changed (1.17, RuntimeBridge.with_kind).
+func _read(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
+	return RuntimeBridge.with_kind(server.bridge.send_command(cmd, timeout_ms), RuntimeBridge.KIND_READ)
 
 
 ## Copy path + selector fields (class/name/text/nth) from tool args into a bridge cmd,
@@ -475,7 +662,7 @@ func _render_probe(args: Dictionary) -> Dictionary:
 	_add_target(cmd, args)
 	# Sampling the index buffer of a dense mesh reads its arrays once — worth a longer
 	# deadline than a plain property read, same reasoning as ui_snapshot.
-	var r: Dictionary = server.bridge.send_command(cmd, 10000)
+	var r: Dictionary = _read(cmd, 10000)
 	if not bool(r.get("ok", false)):
 		return {"error": str(r.get("error", "render_probe failed")), "suggestion": str(r.get("suggestion", ""))}
 	var out := r.duplicate()
@@ -487,7 +674,7 @@ func _render_probe(args: Dictionary) -> Dictionary:
 func _set_debug_draw(args: Dictionary) -> Dictionary:
 	if not server.bridge.is_game_connected():
 		return {"error": "game not running (no runtime connection). Call play_scene first, then wait_until condition=game_connected."}
-	var r: Dictionary = server.bridge.send_command({"cmd": "debug_draw", "mode": str(args.get("mode", "normal"))})
+	var r: Dictionary = RuntimeBridge.with_kind(server.bridge.send_command({"cmd": "debug_draw", "mode": str(args.get("mode", "normal"))}), RuntimeBridge.KIND_CHANGE)
 	if not bool(r.get("ok", false)):
 		return {"error": str(r.get("error", "set_debug_draw failed")), "suggestion": str(r.get("suggestion", ""))}
 	var text := "debug draw: %s (was %s)" % [str(r.get("mode", "")), str(r.get("previous", ""))]
@@ -500,7 +687,7 @@ func _set_debug_draw(args: Dictionary) -> Dictionary:
 func _runtime_get(args: Dictionary) -> Dictionary:
 	var cmd := {"cmd": "get", "prop": str(args.get("property", ""))}
 	_add_target(cmd, args)
-	var r: Dictionary = server.bridge.send_command(cmd)
+	var r: Dictionary = _read(cmd)
 	if not bool(r.get("ok", false)):
 		return {"error": str(r.get("error", "get failed"))}
 	return {"json": {"value": r.get("value"), "resolved": r.get("resolved", "")}}
@@ -513,8 +700,16 @@ func _wait_for_node(args: Dictionary) -> Dictionary:
 	var timeout: int = clampi(int(args.get("timeout_ms", 5000)), 100, 60000)
 	var tick := func() -> Dictionary:
 		var r: Dictionary = server.bridge.send_command({"cmd": "exists", "path": path}, 1000)
-		return {"found": true} if bool(r.get("exists", false)) else {}
+		if bool(r.get("exists", false)):
+			return {"found": true}
+		# The game answered that this path can never name a node (a ':' property path): waiting would only run the
+		# timeout out. A reply without `exists` is the channel's (a timeout, a break), which keeps the wait going.
+		if r.has("exists") and not bool(r.get("ok", true)):
+			return {"refused": str(r.get("error", ""))}
+		return {}
 	var res: Dictionary = MCPJobsScript.poll_until(timeout, 120, tick, Callable(server.bridge, "poll_once"))
+	if res.has("refused"):
+		return {"error": str(res["refused"])}
 	if res.has("timeout"):
 		return {"error": "timeout waiting for node: %s" % path}
 	return {"text": "node appeared: %s" % path}
@@ -571,7 +766,7 @@ func _sample_perf(duration_s: float, interval_ms: int, want_series: bool) -> Dic
 		return {}
 	MCPJobsScript.poll_until(int(duration_s * 1000.0), interval_ms, tick, Callable(server.bridge, "poll_once"))
 	if series.is_empty():
-		return {"error": "no samples collected — the game stopped answering during the window"}
+		return {"error": "no samples collected: the game did not answer any poll in the window (busy, or stopped in the debugger: get_play_state)"}
 	var stats: Dictionary = {}
 	var first: Dictionary = series[0]
 	for key in first:
@@ -627,7 +822,7 @@ func _game_logs(args: Dictionary) -> Dictionary:
 	for k in ["level", "limit", "filter", "clear"]:
 		if args.has(k):
 			cmd[k] = args[k]
-	var r: Dictionary = server.bridge.send_command(cmd)
+	var r: Dictionary = RuntimeBridge.with_kind(server.bridge.send_command(cmd), RuntimeBridge.KIND_CHANGE if CallArgs.flag(args, "clear") else RuntimeBridge.KIND_READ)
 	if not bool(r.get("ok", false)):
 		return {"error": str(r.get("error", "logs failed"))}
 	var entries: Array = r.get("entries", [])

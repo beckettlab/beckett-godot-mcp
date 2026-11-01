@@ -1,7 +1,7 @@
 # Install & Connect — Beckett (MCP for Godot)
 
 ## Requirements
-- **Godot 4.2+** (4.4+ recommended; CI-verified on 4.4.1, and on 4.6.3 & 4.7.2 across Windows, macOS and Linux, with a warn-only 4.8-dev lane). Standard editor: no Node.js, no Python, nothing else.
+- **Godot 4.2+** (4.4+ recommended; CI-verified on 4.4.1, and on 4.6.3 & 4.7.2 across Windows, macOS and Linux, with a warn-only 4.8-beta lane). Standard editor: no Node.js, no Python, nothing else.
 - An MCP client: **Claude Code**, **Cursor**, **VS Code** (Copilot or Cline), **Codex**, **Gemini CLI**, **Antigravity**, **Devin Desktop** (formerly Windsurf), **Claude Desktop** (through a bridge), or any Streamable-HTTP MCP client.
 
 ## Quickest path (TL;DR)

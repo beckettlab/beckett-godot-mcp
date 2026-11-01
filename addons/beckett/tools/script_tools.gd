@@ -104,8 +104,9 @@ func _validate_script(args: Dictionary) -> Dictionary:
 	if not CallArgs.flag(args, "warnings", true):
 		return PathGuard.noted(_heal_echo(v, {"text": "OK: script compiles (warnings not checked).%s" % synced}), guard)
 	# The source that compiled (class_name mask included), checked as the file it is meant
-	# for. Line numbers survive the mask, so they match what the caller sent.
-	var w := WarningCheck.collect(str(v["source"]), vpath)
+	# for. Line numbers survive the mask, so they match what the caller sent. When the verdict
+	# itself came from that check (_compile_as_file), its warnings are already here.
+	var w: Dictionary = v["checked"] if v.has("checked") else WarningCheck.collect(str(v["source"]), vpath)
 	if not bool(w.get("ok", false)):
 		return PathGuard.noted(_heal_echo(v, {"text": "OK: script compiles. Warnings could not be checked: %s.%s" % [str(w.get("reason", "")), synced]}), guard)
 	var warns: Array = w["warnings"]
@@ -266,8 +267,64 @@ func _script_patch(args: Dictionary) -> Dictionary:
 # ---------------------------------------------------------------- helpers
 
 ## Compile GDScript source in-memory. Returns {valid:bool, detail:String, source:String}, plus
-## {synced} when it had to bring the editor up to date first.
+## {synced} when it had to bring the editor up to date first, and {checked} (the warning check's
+## result) when the verdict came from compiling it as its file (see _compile_as_file).
 func _compile(content: String, target_path: String = "") -> Dictionary:
+	var v := _compile_synced(content, target_path)
+	if bool(v["valid"]) or not bool(v.get("unsure", false)) or target_path.is_empty():
+		return v
+	return _compile_as_file(v, content, target_path)
+
+
+## Test seam: the child script _compile_as_file runs. The unit suite points it at a missing file to
+## drive the case where no check of the file as itself can run.
+var as_file_probe: String = WarningCheck.PROBE
+
+
+## A copy that failed without being a fair stand-in for its file (see _compile_once) gets its
+## verdict from the file itself: the child process of the warning check compiles the source AS
+## target_path (take_over_path), where the script's own class_name means the class being compiled
+## and a path relative to the file resolves from its folder, as in the editor and in a played
+## game. The child's errors, with their lines, become the detail. Seen 2026-10-08 on 4.6.2: every
+## rewrite of a script whose class_name was already registered and that had
+## `func get_self() -> ClassName: return self` was refused as "Parse error", and so was any script
+## with `extends "base.gd"`. When the child cannot run, the copy's result stands, compiled once
+## more out loud so its errors reach the Output panel and engine_errors as before.
+func _compile_as_file(v: Dictionary, content: String, target_path: String) -> Dictionary:
+	var echo_from := -1
+	if server != null and server.error_echo != null:
+		echo_from = server.error_echo.mark()
+	var w: Dictionary = WarningCheck.collect(content, target_path, as_file_probe)
+	var out: Dictionary
+	if not bool(w.get("ok", false)):
+		out = _compile_once(content, target_path, false)
+		if not bool(out["valid"]):
+			out["detail"] = str(out["detail"]) + (" (compiled apart from its file, where it cannot be judged fairly; the check of the file itself could not run: %s)" % str(w.get("reason", "")))
+		if v.has("echo_from"):
+			out["echo_from"] = v["echo_from"]
+	else:
+		# Only a compile error refuses the source. The child also reports what the script raised while it loaded (a
+		# static initializer that throws), which compiles fine; validate_script reports that from `checked`.
+		var lines: Array = []
+		for e in w.get("errors", []):
+			var msg := str(e.get("message", ""))
+			if msg.begins_with("Parse Error") or msg.begins_with("Parser Error") or msg.begins_with("Compile Error"):
+				var line := int(e.get("line", 0))
+				lines.append(("line %d: %s" % [line, msg]) if line > 0 else msg)
+		if lines.is_empty():
+			out = {"valid": true, "detail": "", "source": content, "checked": w}
+		else:
+			out = {"valid": false, "detail": "; ".join(lines), "source": content}
+		if echo_from >= 0:
+			out["echo_from"] = echo_from  # the copy's attempt is no verdict; nothing it raised belongs in the reply
+	if v.has("synced"):
+		out["synced"] = v["synced"]
+	return out
+
+
+## The old body of _compile: one compile, and when it fails in the editor, a sync of what the
+## editor does not know yet and one more try.
+func _compile_synced(content: String, target_path: String) -> Dictionary:
 	var v := _compile_once(content, target_path)
 	if bool(v["valid"]) or not Engine.is_editor_hint():
 		return v
@@ -314,10 +371,12 @@ func _synced_note(v: Dictionary) -> String:
 		bits.append("registered class_name %s (%s)" % [str(c["class"]), str(c["path"])])
 	var reloaded: Array = s.get("reloaded", [])
 	if not reloaded.is_empty():
-		bits.append("handed %d script(s) that changed on disk back to the editor" % reloaded.size())
+		bits.append("reloaded %d script(s) that changed on disk" % reloaded.size())
 	var note := ""
 	if not bits.is_empty():
 		note = "\nFirst %s: written outside the editor, they were not known to it yet." % ", ".join(bits)
+	for n in s.get("notes", []):  # what reloading them changed on the nodes running them, or why one was not reloaded
+		note += "\n" + str(n)
 	var pending: Array = s.get("pending", [])
 	if not pending.is_empty():
 		var names: Array = []
@@ -337,7 +396,7 @@ func _warning_scope_note(path: String) -> String:
 	return ""
 
 
-func _compile_once(content: String, target_path: String) -> Dictionary:
+func _compile_once(content: String, target_path: String, quiet: bool = true) -> Dictionary:
 	# v1.9 B4 root-fix: a detached GDScript.reload() false-errors on ANY script whose
 	# class_name is already registered ("hides a global script class") — which is every
 	# re-validate of an existing named script. Mask the declaration (line numbers preserved)
@@ -346,12 +405,45 @@ func _compile_once(content: String, target_path: String) -> Dictionary:
 	var masked := _mask_registered_class_name(content, target_path)
 	if masked.has("conflict"):
 		return {"valid": false, "detail": str(masked["conflict"]), "source": content}
+	# This copy is a second script with no file, and two kinds of source compile differently in
+	# it than as the file they are for: one whose class_name was renamed just above (the body's
+	# `ClassName` still means the registered script, so `self` is not that class here) and one
+	# with a path relative to its file, which has no folder to resolve from. Such a failure is no
+	# verdict: with a path, _compile checks it again as the file, so this attempt stays out of the
+	# Output panel and engine_errors.
+	var unsure := str(masked["content"]) != content or _relative_path_re().search(content) != null
+	var hush := quiet and unsure and not target_path.is_empty()
+	var was_printing := Engine.print_error_messages
+	if hush:
+		Engine.print_error_messages = false
 	var gd := GDScript.new()
 	gd.source_code = str(masked["content"])
 	var err := gd.reload(false)
+	Engine.print_error_messages = was_printing
 	if err == OK:
 		return {"valid": true, "detail": "", "source": str(masked["content"])}
+	if unsure:
+		return _unsure_failure(err, str(masked["content"]), target_path)
 	return {"valid": false, "detail": "%s — see the Godot Output panel (or get_log) for the line." % error_string(err), "source": str(masked["content"])}
+
+
+## A failure of a copy that was no fair stand-in for its file (see _compile_once). With a path,
+## _compile checks it again as that file; without one there is nothing to check it against, and
+## the detail says what passing it would change.
+func _unsure_failure(err: Error, src: String, target_path: String) -> Dictionary:
+	var detail := "%s: see the Godot Output panel (or get_log) for the line." % error_string(err)
+	if target_path.is_empty():
+		detail += (" It was compiled apart from any file, where its own class_name does not name it and a path relative"
+			+ " to its file has no folder: pass the res:// path it is for as 'path' to have it checked as that file.")
+	return {"valid": false, "detail": detail, "source": src, "unsure": true}
+
+
+## A path relative to the script's own file, in the two places a compile resolves one:
+## `extends "base.gd"` and `preload("x.gd")`.
+static func _relative_path_re() -> RegEx:
+	var re := RegEx.new()
+	re.compile("(?:extends|preload)\\s*\\(?\\s*[\"'](?!res://|uid://|user://)")
+	return re
 
 
 ## Neutralize a `class_name X` declaration ONLY when X is already registered in the global

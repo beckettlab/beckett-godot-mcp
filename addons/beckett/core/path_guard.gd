@@ -202,9 +202,10 @@ static func skipped_note(skipped: Array) -> Dictionary:
 
 ## Is `os_path` (an OS path) a symbolic link, a directory junction or another reparse point? Reached
 ## by name (has_method / call): DirAccess.is_link only exists from Godot 4.3, and this script is loaded
-## on every engine the addon supports, 4.2 included, where naming it would be a parse error that stops
-## the whole plugin. An engine without it reports no link at all, which is what the writers did
-## before links were looked at. client_config.gd asks here too, so the trick lives in one place.
+## on every engine the addon supports, 4.2 included. A typed call would still compile there (DirAccess is
+## a native type, so the analyzer only warns), but it would fail at run time with "Nonexistent function"
+## on every write and read check. An engine without it reports no link at all, which is what the writers
+## did before links were looked at. client_config.gd asks here too, so the trick lives in one place.
 static func is_link_path(os_path: String) -> bool:
 	var da := DirAccess.open("res://")
 	return da != null and _link_at(da, os_path)
@@ -462,6 +463,26 @@ static func _join(prefix: String, segs: Array) -> String:
 	return prefix + "/" + "/".join(PackedStringArray(segs))
 
 
+## The form two spellings of one project folder share, for "is this request meant for the folder this
+## editor serves?" (mcp_server.gd's Beckett-Project check). It is the read rule's own spelling: on
+## Windows either slash separates and case does not matter, elsewhere the text is compared exactly
+## (an APFS or ext4 volume can be case-sensitive); runs of slashes and a trailing one do not count, a
+## UNC start is kept, and a trailing project.godot names its folder. "" for anything that can never
+## match: a relative path ("C:foo" included), res:// or user:// (they mean whichever project reads
+## them) and a ".." (refused, never resolved). No link is followed: a junction or a second spelling
+## of the same place is another text, and the refusal shows the spelling to send instead.
+static func folder_key(p: String) -> String:
+	var s := _norm(p.strip_edges())
+	if _key(s.get_file()) == "project.godot":
+		s = _norm(s.get_base_dir())
+	if _has_dotdot(s):
+		return ""
+	var parts := _parts(s)
+	if not bool(parts["abs"]):
+		return ""
+	return _key(_join(str(parts["prefix"]), parts["segs"]))
+
+
 ## A ".." segment, or a run of three or more dots (Windows reads a trailing dot as nothing, so these
 ## are not worth telling apart). Either slash splits, on every OS.
 static func _has_dotdot(s: String) -> bool:
@@ -474,15 +495,23 @@ static func _has_dotdot(s: String) -> bool:
 
 ## Text from the caller or off the filesystem, as it goes into a refusal: control characters become
 ## "?" and a long one is cut. A link's name and target are written by whoever made the link (a cloned
-## repository can), so they are quoted and short, never a free-standing sentence.
+## repository can), so they are quoted and short, never a free-standing sentence. The quoting is JSON's,
+## so a '"' or a '\' inside (a folder name on Linux or macOS may hold either) cannot end the quote early.
 static func _shown(s: String) -> String:
-	return "\"%s\"" % _plain(s)
+	return JSON.stringify(_plain(s))
 
 
 ## The same text without the quotes, for an entry of a list (a JSON string is quoted already).
 static func _plain(s: String) -> String:
 	var out := ""
 	for i in mini(s.length(), SHOWN_MAX):
-		var c := s.unicode_at(i)
-		out += "?" if (c < 32 or c == 127) else s[i]
+		out += "?" if _unsafe_char(s.unicode_at(i)) else s[i]
 	return out + ("..." if s.length() > SHOWN_MAX else "")
+
+
+## A character _plain shows as "?": a C0 or C1 control (U+0085 is a line break to some readers), the line
+## and paragraph separators U+2028 and U+2029, and the bidi controls that can make a reader show text in
+## another order (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069).
+static func _unsafe_char(c: int) -> bool:
+	return c < 32 or (c >= 127 and c <= 0x9F) or c == 0x2028 or c == 0x2029 or c == 0x200E or c == 0x200F \
+		or (c >= 0x202A and c <= 0x202E) or (c >= 0x2066 and c <= 0x2069)

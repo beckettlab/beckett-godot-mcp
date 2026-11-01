@@ -28,14 +28,39 @@ extends RefCounted
 ##     the base's nodes by the inherited root, exactly like the scene's own, so the owner chain
 ##     cannot tell them apart: _base_scene_of asks the scene FILE (the base's state lists its nodes).
 ##
-## HARD CONSTRAINT on this file: Node API only, no editor classes and no state. The unit suite
-## runs it in a plain engine, and the scene tools (core, shipped in Lite) call it.
+## The same question for a RESOURCE (resource_home and what follows it): set_property and set_resource change the copy
+## the editor has loaded, and a resource saved as its own file (a .tres, .res or .gdshader, named by its res:// path or
+## reached through a node) keeps the old value on disk until something saves it. Read in the engine source, the same on
+## 4.4.1, 4.6.2 and 4.7: a write through the undo history marks the resource edited, and every editor scene save
+## (EditorNode::_save_external_resources: save_scene, Ctrl+S, the save before a play) writes each edited res:// resource
+## the resource cache holds, a 'file::id' part through its file. Only while a saved scene is open, though: save_scene
+## refuses without one, and the save before a play saves nothing then (Ctrl+S writes them either way). A scene file is
+## never written through one of its parts (that save skips PackedScenes), an imported asset is rebuilt from its source on
+## import, and nothing outside res:// is written at all. The 2026-10-12 report: set_property on a ShaderMaterial saved as
+## its own .tres answered "set", the file kept the old value, and a game started later loaded that.
+##
+## HARD CONSTRAINT on this file: engine API only (Node, Resource, ResourceLoader, FileAccess), no editor classes and no
+## state. The unit suite runs it in a plain engine, and the scene tools (core, shipped in Lite) call it.
+
+## A file name in a NOTE or a refusal is the project's text: shown as refusals show filesystem text (control and line
+## separator characters as "?", cut at 160 characters), so a name with a newline cannot start a line of its own.
+const PathGuard := preload("res://addons/beckett/core/path_guard.gd")
 
 ## What the edit does to the node handed to verdict().
 const SET := "set"          ## one of its properties changes
 const ADD := "add_child"    ## a node is created / instanced / duplicated / moved UNDER it
 const REMOVE := "remove"    ## it is deleted or moved out of its parent (ask BEFORE doing it)
 const REORDER := "reorder"  ## it moves to another index in its parent (ask AFTER the move)
+
+## Where a written resource lives on disk (resource_home's "kind").
+const HOME_FILE := "file"          ## saved as its own file: the next scene save, or save=true, writes it
+const HOME_INSIDE := "inside"      ## a part ('file::id') of another resource file, written with that file
+const HOME_SCENE := "scene"        ## a scene file, or a part of one: only saving that scene writes it
+const HOME_EMBEDDED := "embedded"  ## no path: it lives in whatever holds it
+const HOME_IMPORTED := "imported"  ## an imported asset or the import cache: rebuilt on import, never saved
+const HOME_CODE := "code"          ## a script: write_script and script_patch write those
+const HOME_OUTSIDE := "outside"    ## a file outside res:// and user://, which nothing writes
+const SCENE_EXTS := ["tscn", "scn", "escn"]
 
 
 ## {persisted, reason, hint} for an edit on `node`, relative to the edited scene `root`.
@@ -249,3 +274,114 @@ static func _yes() -> Dictionary:
 
 static func _no(reason: String, hint: String) -> Dictionary:
 	return {"persisted": false, "reason": reason, "hint": hint}
+
+
+# ---------------------------------------------------------------- where a written resource lives on disk
+
+## {kind, file, part, open, scene_saved, registered} for a write to `res`, asked BEFORE the write (a write to
+## resource_path moves it). `open_scene` is the open scene's file, "" when none is open or it was never saved.
+##   file        the file that holds it: its own path, or the part before '::' for a part of another file
+##   open        a scene part's file is the open scene
+##   scene_saved a saved scene is open, so save_scene (and the save before a play) reach the editor's resource save
+##   registered  `res` is the copy the resource cache holds under its path, the only one an editor save looks at (a
+##               CACHE_MODE_IGNORE copy, or a part a reload swapped in, is not). has_cached comes first, so a 'file::id'
+##               path that nothing holds never reaches the loader.
+## Imported comes before scene so a part of an imported model ('res://x.glb::id') counts as imported, and a part of a
+## scene saved as .res is told apart by the class of the cached file that holds it.
+static func resource_home(res: Resource, open_scene: String) -> Dictionary:
+	var home := {"kind": HOME_EMBEDDED, "file": "", "part": false, "open": false, "scene_saved": not open_scene.is_empty(), "registered": false}
+	if res == null or res.resource_path.is_empty():
+		return home
+	var path := res.resource_path
+	var file := path.get_slice("::", 0)
+	var part := path.contains("::")
+	home["file"] = file
+	home["part"] = part
+	home["registered"] = ResourceLoader.has_cached(path) and ResourceLoader.load(path) == res
+	if file.begins_with("res://.godot/") or FileAccess.file_exists(file + ".import"):
+		home["kind"] = HOME_IMPORTED
+	elif SCENE_EXTS.has(file.get_extension().to_lower()) or (not part and res is PackedScene) or (part and _cached_scene(file)):
+		home["kind"] = HOME_SCENE
+		home["open"] = file == open_scene
+	elif not part and (res is Script or res.get_class() == "GDExtension"):
+		home["kind"] = HOME_CODE
+	elif not (file.begins_with("res://") or file.begins_with("user://")):
+		home["kind"] = HOME_OUTSIDE
+	else:
+		home["kind"] = HOME_INSIDE if part else HOME_FILE
+	return home
+
+
+## Does save=true write a file for this home (the resource's own, or the one that holds the part)?
+static func saves_file(home: Dictionary) -> bool:
+	return str(home.get("kind", "")) in [HOME_FILE, HOME_INSIDE]
+
+
+## The NOTE a write ends with when the file on disk is not what the editor now holds, "" when there is nothing to say (a
+## node, a resource with no path, a part of the open scene, a script). `save_arg` is true for set_property, which takes
+## save=true; set_resource's NOTE gives the same-value recipe instead (save=true on any stored property writes the whole
+## file). save_scene is offered only where it writes the file: a saved scene is open, the copy is the one the cache
+## holds, and the file is under res:// (the editor's scene save writes nothing else).
+static func file_note(home: Dictionary, save_arg: bool) -> String:
+	var raw := str(home.get("file", ""))
+	var file := PathGuard._plain(raw)
+	match str(home.get("kind", "")):
+		HOME_FILE, HOME_INSIDE:
+			var by_scene := bool(home.get("scene_saved", false)) and bool(home.get("registered", false)) and raw.begins_with("res://")
+			var ways := "save=true, or save_scene" if by_scene else "save=true"
+			if not save_arg:
+				var recipe := "set_property save=true on any stored property of this target at its current value: that writes the whole file"
+				ways = ("save_scene, or " + recipe) if by_scene else recipe
+			if str(home["kind"]) == HOME_FILE:
+				return "NOTE: %s on disk keeps the old value until saved (%s)." % [file, ways]
+			return "NOTE: %s, which stores this, keeps the old value on disk until saved (%s)." % [file, ways]
+		HOME_IMPORTED:
+			if raw.begins_with("res://.godot/"):
+				return "NOTE: this comes from the editor's import cache (%s), so no save writes this edit. Change the source asset or its import options, or override the value on the node that uses it." % file
+			return "NOTE: %s is an imported asset, so no save writes this edit: Godot rebuilds it from that file on import. Change the file or its import options (%s.import), or override the value on the node that uses it." % [file, file]
+		HOME_SCENE:
+			if bool(home.get("part", false)) and not bool(home.get("open", false)):
+				return "NOTE: this is part of the scene %s, and saving the open scene does not write it: open_scene %s and change it there." % [file, file]
+		HOME_OUTSIDE:
+			return "NOTE: %s is outside res:// and user://, so no save writes this edit." % file
+	return ""
+
+
+## {} when set_property save=true may go on to the file checks, else the refusal: what Beckett must not write, and what
+## no save would keep. Every one of these is asked before the write, so "Nothing was written." is true.
+static func save_refusal(home: Dictionary) -> Dictionary:
+	var raw := str(home.get("file", ""))
+	var file := PathGuard._plain(raw)
+	match str(home.get("kind", "")):
+		HOME_IMPORTED:
+			if raw.begins_with("res://.godot/"):
+				return {"error": "save=true: %s is in the editor's import cache, which Godot rebuilds on import, so no save keeps this edit. Nothing was written." % file,
+					"suggestion": "Change the source asset or its import options, or override the value on the node that uses it."}
+			return {"error": "save=true: %s is an imported asset, which Godot rebuilds from that file on import, so no save keeps this edit. Nothing was written." % file,
+				"suggestion": "Change the file or its import options (%s.import, then rescan_filesystem), or override the value on the node that uses it." % file}
+		HOME_CODE:
+			return {"error": "save=true: %s is a script; write_script and script_patch write scripts (they check and reload them). Nothing was written." % file}
+		HOME_SCENE:
+			if not bool(home.get("part", false)):
+				return {"error": "save=true: %s is a scene file, written only by saving that scene. Nothing was written." % file,
+					"suggestion": "open_scene path=%s, change it there, then save_scene." % file}
+			if not bool(home.get("open", false)):
+				return {"error": "save=true: this is part of the scene %s, which only saving that scene writes. Nothing was written." % file,
+					"suggestion": "open_scene path=%s, change it there, then save_scene." % file}
+		HOME_OUTSIDE:
+			return {"error": "save=true: %s is outside res:// and user://, and Beckett writes only there. Nothing was written." % file}
+	return {}
+
+
+## The NOTE for save=true on something with no file of its own (a node, a resource with no path, a part of the open
+## scene): the value is set, and the scene that holds it is what a save writes. `open_scene` "" means that scene has no
+## file yet, and save_scene without a path refuses it.
+static func save_noop_note(what: String, open_scene: String) -> String:
+	if open_scene.is_empty():
+		return "NOTE: save=true wrote no file: %s has no file of its own, and the open scene has none yet: save_scene path=res://<name>.tscn writes it." % what
+	return "NOTE: save=true wrote no file: %s has no file of its own, and save_scene writes the scene that holds it." % what
+
+
+## A part's file is a scene when the copy of it the cache holds is one (a scene saved as .res).
+static func _cached_scene(file: String) -> bool:
+	return ResourceLoader.has_cached(file) and ResourceLoader.load(file) is PackedScene

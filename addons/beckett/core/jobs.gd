@@ -47,6 +47,23 @@ static func poll_until(timeout_ms: int, interval_ms: int, tick: Callable, pump: 
 			OS.delay_msec(maxi(1, interval_ms))
 	return out
 
+
+## poll_until for a game window that reports progress (1.17): when timeout_ms runs out while progress.call() (an int, such
+## as the frames the window ran) rose during it, the wait gets another timeout_ms, up to max_ms in all. A window that runs
+## one physics tick per engine frame takes as long as the game's frames do, so a wait worked out from the physics rate alone
+## is short on a game that renders below that rate; a window that stopped moving still times out after timeout_ms.
+static func poll_while_moving(timeout_ms: int, max_ms: int, interval_ms: int, tick: Callable, progress: Callable, pump: Callable = Callable()) -> Dictionary:
+	var t0 := Time.get_ticks_msec()
+	var seen := int(progress.call())
+	var out := poll_until(timeout_ms, interval_ms, tick, pump)
+	while out.has("timeout"):
+		var now := int(progress.call())
+		if now <= seen or Time.get_ticks_msec() - t0 + timeout_ms > max_ms:
+			break
+		seen = now
+		out = poll_until(timeout_ms, interval_ms, tick, pump)
+	return out
+
 # id -> {id, kind, pid, started, meta, output:String, stdio:FileAccess?, stderr:FileAccess?,
 #        done:bool, exit_code:int}
 var _jobs: Dictionary = {}

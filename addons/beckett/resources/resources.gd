@@ -17,11 +17,11 @@ func list() -> Array:
 	var out: Array = [
 		{"uri": "scene://tree", "name": "Open scene tree", "description": "Node tree of the scene open in the editor.", "mimeType": "application/json"},
 		{"uri": "scene://selection", "name": "Editor selection", "description": "Nodes currently selected in the editor.", "mimeType": "application/json"},
-		{"uri": "project://settings", "name": "Project settings", "description": "Project name, engine version, main scene, autoloads.", "mimeType": "application/json"},
+		{"uri": "project://settings", "name": "Project settings", "description": "Project name, the folder this editor serves, engine version, main scene, autoloads.", "mimeType": "application/json"},
 		{"uri": "assets://list", "name": "Project assets", "description": "Files under res:// (excluding .godot).", "mimeType": "application/json"},
 		{"uri": "log://output", "name": "Editor log", "description": "Tail of the Godot log file, if file logging is enabled.", "mimeType": "text/plain"},
 		{"uri": "audit://recent", "name": "MCP audit log", "description": "Last %d tool calls this session: time, tool, duration, ok/error, brief args." % 200, "mimeType": "application/json"},
-		{"uri": "status://connection", "name": "Connection status", "description": "Server running state, the connected MCP client (name/version from its handshake), idle time, live tool count. The model is NOT included — MCP does not report it.", "mimeType": "application/json"},
+		{"uri": "status://connection", "name": "Connection status", "description": "Server running state, which editor answered (folder, build, pid, ports), the connected MCP client (name/version from its handshake), idle time, live tool count. The model is NOT included: MCP does not report it.", "mimeType": "application/json"},
 	]
 	# Captures are DYNAMIC entries (v1.14): screenshot deliver=link parks a frame here and
 	# hands the client a capture:// link instead of a megabyte of inline base64. Listed so a
@@ -90,12 +90,16 @@ func _project_settings() -> Dictionary:
 		var name: String = str(key.get("name", ""))
 		if name.begins_with("autoload/"):
 			autoloads.append(name.substr(9))
-	return {
+	var out := {
 		"name": ProjectSettings.get_setting("application/config/name", ""),
 		"engine": Engine.get_version_info().get("string", ""),
 		"main_scene": ProjectSettings.get_setting("application/run/main_scene", ""),
 		"autoloads": autoloads,
 	}
+	# The name comes with a cloned repo and a copy shares it; the folder is what tells them apart (1.17).
+	if server != null and server.has_method("served_path"):
+		out["folder"] = server.served_path()
+	return out
 
 
 ## Connection state for status://connection (same data the dock's Server line shows).
@@ -109,7 +113,7 @@ func _connection_status() -> Dictionary:
 	if server.registry != null and server.has_method("get_effort"):
 		tools = server.registry.list_specs(server.get_effort()).size()
 	var game: bool = server.bridge != null and server.bridge.is_game_connected()
-	return {
+	var out := {
 		"running": server.is_running(),
 		"connected": idle >= 0,
 		"client": {
@@ -122,6 +126,10 @@ func _connection_status() -> Dictionary:
 		"game_runtime_connected": game,
 		"note": "MCP does not report the model; it is configured in the client.",
 	}
+	# Which editor this is (1.17): folder, name, build, edition, pid and both ports, as initialize's _meta has it.
+	if server.has_method("identity"):
+		out["server"] = server.identity()
+	return out
 
 
 func _list_assets(limit: int = 500, skipped: Array = []) -> Array:

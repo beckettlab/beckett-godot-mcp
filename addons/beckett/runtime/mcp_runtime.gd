@@ -23,44 +23,15 @@ var _rec: Array = []
 var _rec_t0 := 0
 var _rec_f0 := 0                  # Engine.get_physics_frames() at record_start; events stamp the frame delta 'f' for deterministic (frame-stepped) replay
 
-# Deterministic playtest control (time_control tool). A stepping WINDOW can't run
-# inside a single bridge handler — physics only advances between frames, and the
-# handler blocks the frame it runs on — so `step`/`step_until` just OPEN the window
-# (unpause + arm the flag) and reply immediately; _physics_process counts the ticks
-# and closes it (re-pause), while the editor polls tc_status. Because this autoload is
-# PROCESS_MODE_ALWAYS, its _physics_process fires even when the tree is paused, so the
-# tick counter is gated on `not get_tree().paused` — it counts ONLY real, unpaused
-# physics ticks during an open window (a naive counter would over-count paused frames).
-var _stepping := false            # a step/step_until window is open
-var _step_kind := ""              # "count" (fixed N frames) or "until" (condition)
-var _step_target := 0             # frames to run for kind=count
-var _step_count := 0              # unpaused physics ticks seen so far this window
-var _step_deadline := 0          # Time.get_ticks_msec() cap for kind=until (timeout)
-var _step_max_frames := 0         # optional frame cap for kind=until (0 = none)
-var _step_cond := ""              # condition source for kind=until
-var _step_expr: Object = null     # compiled Expression for the condition (game-side)
-var _step_result := ""            # terminator that closed the last window: done|condition|timeout|max_frames
-var _step_cond_value = null       # last evaluated condition value (for step_until reporting)
-var _resume_paused := true        # re-pause when the window closes (step always leaves paused)
-var _step_open_frame := 0         # Engine.get_physics_frames() snapshotted when the window opened (delta base)
-# Per-frame inputs riding INSIDE a count window (v1.12 W1). Index = tick offset within the
-# window, each entry an Array of wire events. This is the only way to say "hold jump on
-# frame 3, release on frame 7" and have the game observe it exactly there: injecting between
-# tool calls lands on whatever frame the round-trip happens to hit.
-var _step_inputs: Array = []
-var _step_injected := 0
-
-# Deterministic input replay window (playtest op=run). Mirrors the stepping window above:
-# unpause, run UNPAUSED physics ticks, inject each event when the tick index reaches its
-# recorded frame stamp 'f', then re-pause so asserts read a settled, reproducible state.
-# Injection happens mid-frame while UNPAUSED, so both _input() callbacks AND polled Input.*
-# state see it (a paused inject would miss pausable nodes' _input).
-var _replaying := false
-var _replay_events: Array = []
-var _replay_i := 0
-var _replay_tick := 0
-var _replay_end := 0
-var _replay_injected := 0
+# Deterministic playtest control (time_control op=step / op=step_until, with inputs_per_frame) and the playtest replay
+# window (op=run) run on one game-side tick clock, runtime/step_clock.gd (1.17): it counts the ticks the scene ran, puts
+# each tick's input in between ticks and freezes the game at the start of the tick after the last one. A window cannot
+# run inside one bridge handler (physics only advances between frames, and the handler blocks the frame it runs on), so
+# the commands OPEN it and reply at once, and the editor polls tc_step_status / replay_status until it has closed. The
+# clock is Full-only (pack.ps1 trims it from Lite), so it is loaded by path (_step_clock), never preloaded; without it
+# these commands answer that they are a Full-edition feature.
+const STEP_CLOCK_PATH := "res://addons/beckett/runtime/step_clock.gd"
+var _clock: Variant = null        # runtime/step_clock.gd once hooked to the tree; null in a build without it (Lite)
 # Perf capture across the replay window (v1.9 "measured, not estimated") — extracted to its
 # own module in the v1.9.1 B7 split; see runtime/replay_perf.gd for the how and the why.
 const ReplayPerf := preload("res://addons/beckett/runtime/replay_perf.gd")
@@ -70,6 +41,17 @@ const InputCodec := preload("res://addons/beckett/runtime/input_codec.gd")
 # UI snapshot + the occlusion hit test behind click_control's accuracy precheck
 # (v1.10 UI-playtest pillar) — feature logic lives in ui_inspect.gd, dispatch here.
 const UiInspect := preload("res://addons/beckett/runtime/ui_inspect.gd")
+# Which pixels a screenshot reads (1.17): the window, or one SubViewport's own game pixels (viewport=). The rules live
+# in capture_source.gd; the capture itself stays here.
+const CaptureSource := preload("res://addons/beckett/runtime/capture_source.gd")
+# A window capture names the viewport= of a pixel-art layout it sees once per game process; this says it has
+# (_pixel_hint sets it, and only for a hint the reply carries).
+var _pixel_hint_given := false
+# Where the drive tools aim (1.17): a click's push point, the focused-window rule for a press, GUI space -> window
+# pixels for injected input. Full-only (pack.ps1 trims runtime/drive_aim.gd from Lite), so it is loaded by path when a
+# drive command needs it, never preloaded: see _drive_aim.
+const DRIVE_AIM_PATH := "res://addons/beckett/runtime/drive_aim.gd"
+var _aim: Variant = null          # runtime/drive_aim.gd once loaded
 # ui_do macro window (v1.10 P1): one call = a whole click/type/wait/assert flow run
 # game-side across frames. The machine lives in ui_do.gd; _process ticks it.
 const UiDo := preload("res://addons/beckett/runtime/ui_do.gd")
@@ -87,10 +69,15 @@ var _reload_old_id := 0
 # two sides can't drift. core/callargs.gd is dependency-free on purpose: it parses in
 # the game process and in export-template builds (no editor classes).
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")
+# Replies keep their types (1.17): an editor that asks gets each reply in the engine's binary form (reply_line), so an int,
+# a vector or a transform reaches it exactly. core/typed_json.gd has the why and the shapes a client then reads.
+const TypedJson := preload("res://addons/beckett/core/typed_json.gd")
+# True while the reply being built goes out in binary: _safe then leaves a struct as it is for the binary form to carry.
+var _typed_reply := false
 # Beckett's own objects are off limits to every write and call the editor asks this autoload to make: the BeckettRuntime
 # autoload, this implementation node, anything below either, and any node whose script is one of Beckett's. The check is on
 # the node a command RESOLVED to, so it holds however the command named it (path, name, class, nth, under). Without it the
-# play_scene on_ready batch, which is a `set`, could write this node's own state (_recording, _step_inputs, _replaying ...)
+# play_scene on_ready batch, which is a `set`, could write this node's own state (_recording, _held, _clock ...)
 # and start the recorder, the input injector and the replay from the free edition. core/internals.gd has the why.
 const Internals := preload("res://addons/beckett/core/internals.gd")
 # Game-owned state (v1.16): nodes in the group beckett_state / mcp_state answer _beckett_state() /
@@ -163,10 +150,16 @@ func _ready() -> void:
 	# Tap the game's own log stream (errors/warnings/stack traces/prints).
 	# Logger + OS.add_logger() are Godot 4.5+; on 4.2–4.4 this is a graceful no-op.
 	_log_sink.install()
+	# The tick clock hooks the tree's physics_frame and process_frame signals here, before any scene script can (every
+	# autoload is ready before the scene), so its handlers run first in every tick and frame (they do nothing until a window
+	# opens). Last, so a clock that fails cannot stop the channel above. Lite has no clock: a no-op.
+	_step_clock()
 
 
 func _exit_tree() -> void:
 	_log_sink.uninstall()
+	if _clock != null:
+		_clock.detach()  # an open window ends, and Engine.max_physics_steps_per_frame goes back
 
 
 func _input(event: InputEvent) -> void:
@@ -229,157 +222,93 @@ func _process(delta: float) -> void:
 		if _since_retry >= RETRY_INTERVAL:
 			_since_retry = 0.0
 			_dial()
+	# The replay window's frame clock (1.17): one fixed point per frame, a no-op while no window is open.
+	_replay_perf.frame(Time.get_ticks_usec())
 
 
-# Drive an open stepping window forward one physics tick at a time. Runs in
-# PROCESS_MODE_ALWAYS, so it also fires while the tree is paused — we count ONLY
-# ticks that happen while the tree is genuinely UNPAUSED, so a step of N advances
-# the game by exactly N physics frames (paused ticks in between never count).
+# The ui_do window's invariants are the one thing this node still judges per physics tick; the step and replay windows
+# run on the tick clock (runtime/step_clock.gd), which counts the ticks the scene itself ran.
 func _physics_process(_delta: float) -> void:
-	if _replaying:
-		var rtree := get_tree()
-		if rtree != null and not rtree.paused:
-			_replay_step_tick()
-		return
 	# A ui_do window runs UNPAUSED in real time: its invariants are checked on every physics frame it
 	# is open (a paused game is not simulating, so there is nothing to judge).
 	if _inv.active and _ui_do.active:
 		var utree := get_tree()
 		if utree != null and not utree.paused:
 			_inv.check(_root(), Engine.get_physics_frames() - _inv_base_frame)
-	if not _stepping:
-		return
-	var tree := get_tree()
-	if tree == null:
-		return
-	# Only a real, UNPAUSED physics tick advances the game — count that one. This gate is
-	# why an ALWAYS-mode autoload doesn't over-count: its _physics_process fires even while
-	# the tree is paused, but those ticks are skipped here.
-	if tree.paused:
-		return
-	# This tick's input batch fires BEFORE the tick is counted and while UNPAUSED, so both
-	# _input callbacks and polled Input.* state observe it within this very frame (the same
-	# reasoning as the replay window: a paused inject would miss pausable nodes' _input).
-	if _step_count < _step_inputs.size():
-		_inject_step_inputs(_step_count)
-	_step_count += 1
-	match _step_kind:
-		"count":
-			if _step_count >= _step_target:
-				_close_step("done")
-		"until":
-			# Evaluate the condition AFTER this tick's simulation — the moment it is true we
-			# pause. (An already-true condition is handled at open time with 0 frames run.)
-			if _eval_step_condition():
-				_close_step("condition")
-			elif _step_max_frames > 0 and _step_count >= _step_max_frames:
-				_close_step("max_frames")
-			elif Time.get_ticks_msec() >= _step_deadline:
-				_close_step("timeout")
 
 
-## Close the open stepping window: record the terminator and (for step, always) re-pause
-## the tree so the game holds exactly where the step left it. The reported frame delta is
-## derived as open_frame + _step_count (see _tc_step_status), so it always equals the
-## number of real ticks that ran, even though the raw engine counter keeps ticking while
-## paused between this close and the editor's status poll.
-func _close_step(reason: String) -> void:
-	_stepping = false
-	_step_result = reason
-	_step_expr = null
-	_step_inputs = []
-	var tree := get_tree()
-	if tree != null and _resume_paused:
-		tree.paused = true
+## runtime/step_clock.gd, created once and hooked to the tree (again, after the node left it and came back), or null in a
+## build without it (Lite) or with a copy that does not load.
+func _step_clock() -> Variant:
+	if _clock == null:
+		if not ResourceLoader.exists(STEP_CLOCK_PATH):
+			return null
+		var impl = load(STEP_CLOCK_PATH)
+		if impl == null or not impl.can_instantiate():  # a copy that does not compile still loads, and .new() on it is a script error (as in beckett_autoload.gd)
+			return null
+		_clock = impl.new()
+	if is_inside_tree() and not _clock.attached_to(self):
+		_clock.attach(self, Callable(self, "_inject"))
+	return _clock
 
 
-## Fire the batch queued for tick `i` of the open window.
-func _inject_step_inputs(i: int) -> void:
-	var batch: Variant = _step_inputs[i]
-	if not (batch is Array):
-		return
-	for e in (batch as Array):
-		if not (e is Dictionary):
-			continue
-		var ie: InputEvent = InputCodec.build_event(e)
-		if ie != null:
-			_inject(ie)
-			_step_injected += 1
+## A step, step_until or replay window is open (ui_do is refused while one is).
+func _clock_open() -> bool:
+	return _clock != null and _clock.is_open()
 
 
-## Evaluate the step_until condition against the running scene, game-side, once.
-## Uses a GDScript Expression bound to the current scene root (its properties and
-## methods are in scope, e.g. "get_node(\"Player\").position.y > 500"). Any parse/exec
-## error is treated as "not yet" and stashed so the terminator report can surface it.
-func _eval_step_condition() -> bool:
-	if _step_expr == null:
-		return false
-	var root := _root()
-	var base: Object = root if root != null else self
-	var v: Variant = _step_expr.execute([], base, true)
-	if _step_expr.has_execute_failed():
-		_step_cond_value = "error: " + _step_expr.get_error_text()
-		return false
-	_step_cond_value = _safe(v)
-	return CallArgs.to_bool(v)
+## Why a window command cannot run in this build: the clock is not part of it (Lite), or it is and failed to load.
+func _clock_missing(what: String) -> String:
+	if not ResourceLoader.exists(STEP_CLOCK_PATH):
+		return "%s is a Full-edition feature (runtime/step_clock.gd is not part of this build)" % what
+	return "runtime/step_clock.gd failed to load (the engine's own error above says why)"
 
 
-## Open a deterministic replay window: sort events by frame stamp, unpause, and let
-## _physics_process inject them tick-by-tick. The editor polls replay_status until it closes.
+## Open a deterministic replay window (playtest op=run) on the tick clock: an event stamped f goes in before frame f+1,
+## the settle frames run after the last stamp, and the game freezes for the asserts. The editor polls replay_status.
 func _replay_open(msg: Dictionary) -> Dictionary:
 	var tree := get_tree()
 	if tree == null:
 		return {"ok": false, "error": "no scene tree"}
-	if _stepping:
-		return {"ok": false, "error": "a time_control step window is open — finish/unfreeze it before replay"}
-	var evs: Array = msg.get("events", []) if msg.get("events", []) is Array else []
-	var ordered := evs.duplicate()
-	ordered.sort_custom(func(a, b): return int(a.get("f", 0)) < int(b.get("f", 0)))
+	var clock: Variant = _step_clock()
+	if clock == null:
+		return {"ok": false, "error": _clock_missing("the deterministic playtest replay")}
+	if clock.in_step():
+		return {"ok": false, "error": "a time_control step window is open: let it finish, or time_control op=freeze, before replay"}
 	# Arm the suite's invariants BEFORE anything else changes: a rule set that does not load refuses
 	# the whole run with the reason, rather than replaying with the rules silently absent.
 	var inv_err := _arm_invariants(msg)
 	if not inv_err.is_empty():
 		return {"ok": false, "error": inv_err}
-	_replay_events = ordered
-	_replay_i = 0
-	_replay_tick = 0
-	_replay_injected = 0
 	_replay_perf.begin()
-	var settle: int = maxi(0, int(msg.get("settle_frames", 4)))
-	var last_f := 0
-	if ordered.size() > 0:
-		last_f = int(ordered[ordered.size() - 1].get("f", 0))
-	_replay_end = last_f + settle
-	_replaying = true
-	_resume_paused = true
-	tree.paused = false
-	return {"ok": true, "started": true, "events": ordered.size(), "end_frame": _replay_end}
+	return clock.open_replay(msg.get("events", []), maxi(0, int(msg.get("settle_frames", 4))), Callable(self, "_replay_head"))
 
 
-## One UNPAUSED physics tick of the replay window (called from _physics_process): fire every
-## event whose recorded frame 'f' has arrived, advance the tick, and re-pause once all events
-## have fired and the settle margin has elapsed.
-func _replay_step_tick() -> void:
-	_replay_perf.tick()
-	# Invariants first, so frame N is judged on the state frame N-1 left (and frame 0 on the state the
-	# window opened with); the replay's own frame numbering, the same as an event's `f`.
+## The start of a replay frame (the clock calls it at every head, before the frame's nodes run): the invariants judge
+## frame `frame` on the state the frame before it left (frame 0 on the state the window opened with), in the replay's own
+## numbering, the same as an event's f. Perf times frames in _process (replay_perf.gd frame()); the closing head ends it.
+func _replay_head(frame: int, closing: bool) -> void:
+	if closing:
+		_replay_perf.end()
 	if _inv.active:
-		_inv.check(_root(), _replay_tick)
-	while _replay_i < _replay_events.size():
-		var ev: Dictionary = _replay_events[_replay_i]
-		if int(ev.get("f", 0)) > _replay_tick:
-			break
-		var ie: InputEvent = InputCodec.build_event(ev)
-		if ie != null:
-			_inject(ie)
-			_replay_injected += 1
-		_replay_i += 1
-	_replay_tick += 1
-	if _replay_i >= _replay_events.size() and _replay_tick > _replay_end:
-		_replaying = false
-		var tree := get_tree()
-		if tree != null:
-			tree.paused = true
+		_inv.check(_root(), frame)
+
+
+func _replay_status() -> Dictionary:
+	var clock: Variant = _step_clock()
+	if clock == null:
+		return {"ok": false, "error": _clock_missing("the deterministic playtest replay")}
+	var rs: Dictionary = clock.replay_status()
+	rs["ok"] = true
+	rs["paused"] = get_tree() != null and get_tree().paused
+	var replaying := bool(rs.get("replaying", false))
+	# perf rides the poll that reports the window closed: the editor reads it only then, and reducing the whole
+	# series on every poll would spend the very frames it times (1.17).
+	rs["perf"] = {} if replaying else _replay_perf.summary()
+	# The rule results ride the poll that reports the window closed, not every poll before it.
+	if _inv.active and not replaying:
+		rs["invariants"] = _inv.results()
+	return rs
 
 
 ## Load the suite's `invariants` (msg.invariants) into the checker, replacing any previous set; "" on
@@ -429,9 +358,9 @@ func _scene_reload(msg: Dictionary = {}) -> Dictionary:
 	var path := str(cur.scene_file_path) if cur != null else ""
 	if target.is_empty() and path.is_empty():
 		return {"ok": false, "error": "the current scene (%s) was built in code and has no scene file, so it cannot be restarted from one" % cur.name}
-	_stepping = false
-	_step_expr = null
-	_replaying = false
+	if _clock != null:
+		_clock.abort()  # a step or replay window ends here, and the engine's step setting goes back
+	_replay_perf.end()
 	_ui_do.abort()
 	_inv.close()
 	_typing_done = true
@@ -460,10 +389,21 @@ func _scene_reload(msg: Dictionary = {}) -> Dictionary:
 ## change_scene_to_file, which says why. The cost is reading the scene's resources again: a heavy 3D scene takes longer to
 ## come back, which the editor's restart wait allows for.
 func _change_scene_afresh(tree: SceneTree, path: String) -> Error:
-	var fresh := ResourceLoader.load(path, "PackedScene", ResourceLoader.CACHE_MODE_REPLACE_DEEP) as PackedScene
+	# Through call(): the mode is a plain int on every engine, so the analyzer has no enum to check it against.
+	var fresh := ResourceLoader.call("load", path, "PackedScene", deep_replace_mode()) as PackedScene
 	if fresh != null:
 		return tree.change_scene_to_packed(fresh)
 	return tree.change_scene_to_file(path)
+
+
+## The cache mode _change_scene_afresh loads with. CACHE_MODE_REPLACE_DEEP is a Godot 4.3 value, and a class constant
+## this script named would stop it from parsing on 4.2, taking every runtime tool down with it, so it is looked up by
+## name. 4.2 gets CACHE_MODE_REPLACE: the scene file is read again, but the resource files it names come from the cache
+## (the deep mode is what reaches them), so a change a run made to one of those carries into the next run there.
+static func deep_replace_mode() -> int:
+	if ClassDB.class_has_integer_constant("ResourceLoader", "CACHE_MODE_REPLACE_DEEP"):
+		return ClassDB.class_get_integer_constant("ResourceLoader", "CACHE_MODE_REPLACE_DEEP")
+	return ResourceLoader.CACHE_MODE_REPLACE
 
 
 ## Is the restarted scene up? `id` is the live scene's instance id: it differs from scene_reload's
@@ -485,12 +425,25 @@ func _handle(line: String) -> void:
 	var msg: Variant = JSON.parse_string(line)
 	if not (msg is Dictionary):
 		return
+	_peer.put_data((reply_line(msg) + "\n").to_utf8_buffer())
+
+
+## The reply to one command, as the line written back to the editor (without its newline). An editor that asks for it
+## (TypedJson.ASK) gets the reply in binary, so an int, a vector or a transform reaches it exactly; any other editor gets
+## JSON as before 1.17, so an editor older than this game still reads every reply. A screenshot stays JSON either way:
+## its picture is base64 text already, and a second encoding would only make it a third longer on the socket.
+func reply_line(msg: Dictionary) -> String:
+	var typed := TypedJson.asks_typed(msg) and str(msg.get("cmd", "")) != "screenshot"
+	_typed_reply = typed
 	var resp := _dispatch(msg)
+	_typed_reply = false
+	if typed:
+		resp = TypedJson.pack(resp)
 	# Echo the editor's sequence id so a late reply (this handler ran past the editor's
 	# read deadline) is recognised as stale on the next command instead of desyncing.
-	if (msg as Dictionary).has("_id"):
-		resp["_id"] = (msg as Dictionary)["_id"]
-	_peer.put_data((JSON.stringify(resp) + "\n").to_utf8_buffer())
+	if msg.has("_id"):
+		resp["_id"] = msg["_id"]
+	return JSON.stringify(resp)
 
 
 func _dispatch(msg: Dictionary) -> Dictionary:
@@ -534,6 +487,10 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 		"reload_shader":
 			return _reload_shader(msg)
 		"exists":
+			# A ':' path never resolves: answer with the reason, not a bare no, so wait_for_node stops at once.
+			var exists_refused := _target_refusal(msg)
+			if not exists_refused.is_empty():
+				return {"ok": false, "exists": false, "error": exists_refused}
 			return {"ok": true, "exists": _resolve_target(msg) != null}
 		"find":
 			return _find(msg)
@@ -552,8 +509,8 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 		"ui_audit":
 			return _ui_audit(msg)
 		"ui_do_open":
-			if _stepping or _replaying:
-				return {"ok": false, "error": "a time_control/replay window is open — close it before ui_do"}
+			if _clock_open():
+				return {"ok": false, "error": "a time_control/replay window is open: close it before ui_do"}
 			if _ui_do.active:
 				return _ui_do.open(self, msg)  # refuses with "already open"; the running window keeps its own rules
 			var uido_inv_err := _arm_invariants(msg)
@@ -598,32 +555,15 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 			_recording = false
 			return {"ok": true, "events": _rec.duplicate()}
 		"eval":
-			var er := _root()
-			var eb: Object = er if er != null else self
-			var eex := Expression.new()
-			if eex.parse(str(msg.get("expr", ""))) != OK:
-				return {"ok": false, "error": "expr parse error: %s" % eex.get_error_text()}
-			var eval_v: Variant = eex.execute([], eb, true)
-			if eex.has_execute_failed():
-				return {"ok": false, "error": "expr exec error: %s" % eex.get_error_text()}
-			var eval_out := {"ok": true, "value": _safe(eval_v)}
-			# A condition that came back false also says what it read, so a failed expr assert reports the
-			# value that broke it (and two runs of a flaky suite can be told apart), not just "false".
-			if not CallArgs.to_bool(eval_v):
-				var eval_reads := Invariants.reads_of(str(msg.get("expr", "")).strip_edges(), eb)
-				if not eval_reads.is_empty():
-					eval_out["reads"] = eval_reads
-			return eval_out
+			return _eval_cmd(msg, false)
+		"eval_at":
+			return _eval_cmd(msg, true)
 		"replay_open":
 			if _ui_do.active:
-				return {"ok": false, "error": "a ui_do window is open — let it finish (ui_do_status) or ui_do_abort first"}
+				return {"ok": false, "error": "a ui_do window is open: let it finish (ui_do_status) or ui_do_abort first"}
 			return _replay_open(msg)
 		"replay_status":
-			var rs := {"ok": true, "replaying": _replaying, "injected": _replay_injected, "frames": _replay_tick, "total_events": _replay_events.size(), "remaining": _replay_events.size() - _replay_i, "paused": (get_tree() != null and get_tree().paused), "perf": _replay_perf.summary()}
-			# The rule results ride the poll that reports the window closed, not every poll before it.
-			if _inv.active and not _replaying:
-				rs["invariants"] = _inv.results()
-			return rs
+			return _replay_status()
 		"scene_reload":
 			return _scene_reload(msg)
 		"scene_state":
@@ -634,11 +574,11 @@ func _dispatch(msg: Dictionary) -> Dictionary:
 			return _tc_unfreeze()
 		"tc_step":
 			if _ui_do.active:
-				return {"ok": false, "error": "a ui_do window is open — let it finish (ui_do_status) or ui_do_abort first"}
+				return {"ok": false, "error": "a ui_do window is open: let it finish (ui_do_status) or ui_do_abort first"}
 			return _tc_step(msg)
 		"tc_step_until":
 			if _ui_do.active:
-				return {"ok": false, "error": "a ui_do window is open — let it finish (ui_do_status) or ui_do_abort first"}
+				return {"ok": false, "error": "a ui_do window is open: let it finish (ui_do_status) or ui_do_abort first"}
 			return _tc_step_until(msg)
 		"tc_step_status":
 			return _tc_step_status()
@@ -679,12 +619,17 @@ func _path_of(n: Node) -> String:
 ## Resolve a node by path/name. Base is the current scene, but ALSO accepts an
 ## absolute SceneTree path (/root/...) and falls back to a tree-wide name search,
 ## so both "Player" and "/root/Main/Player" work (the #1 'node not found' trap).
+## A path with a ':' in it resolves to nothing (see subpath_refusal for why, and for what the caller is told).
 func _resolve(path: String) -> Node:
 	var root := _root()
 	if root == null:
 		return null
 	if path.is_empty() or path == "." or path == root.name:
 		return root
+	# No node name can hold a ':', and get_node_or_null drops it and everything after it: Ground:material_override
+	# came back as Ground. Every command, ui_do step and object argument resolves through here.
+	if path.contains(":"):
+		return null
 	var tree := get_tree()
 	# Absolute SceneTree path (/root/...).
 	if path.begins_with("/root") and tree != null:
@@ -702,6 +647,62 @@ func _resolve(path: String) -> Node:
 	if tree != null and tree.root != null:
 		n = tree.root.find_child(path, true, false)
 	return n
+
+
+## The words every ':' refusal carries, so an agent (and a test) can tell it from a plain miss.
+const PROPERTY_PATH := "a ':' starts a property path"
+## How much of each part of a path a ':' refusal echoes: room for a deep /root/... path, so the split it suggests
+## can be used as it stands.
+const SUBPATH_SHOWN_MAX := 200
+
+
+## Why `value`, given in `field` as a node path, names no node: "" when it is not a property path. A ':' starts a
+## property path (NodePath subnames: Ground:material_override is the material_override property of Ground), and
+## get_node_or_null drops it and everything after it, so such a path used to act on Ground itself: a get read
+## Ground's own property, a set or a call landed on Ground, a click clicked it, and every reply said ok (seen live on
+## 4.6.2, 2026-10-08; the engine drops subnames on 4.4.1 and 4.7 too, and the unit suite pins it). The words say where
+## the property part goes: `prop` is the property the command names beside
+## the path, appended to the split, and `with_property` false is for a field with no property beside it (a scope, a
+## call, a wait), which is told the node alone. A file path (res://, user://) is no property path and gets "": _resolve
+## refuses it all the same, with the plain miss.
+## No sentence here starts with "node not found" or "no node matches", the only errors the on_ready drain, the click
+## wait and the ui_do steps wait on: a path that can never resolve must not run their budgets out.
+## Mirrored by tools/playtest_standalone.gd (subpath_refusal), word for word; the unit suite holds the two together.
+static func subpath_refusal(field: String, value: String, prop: String = "", with_property: bool = true) -> String:
+	var colon := value.find(":")
+	if colon == -1 or value.contains("://"):
+		return ""
+	var node := value.left(colon)
+	if node.is_empty():
+		node = "."  # ":visible" is a property of the scene root
+	var rest := value.substr(colon + 1)
+	if not prop.is_empty():
+		rest = prop if rest.is_empty() else rest + ":" + prop
+	var why := "%s '%s' is not a node path: %s, and %s names a node." % [field, _subpath_shown(value), PROPERTY_PATH, field]
+	if with_property and not rest.is_empty():
+		return why + " Put the node in %s and the property part in property: %s=%s property=%s" % [field, field, _subpath_shown(node), _subpath_shown(rest)]
+	return why + " Pass %s=%s" % [field, _subpath_shown(node)]
+
+
+static func _subpath_shown(text: String) -> String:
+	var t := text.replace("\n", " ").replace("\r", " ")
+	return t if t.length() <= SUBPATH_SHOWN_MAX else t.left(SUBPATH_SHOWN_MAX) + "..."
+
+
+## The ':' refusal for a command's target, or "": its path, or with no path the `under` its selector is scoped to
+## (what _resolve_matches reads). A get or a set names its property beside the path (`prop`), so the split it is
+## told carries both. ui_do asks this too, to fail a click or a type step at once.
+static func _target_refusal(msg: Dictionary) -> String:
+	var path := str(msg.get("path", ""))
+	if not path.is_empty():
+		return subpath_refusal("path", path, str(msg.get("prop", "")), msg.has("prop"))
+	return subpath_refusal("under", str(msg.get("under", "")), "", false)
+
+
+## The error for a scope path (tree, find, ui_snapshot, ui_audit) that resolved to nothing.
+static func _scope_miss(path: String) -> String:
+	var why := subpath_refusal("path", path, "", false)
+	return why if not why.is_empty() else "node not found: %s" % path
 
 
 ## Custom class_name of a node's script (Godot 4.3+), "" if none / built-in.
@@ -791,15 +792,15 @@ func _set_cmd(n: Node, msg: Dictionary) -> Dictionary:
 	if not off.is_empty():
 		return {"ok": false, "error": off}
 	var before: Variant = _read_at(res)
-	var want: Variant = _coerce_to(before, msg.get("value"))
 	# Refuse a value we could not make fit. Godot's `set` accepts garbage for a typed
 	# property and quietly stores the type's DEFAULT — so `global_transform = "nonsense"`
 	# used to zero the node's transform and answer ok. Same rule the v1.10.2 call gate
 	# applies to arguments: a coercion failure fails the write instead of destroying data.
-	var mismatch := _coercion_error(before, want)
-	if not mismatch.is_empty():
-		return {"ok": false, "error": mismatch,
-			"suggestion": "pass a value of that type (vectors as [x,y,z] or \"x y z\", colors as \"#rrggbb\" or [r,g,b,a], enums as their int)"}
+	var fit := _coerce_write(res, before, msg.get("value"))
+	if not bool(fit.get("ok", false)):
+		return {"ok": false, "error": "%s.%s: %s" % [(res["owner"] as Object).get_class(), str(res["leaf"]), str(fit["error"])],
+			"suggestion": str(fit["suggestion"])}
+	var want: Variant = fit["value"]
 	if bool(res.get("indexed", false)):
 		(res["owner"] as Object).set_indexed(NodePath(str(res["leaf"])), want)
 	else:
@@ -912,19 +913,28 @@ func _near_properties(obj: Object, prop: String, limit := 5) -> Array:
 	return out
 
 
-## "" when `want` can be stored in a property currently holding `current`, else the reason.
-## Only judges when the CURRENT value pins the type: a property sitting at null tells us
-## nothing, and refusing there would block legitimate first assignments.
-func _coercion_error(current: Variant, want: Variant) -> String:
-	var ct := typeof(current)
-	if ct == TYPE_NIL or typeof(want) == ct:
-		return ""
-	if want == null and (ct == TYPE_OBJECT or ct == TYPE_NODE_PATH):
-		return ""  # clearing a resource/node reference is a real intent
-	if ct == TYPE_OBJECT and want is Object:
-		return ""
-	return "cannot store %s in a %s property (value: %s)" % [
-		type_string(typeof(want)), type_string(ct), str(_safe(want))]
+## The value a write to the resolved property `res` (holding `current`) stores, made from what JSON carries:
+## {ok, value}, or {ok: false, error, suggestion} naming the type it takes. A property with a type never gets the value
+## as it arrived: "19" kept as a string where game code does `coins += 1` errors ("String + int"), aborts the dispatch
+## and desyncs the runtime channel. The rule is CallArgs.coerce_write, the one the editor's set_property keeps, so a
+## write takes every spelling a call's argument does and is held to the type the property DECLARES (see there).
+## This used to be a local converter that knew arrays and dicts only and answered Vector3.ZERO for anything else (a
+## string, a short array), so the write zeroed the node, the read-back agreed with the zero, and the reply said nothing
+## had changed; and judging by the value read let a shader uniform at its default (it reads null) store
+## "shader_parameter/tint" = "#ff0000" as the STRING.
+func _coerce_write(res: Dictionary, current: Variant, value: Variant) -> Dictionary:
+	return CallArgs.coerce_write(value, _declared(res), current)
+
+
+## The property-list entry of a resolved leaf, {} for a struct member (position:y), which has none of its own.
+func _declared(res: Dictionary) -> Dictionary:
+	if bool(res.get("indexed", false)):
+		return {}
+	var leaf := str(res.get("leaf", ""))
+	for p in (res["owner"] as Object).get_property_list():
+		if str(p.get("name", "")) == leaf:
+			return p
+	return {}
 
 
 ## Compare a written value against what came back. Floats go through approx comparison —
@@ -939,42 +949,6 @@ func _value_eq(a: Variant, b: Variant) -> bool:
 		TYPE_VECTOR2, TYPE_VECTOR3, TYPE_VECTOR4, TYPE_COLOR, TYPE_QUATERNION, TYPE_PLANE, TYPE_TRANSFORM2D, TYPE_TRANSFORM3D, TYPE_BASIS:
 			return a.is_equal_approx(b)
 	return a == b
-
-
-## Coerce a JSON value to the live property's current type before set — a value that
-## arrives as a JSON string ("19", "[1,0,0]") must not be stored raw, or game code like
-## `coins += 1` errors ("String + int") and aborts the dispatch (no response → the editor's
-## runtime channel times out and desyncs). Parse stringified arrays/objects, then mirror
-## scalars against `current`, which is read from the property's REAL owner (a nested path
-## used to read null here, so nothing was ever coerced).
-func _coerce_to(current: Variant, value: Variant) -> Variant:
-	if value is String:
-		var raw := (value as String).strip_edges()
-		if raw.begins_with("[") or raw.begins_with("{"):
-			var parsed: Variant = JSON.parse_string(raw)
-			if parsed is Array or parsed is Dictionary:
-				value = parsed
-	match typeof(current):
-		TYPE_INT:
-			return int(value) if (value is String or value is float) else value
-		TYPE_FLOAT:
-			return float(value) if (value is String or value is int) else value
-		TYPE_BOOL:
-			if value is String:
-				return (value as String).to_lower() in ["true", "1", "yes"]
-			return bool(value)
-		TYPE_STRING:
-			return str(value)
-		TYPE_VECTOR2:
-			return InputCodec.vec2(value)
-		TYPE_VECTOR3:
-			return _vec3(value)
-		TYPE_COLOR:
-			if value is Array and value.size() >= 3:
-				return Color(value[0], value[1], value[2], value[3] if value.size() > 3 else 1.0)
-			if value is String:
-				return Color(value)
-	return value
 
 
 ## runtime "call" = the editor call_method's twin gate (v1.10.2). A raw callv on
@@ -992,11 +966,74 @@ func _call_cmd(n: Node, msg: Dictionary) -> Dictionary:
 	var prep: Dictionary = CallArgs.prepare(n, method, args, self)
 	if not bool(prep.get("ok", false)):
 		return {"ok": false, "error": "%s.%s: %s" % [n.get_class(), method, str(prep.get("error", "argument mismatch"))]}
-	var resp := {"ok": true, "result": _safe(n.callv(method, prep["args"])), "resolved": str(_root().get_path_to(n))}
+	var call_args: Array = (prep["args"] as Array).duplicate()
+	# set, set_deferred and set_indexed declare the value as a Variant, so CallArgs hands it over as sent, and a native
+	# property given a value of another type stores its DEFAULT: set("position", "0 6 11") zeroed the node and
+	# answered ok. A property that resolves holds the value to its type here, the way runtime "set" does.
+	if method in ["set", "set_deferred", "set_indexed"] and call_args.size() == 2:
+		var res := _property_owner(n, str(call_args[0]))
+		if bool(res.get("ok", false)):
+			off = Internals.runtime_refusal(res.get("owner"))
+			if not off.is_empty():
+				return {"ok": false, "error": off}
+			var fit := _coerce_write(res, _read_at(res), call_args[1])
+			if not bool(fit.get("ok", false)):
+				return {"ok": false, "error": "%s.%s: arg 1 (value): %s" % [n.get_class(), method, str(fit["error"])],
+					"suggestion": str(fit["suggestion"])}
+			call_args[1] = fit["value"]
+	var resp := {"ok": true, "result": _safe(n.callv(method, call_args)), "resolved": str(_root().get_path_to(n))}
 	var warn := _stale_gd_warning(n)
 	if not warn.is_empty():
 		resp["warning"] = warn
 	return resp
+
+
+## Where an eval_at expression runs, and the names it binds (runtime/expr_scope.gd). Loaded when asked, not preloaded: it
+## is a Full-edition module that pack.ps1 trims from Lite, and a build without it says so instead of failing to parse.
+const EXPR_SCOPE_PATH := "res://addons/beckett/runtime/expr_scope.gd"
+
+
+## runtime "eval": one GDScript Expression on the scene root, its value back. The playtest expr assert, its mutation
+## probes and runtime_call expr= send it. "eval_at" (`scoped`, 1.17: runtime_call expr= with a node or inputs, Full) runs
+## one on the node the command names with its inputs bound, and `resolved` names that node. A runtime from before 1.17
+## does not know eval_at, so an expression meant for one node never runs on the scene root there. An expression is not
+## sandboxed: it reaches whatever the game's scene tree reaches (see invariants.gd, UNSAFE_CALLS). str_to_var and
+## bytes_to_var_with_objects are refused before anything is parsed or resolved.
+func _eval_cmd(msg: Dictionary, scoped: bool) -> Dictionary:
+	var src := str(msg.get("expr", ""))
+	var unsafe := Invariants.unsafe_call(src)
+	if not unsafe.is_empty():
+		return {"ok": false, "error": "expr refused: %s" % unsafe}
+	var root := _root()
+	var scope := {"base": root if root != null else self, "names": PackedStringArray(), "values": []}
+	if scoped:
+		if not ResourceLoader.exists(EXPR_SCOPE_PATH):
+			return {"ok": false, "error": "an expression on a node, or with inputs, is a Full-edition feature (runtime/expr_scope.gd is not part of this build)"}
+		var impl = load(EXPR_SCOPE_PATH)
+		if impl == null:
+			return {"ok": false, "error": "runtime/expr_scope.gd failed to load (the engine's own error above says why)"}
+		scope = impl.scope(self, msg)
+		if scope.has("error"):
+			return {"ok": false, "error": str(scope["error"])}
+	var base: Node = scope["base"]
+	var ex := Expression.new()
+	if ex.parse(src, scope["names"]) != OK:
+		return {"ok": false, "error": "expr parse error: %s" % ex.get_error_text()}
+	var v: Variant = ex.execute(scope["values"], base, true)
+	if ex.has_execute_failed():
+		return {"ok": false, "error": "expr exec error: %s" % ex.get_error_text()}
+	var out := {"ok": true, "value": _safe(v)}
+	if scoped:
+		out["resolved"] = _path_of(base)
+	# A condition that came back false also says what it read, so a failed expr assert reports the value that broke it
+	# (and two runs of a flaky suite can be told apart), not just "false". runtime_call expr= asks for the value alone
+	# (bare): its value is the answer, and a vector, a 0 or an empty list would read as false and have its operands
+	# evaluated a second time.
+	if not CallArgs.to_bool(v) and not CallArgs.flag(msg, "bare"):
+		var reads := Invariants.reads_of(src.strip_edges(), base)
+		if not reads.is_empty():
+			out["reads"] = reads
+	return out
 
 
 func _resolve_object_arg(spec: String) -> Node:
@@ -1044,6 +1081,9 @@ func _select_walk(node: Node, cls: String, name_q: String, text_q: String, out: 
 
 ## Human-readable reason a _resolve_target call failed (path vs selector).
 func _not_found(msg: Dictionary) -> String:
+	var refused := _target_refusal(msg)
+	if not refused.is_empty():
+		return refused
 	var path := str(msg.get("path", ""))
 	if not path.is_empty():
 		return "node not found: %s" % path
@@ -1061,7 +1101,8 @@ func _not_found(msg: Dictionary) -> String:
 
 ## Common state block returned by every time_control op so the agent always sees the
 ## same shape: is the game running, is the tree paused, current Engine.time_scale,
-## the physics frame counter, and whether a step window is currently open.
+## the engine's physics frame counter (it keeps counting while frozen), and whether a
+## step window is open.
 func _tc_state() -> Dictionary:
 	var tree := get_tree()
 	var paused := tree != null and tree.paused
@@ -1071,7 +1112,7 @@ func _tc_state() -> Dictionary:
 		"paused": paused,
 		"time_scale": Engine.time_scale,
 		"physics_frames": Engine.get_physics_frames(),
-		"in_step": _stepping,
+		"in_step": _clock != null and _clock.in_step(),
 	}
 
 
@@ -1079,9 +1120,9 @@ func _tc_freeze() -> Dictionary:
 	var tree := get_tree()
 	if tree == null:
 		return {"ok": false, "error": "no scene tree"}
-	# A pending step window is abandoned by an explicit freeze — the user wants a hard stop.
-	_stepping = false
-	_step_expr = null
+	# An open step or replay window is ended by an explicit freeze: the user wants a hard stop.
+	if _clock != null:
+		_clock.abort()
 	tree.paused = true
 	return _tc_state()
 
@@ -1090,55 +1131,27 @@ func _tc_unfreeze() -> Dictionary:
 	var tree := get_tree()
 	if tree == null:
 		return {"ok": false, "error": "no scene tree"}
-	_stepping = false
-	_step_expr = null
+	if _clock != null:
+		_clock.abort()
 	tree.paused = false
 	return _tc_state()
 
 
-## OPEN a fixed-count step window. From ANY state: force paused (known baseline), record
-## the physics frame counter, then unpause with the window armed. _physics_process counts
-## exactly N unpaused ticks and re-pauses. Replies immediately with started=... ; the editor
-## polls tc_step_status until in_step=false, then reads the delta.
+## OPEN a fixed-count step window on the tick clock (runtime/step_clock.gd), from a frozen or a running game, and
+## reply at once; the editor polls tc_step_status until in_step is false. Entry i of inputs_per_frame goes in before
+## tick i, and a batch longer than the window grows it.
 func _tc_step(msg: Dictionary) -> Dictionary:
-	var tree := get_tree()
-	if tree == null:
+	if get_tree() == null:
 		return {"ok": false, "error": "no scene tree"}
-	var frames: int = maxi(1, int(msg.get("frames", 1)))
-	# Per-frame inputs: entry i fires on the i-th tick of THIS window. A batch longer than
-	# the window would silently never fire, so the window grows to cover it instead.
-	var per_frame: Variant = msg.get("inputs_per_frame", [])
-	_step_inputs = (per_frame as Array).duplicate() if per_frame is Array else []
-	_step_injected = 0
-	var grown := false
-	if _step_inputs.size() > frames:
-		frames = _step_inputs.size()
-		grown = true
-	# Baseline: ensure paused so no stray ticks land before the window opens.
-	tree.paused = true
-	_step_kind = "count"
-	_step_target = frames
-	_step_count = 0
-	_step_result = ""
-	_step_cond_value = null
-	_resume_paused = true
-	_step_open_frame = Engine.get_physics_frames()
-	_stepping = true
-	# Unpause so the very next physics tick begins the run.
-	tree.paused = false
-	var out := {"ok": true, "started": true, "kind": "count", "frames_requested": frames,
-		"physics_frames_before": _step_open_frame}
-	if not _step_inputs.is_empty():
-		out["input_frames"] = _step_inputs.size()
-	if grown:
-		out["note"] = "frames raised to %d to cover the inputs_per_frame batch" % frames
-	return out
+	var clock: Variant = _step_clock()
+	if clock == null:
+		return {"ok": false, "error": _clock_missing("frame stepping")}
+	return clock.open_count(int(msg.get("frames", 1)), msg.get("inputs_per_frame", []), CallArgs.flag(msg, "unfreeze"))
 
 
-## OPEN a condition step window. Compile the GDScript Expression, evaluate it ONCE
-## against the current state — if already true, close with 0 frames — otherwise unpause
-## with the window armed; _physics_process re-checks each tick and closes on condition,
-## max_frames, or timeout, then re-pauses.
+## OPEN a condition step window. The condition is checked for what it may not call and parsed HERE, before the clock is
+## looked up, so the str_to_var refusal holds in every build; the clock reads it when the window opens (already true:
+## no tick runs) and at the start of every tick.
 func _tc_step_until(msg: Dictionary) -> Dictionary:
 	var tree := get_tree()
 	if tree == null:
@@ -1146,58 +1159,28 @@ func _tc_step_until(msg: Dictionary) -> Dictionary:
 	var cond := str(msg.get("condition", "")).strip_edges()
 	if cond.is_empty():
 		return {"ok": false, "error": "step_until needs a 'condition' expression"}
+	var unsafe := Invariants.unsafe_call(cond)
+	if not unsafe.is_empty():
+		return {"ok": false, "error": "condition refused: %s" % unsafe}
 	var expr := Expression.new()
 	var perr := expr.parse(cond)
 	if perr != OK:
 		return {"ok": false, "error": "condition parse error: %s" % expr.get_error_text()}
-	_step_cond = cond
-	_step_expr = expr
-	_step_kind = "until"
-	_step_count = 0
-	_step_result = ""
-	_step_cond_value = null
-	_resume_paused = true
-	_step_max_frames = maxi(0, int(msg.get("max_frames", 0)))
+	var clock: Variant = _step_clock()
+	if clock == null:
+		return {"ok": false, "error": _clock_missing("frame stepping")}
 	var timeout_sec: float = clampf(float(msg.get("timeout_sec", 10.0)), 0.1, 120.0)
-	_step_deadline = Time.get_ticks_msec() + int(timeout_sec * 1000.0)
-	_step_open_frame = Engine.get_physics_frames()
-	# Already true? Close immediately with zero frames run — pause and report.
-	if _eval_step_condition():
-		_step_result = "condition"
-		_stepping = false
-		_step_expr = null
-		tree.paused = true
-		return {"ok": true, "started": false, "kind": "until", "immediate": true,
-			"terminator": "condition", "frames": 0,
-			"physics_frames_before": _step_open_frame,
-			"condition_value": _step_cond_value}
-	_stepping = true
-	tree.paused = false
-	return {"ok": true, "started": true, "kind": "until", "immediate": false,
-		"timeout_sec": timeout_sec, "max_frames": _step_max_frames,
-		"physics_frames_before": _step_open_frame}
+	return clock.open_until(expr, int(msg.get("max_frames", 0)), timeout_sec, CallArgs.flag(msg, "unfreeze"), Callable(self, "_root"), Callable(self, "_safe"))
 
 
-## Poll target for an open step window. While in_step is true the editor keeps polling;
-## once it flips false, this carries the terminator, frames actually run, the physics
-## frame counter before/after (delta must equal frames for kind=count), and — for
-## step_until — the final condition value.
+## Poll target for an open step window: the engine state, plus the clock's frames (the ticks the scene ran), the inputs
+## that went in and, once closed, the terminator (and step_until's last condition value).
 func _tc_step_status() -> Dictionary:
+	var clock: Variant = _step_clock()
+	if clock == null:
+		return {"ok": false, "error": _clock_missing("frame stepping")}
 	var out := _tc_state()
-	out["kind"] = _step_kind
-	out["frames"] = _step_count
-	# before was snapshotted at open; after = before + counted ticks. Computed (not read live)
-	# so after-before == frames both mid-window and after close, immune to the raw engine
-	# counter drifting while paused between close and this poll.
-	out["physics_frames_before"] = _step_open_frame
-	out["physics_frames_after"] = _step_open_frame + _step_count
-	if _step_injected > 0:
-		out["inputs_injected"] = _step_injected
-	if not _stepping:
-		out["terminator"] = _step_result
-		if _step_kind == "until":
-			out["condition"] = _step_cond
-			out["condition_value"] = _step_cond_value
+	out.merge(clock.status(), true)
 	return out
 
 
@@ -1228,7 +1211,7 @@ func _tree_cmd(msg: Dictionary) -> Dictionary:
 	if not p.is_empty():
 		start = _resolve(p)
 		if start == null:
-			return {"ok": false, "error": "node not found: %s" % p}
+			return {"ok": false, "error": _scope_miss(p)}
 	var depth := int(msg.get("depth", -1))
 	var max_nodes := int(msg.get("max_nodes", 250))
 	if max_nodes <= 0:
@@ -1308,8 +1291,20 @@ func _tree2(n: Node, root: Node, depth: int, ctx: Dictionary) -> Dictionary:
 	return d
 
 
+## A capture of the game window, or of one SubViewport's own game pixels. A key the caller does not send leaves the
+## window capture exactly as it was, which is what compare_screenshots and the playtest asserts rely on:
+##   viewport  a SubViewport, or the SubViewportContainer that shows it (capture_source.gd has the why)
+##   fit       enlarge a viewport capture in whole nearest steps until its short side reaches CaptureSource.MIN_EDGE
+##   hint      (window captures by the screenshot tool) name the pixel-art layout it sees, once per game process
 func _screenshot(msg: Dictionary = {}) -> Dictionary:
-	var vp := get_viewport()
+	var sv: SubViewport = null
+	var want := str(msg.get("viewport", ""))
+	if not want.is_empty():
+		var picked := _capture_subviewport(want)
+		if picked.has("error"):
+			return {"ok": false, "error": str(picked["error"])}
+		sv = picked["sv"]
+	var vp: Viewport = sv if sv != null else get_viewport()
 	if vp == null:
 		return {"ok": false, "error": "no viewport"}
 	var tex := vp.get_texture()
@@ -1318,6 +1313,12 @@ func _screenshot(msg: Dictionary = {}) -> Dictionary:
 	var img := tex.get_image()
 	if img == null:
 		return {"ok": false, "error": "could not read viewport image (headless / no RHI?)"}
+	# A SubViewport with use_hdr_2d hands back a float frame. It is converted to 8 bits as it stands, with no sRGB
+	# curve (Image.linear_to_srgb takes only 8-bit images, and 4.2 has none), and the reply says it was HDR.
+	var hdr := false
+	if sv != null and img.get_format() >= Image.FORMAT_RF and img.get_format() <= Image.FORMAT_RGBE9995:
+		img.convert(Image.FORMAT_RGBA8)
+		hdr = true
 	var full_w := img.get_width()
 	var full_h := img.get_height()
 	# Set-of-Mark legend is collected BEFORE crop/scale — marks live in full-image
@@ -1325,21 +1326,38 @@ func _screenshot(msg: Dictionary = {}) -> Dictionary:
 	var annotate := str(msg.get("annotate", "")) == "ui"
 	var marks_list: Array = []
 	if annotate:
-		marks_list = UiInspect.marks(vp, get_tree().root, _root(), int(msg.get("max_marks", 40)))
+		# A SubViewport's controls are walked from it and measured in its own pixels.
+		var walk_from: Node = get_tree().root
+		if sv != null:
+			walk_from = sv
+		marks_list = UiInspect.marks(vp, walk_from, _root(), int(msg.get("max_marks", 40)))
 	var off := Vector2.ZERO
 	var rg: Variant = msg.get("region", null)
 	if rg is Array and (rg as Array).size() >= 4:
 		off = Vector2(float(clampi(int(rg[0]), 0, full_w - 1)), float(clampi(int(rg[1]), 0, full_h - 1)))
 	img = _maybe_crop(img, msg)
+	var crop := Vector2i(img.get_width(), img.get_height())
 	# max_dim is folded INTO `scale` rather than applied as a second resize because `scale` is
 	# not only the resize factor: it is what annotate_image() draws the Set-of-Mark boxes with
 	# and what the legend remap below reports rects in. Capping anywhere else would leave the
 	# boxes and the rects describing a picture the caller never received.
 	var scale := _capped_scale(float(msg.get("scale", 1.0)), img.get_width(), img.get_height(), int(msg.get("max_dim", 0)))
+	# Game pixels too few to read are enlarged in whole nearest steps: each one becomes a k x k block, no blur.
+	var k := 1
+	if sv != null and CallArgs.flag(msg, "fit") and scale >= 1.0:
+		k = CaptureSource.pixel_upscale(img.get_width(), img.get_height(), int(msg.get("max_dim", 0)))
 	if scale < 1.0:
 		img.resize(maxi(1, roundi(img.get_width() * scale)), maxi(1, roundi(img.get_height() * scale)), Image.INTERPOLATE_BILINEAR)
+	elif k > 1:
+		img.resize(img.get_width() * k, img.get_height() * k, Image.INTERPOLATE_NEAREST)
+	# Picture pixels per captured pixel: the factor the legend and the boxes use (scale itself for a window capture).
+	var f := scale * k
 	if not marks_list.is_empty():
-		UiInspect.annotate_image(img, marks_list, off, scale)
+		if k > 1:
+			# Drawn at their picture rects, so an enlarged picture keeps the boxes' usual 2 px lines.
+			UiInspect.annotate_image(img, _legend(marks_list, off, f), Vector2.ZERO, 1.0)
+		else:
+			UiInspect.annotate_image(img, marks_list, off, scale)
 	var fmt := str(msg.get("format", "png")).to_lower()
 	var quality := clampf(float(msg.get("quality", 0.8)), 0.1, 1.0)
 	var data: PackedByteArray
@@ -1369,18 +1387,90 @@ func _screenshot(msg: Dictionary = {}) -> Dictionary:
 		# (click_control). A follow-up region= is measured against the FULL frame instead, so
 		# a legend rect has to be scaled back by full_w/w (region_w/w when this call cropped)
 		# and re-offset by the region origin before it can be reused there.
-		var legend: Array = []
-		for m in marks_list:
-			var md := m as Dictionary
-			var r4: Array = md["rect"]
-			var e := {"i": md["i"], "path": md["path"],
-				"rect": [roundi((float(r4[0]) - off.x) * scale), roundi((float(r4[1]) - off.y) * scale),
-					roundi(float(r4[2]) * scale), roundi(float(r4[3]) * scale)]}
-			if md.has("text"):
-				e["text"] = md["text"]
-			legend.append(e)
-		out["marks"] = legend
+		out["marks"] = _legend(marks_list, off, f)
+	if sv != null:
+		_pixels_facts(out, sv, off, f, crop, rg is Array and (rg as Array).size() >= 4)
+		if k > 1:
+			out["k"] = k
+		if hdr:
+			out["hdr"] = true
+	elif CallArgs.flag(msg, "hint") and not msg.has("region"):
+		var hint := _pixel_hint(Vector2i(img.get_width(), img.get_height()))
+		if not hint.is_empty():
+			out["pixel_hint"] = hint
 	return out
+
+
+## The once-per-run hint for a window capture whose picture is `pic`: {path, w, h} of the pixel-art layout the window
+## shows (CaptureSource.pixel_layout, judged in GUI space), or {} when there is none, the hint was given, or the game
+## pixels would not cost at most half of this picture (CaptureSource.hint_share, the test the editor words the line
+## by). Only a hint the line will carry spends the flag: a capture scaled down to about the game pixels' size first
+## never uses up the line a later full-size capture shows.
+func _pixel_hint(pic: Vector2i) -> Dictionary:
+	if _pixel_hint_given:
+		return {}
+	var lay := CaptureSource.pixel_layout(get_tree().root)
+	if lay == null or CaptureSource.hint_share(pic.x, pic.y, lay.size.x, lay.size.y) < 2:
+		return {}
+	_pixel_hint_given = true
+	return {"path": UiInspect.path_of(lay, _root()), "w": lay.size.x, "h": lay.size.y}
+
+
+## The Set-of-Mark legend in picture pixels: each mark's rect as (xy - crop offset) * f.
+static func _legend(marks_list: Array, off: Vector2, f: float) -> Array:
+	var legend: Array = []
+	for m in marks_list:
+		var md := m as Dictionary
+		var r4: Array = md["rect"]
+		var e := {"i": md["i"], "path": md["path"],
+			"rect": [roundi((float(r4[0]) - off.x) * f), roundi((float(r4[1]) - off.y) * f),
+				roundi(float(r4[2]) * f), roundi(float(r4[3]) * f)]}
+		if md.has("text"):
+			e["text"] = md["text"]
+		legend.append(e)
+	return legend
+
+
+## What a capture of a SubViewport's game pixels says beside the picture (the screenshot tool words it): which
+## SubViewport, the region it cut in game pixels, how many GUI px one picture pixel stands for and where picture pixel
+## (0, 0) sits in the root's GUI space (px, px_from: the space simulate_input, drag and scroll position= take), why the
+## frame may be old, and the OS cursor when it is over the picture.
+func _pixels_facts(out: Dictionary, sv: SubViewport, off: Vector2, f: float, crop: Vector2i, cropped: bool) -> void:
+	out["src"] = UiInspect.path_of(sv, _root())
+	if cropped:
+		out["region"] = [int(off.x), int(off.y), crop.x, crop.y]
+	var window := get_tree().root
+	var shown := CaptureSource.shown_by(sv, window)
+	if not shown.is_empty():
+		var factor := float(shown["factor"])
+		out["px"] = snappedf(factor / f, 0.01)
+		var at: Vector2 = ((shown["rect"] as Rect2).position + off * factor).round()
+		if at != Vector2.ZERO:
+			out["px_from"] = [int(at.x), int(at.y)]
+	var stale := CaptureSource.stale_reason(sv)
+	if not stale.is_empty():
+		out["stale"] = stale
+	var cur := CaptureSource.cursor_in_picture(window, shown, off, f, Vector2i(int(out["w"]), int(out["h"])))
+	if cur.x >= 0:
+		out["cursor"] = [cur.x, cur.y]
+
+
+## The SubViewport a screenshot viewport= names: {sv} or {error}. A SubViewport, or the SubViewportContainer that
+## shows one (its first SubViewport child), found the way every other command finds a node.
+func _capture_subviewport(want: String) -> Dictionary:
+	var refused := subpath_refusal("viewport", want, "", false)
+	if not refused.is_empty():
+		return {"error": refused}
+	var tail := ". Pass a SubViewport, or the SubViewportContainer that shows it (find_nodes class=SubViewport lists them)"
+	var n := _resolve(want)
+	if n == null:
+		return {"error": "viewport: no node '%s' in the running game%s" % [_subpath_shown(want), tail]}
+	var sv := CaptureSource.subviewport_of(n)
+	if sv == null:
+		if n is SubViewportContainer:
+			return {"error": "viewport: %s holds no SubViewport" % UiInspect.path_of(n, _root())}
+		return {"error": "viewport: %s is a %s, not a SubViewport%s" % [UiInspect.path_of(n, _root()), n.get_class(), tail]}
+	return {"sv": sv}
 
 
 ## ui_audit: deterministic layout QA over the live UI (checks in ui_inspect.gd).
@@ -1395,21 +1485,16 @@ func _ui_audit(msg: Dictionary) -> Dictionary:
 	if not p.is_empty():
 		scope = _resolve(p)
 		if scope == null:
-			return {"ok": false, "error": "node not found: %s" % p}
+			return {"ok": false, "error": _scope_miss(p)}
 	return UiInspect.audit(vp, get_tree().root, _root(), scope, msg)
 
 
 ## The one resize factor a capture uses: the caller's `scale` dial, reduced further so the
 ## long edge of a WxH frame lands inside max_dim (0 or less = no cap). Static and named so
 ## the headless unit suite can pin it — annotation and the legend both ride on this number.
+## The math lives in capture_source.gd, where the editor's target=editor capture shares it.
 static func _capped_scale(scale: float, w: int, h: int, max_dim: int) -> float:
-	var s := clampf(scale, 0.05, 1.0)
-	if max_dim <= 0:
-		return s
-	var long_edge := maxi(w, h)
-	if long_edge <= max_dim:
-		return s
-	return minf(s, float(max_dim) / float(long_edge))
+	return CaptureSource.capped_scale(scale, w, h, max_dim)
 
 
 ## Crop to region=[x,y,w,h] (pixels, clamped to bounds) to save tokens; returns the
@@ -1439,9 +1524,26 @@ func _run_input(events: Array) -> Dictionary:
 
 ## Every synthetic event this autoload feeds the game goes through here, so what it pressed and nobody
 ## released is remembered (see _release_held, the scene restart).
+## Positions arrive in the root's GUI space, the space every other position Beckett takes is in and the
+## one the recorder saw them in (_input runs after the root made the event local). Input.parse_input_event
+## takes WINDOW pixels, so they are carried there first: without it a click aimed with ui_snapshot's rect,
+## or a recorded one replayed, landed off by the content scale (2x, plus a KEEP margin, in the field).
+## (A build without runtime/drive_aim.gd is Lite, whose bridge never sends an input command: as it is, then.)
 func _inject(ie: InputEvent) -> void:
-	Input.parse_input_event(ie)
-	InputCodec.track(_held, ie)
+	var ev := ie
+	var aim = _drive_aim()
+	var tree := get_tree()
+	if aim != null and tree != null:
+		ev = aim.gui_to_window(ie, tree.root)
+	Input.parse_input_event(ev)
+	InputCodec.track(_held, ev)
+
+
+## runtime/drive_aim.gd, loaded once and kept, or null in a build without it (Lite).
+func _drive_aim() -> Variant:
+	if _aim == null and ResourceLoader.exists(DRIVE_AIM_PATH):
+		_aim = load(DRIVE_AIM_PATH)
+	return _aim
 
 
 # ---------------------------------------------------------------- find (live nodes)
@@ -1455,7 +1557,7 @@ func _find(msg: Dictionary) -> Dictionary:
 	if not p.is_empty():
 		scope = _resolve(p)
 		if scope == null:
-			return {"ok": false, "error": "node not found: %s" % p}
+			return {"ok": false, "error": _scope_miss(p)}
 	var cls := str(msg.get("class", ""))
 	var text_q := str(msg.get("text", ""))
 	var name_q := str(msg.get("name", ""))
@@ -1523,6 +1625,9 @@ func _click_text(msg: Dictionary) -> Dictionary:
 	var root := _root()
 	if root == null:
 		return {"ok": false, "error": "no current scene"}
+	var under_refused := subpath_refusal("under", str(msg.get("under", "")), "", false)
+	if not under_refused.is_empty():
+		return {"ok": false, "error": under_refused}
 	# Same resolver as click_control, scoped to buttons: the two tools agree on the
 	# match set and nth ordering (a bare text selector elsewhere also scopes to BaseButton).
 	var sel := msg.duplicate()
@@ -1557,6 +1662,10 @@ func _click_text(msg: Dictionary) -> Dictionary:
 ## Click a Control by injecting press+release at its center straight into the
 ## viewport in GUI space (push_input local). This bypasses the content-scale /
 ## stretch transform that makes Input.parse_input_event miss buttons in containers.
+## The center is taken through the control's canvas transform (CanvasLayer scale and
+## offset, a Camera2D, a layer that follows the viewport) and UiInspect.route() carries
+## it up through each SubViewportContainer and embedded window, so the press is pushed
+## where Godot would hand a real click down to the control (1.17).
 ##
 ## Guards the false-positive where the target is scrolled out of a ScrollContainer:
 ## a click there would silently miss (clipped) yet look successful. If the center is
@@ -1578,6 +1687,10 @@ func _click_control(msg: Dictionary) -> Dictionary:
 		return {"ok": false, "error": off}
 	if not (n is Control):
 		return {"ok": false, "error": "not a Control (%s) — use simulate_input for non-Control targets" % n.get_class()}
+	# After the refusals above, which both editions give: the push point comes from a Full-only module.
+	var aim = _drive_aim()
+	if aim == null:
+		return {"ok": false, "error": "clicking a control is a Full-edition feature (runtime/drive_aim.gd is not part of this build)"}
 	var vp := get_viewport()
 	if vp == null:
 		return {"ok": false, "error": "no viewport"}
@@ -1586,82 +1699,95 @@ func _click_control(msg: Dictionary) -> Dictionary:
 	if not ctrl.is_visible_in_tree():
 		return {"ok": true, "clicked": false, "path": path,
 			"warning": "control is hidden (not visible in tree) — nothing to click"}
-	var center: Vector2 = ctrl.get_global_rect().get_center()
-	# v1.10 accuracy: a disabled control swallows clicks — pushing anyway would report
+	# `center` is the point pushed: the control's center taken through its canvas transform and up
+	# the route, in the GUI space of the viewport the route lands in (the root, nearly always).
+	var rt: Dictionary = aim.click_route(ctrl, _root())
+	var center: Vector2 = rt["at"]
+	# v1.10 accuracy: a disabled control swallows clicks: pushing anyway would report
 	# a success the real UI can never produce.
 	if UiInspect.is_disabled(ctrl):
 		return {"ok": true, "clicked": false, "path": path, "at": [center.x, center.y],
-			"warning": "control is disabled — the click would be ignored (enable it first, or pick another control)"}
-	if _is_point_clipped(ctrl, center, vp):
+			"warning": "control is disabled: the click would be ignored (enable it first, or pick another control)"}
+	# A hidden or IGNORE SubViewportContainer, or input turned off on the way: no click from the screen
+	# gets there. clicked=false keeps it retryable inside wait_ms (a container that fades in).
+	if not str(rt["why"]).is_empty():
+		return {"ok": true, "clicked": false, "path": path, "at": [center.x, center.y], "warning": str(rt["why"])}
+	if UiInspect.route_clipped(ctrl, rt):
 		if not _scroll_into_view(ctrl):
 			return {"ok": true, "clicked": false, "scrolled": false, "path": path, "at": [center.x, center.y],
 				"warning": "control is off-screen/clipped and has no ScrollContainer ancestor to bring it into view"}
 		# Flush the deferred re-sort so the scrolled position applies THIS call (no retry).
 		_force_sort(ctrl)
-		center = ctrl.get_global_rect().get_center()
-		if _is_point_clipped(ctrl, center, vp):
+		rt = aim.click_route(ctrl, _root())
+		center = rt["at"]
+		if UiInspect.route_clipped(ctrl, rt):
 			return {"ok": true, "clicked": false, "scrolled": true, "path": path, "at": [center.x, center.y],
-				"warning": "scrolled toward view but still clipped (nested scroll?) — call click_control again to land the click"}
+				"warning": "scrolled toward view but still clipped (nested scroll?): call click_control again to land the click"}
 	# v1.10 accuracy: whoever is TOP-MOST at the point receives the event. If that is
 	# not the target (a popup on top, a modal overlay, a covering ColorRect with
-	# mouse_filter STOP), pushing would activate the WRONG control — refuse and name
-	# the blocker instead. Skipped for controls inside embedded Windows (their rects
-	# are window-local; the main-canvas hit test does not apply — pre-1.10 push kept).
-	# receiver == null with a visible non-IGNORE target means our approximation missed
-	# (custom _has_point override?) — fall through to the push, never block on a guess.
-	var receiver: Node = null
+	# mouse_filter STOP), pushing would activate the WRONG control: refuse and name
+	# the blocker instead. hit_along runs that test at every level of the route (the root,
+	# then inside each SubViewport), and inside a dialog; whether a control reaches the
+	# dialog itself is not judged (window stacking is approximated: the pre-1.10 push).
+	# A level whose pick finds nothing means our approximation missed (a shape it does not
+	# model): fall through to the push, never block on a guess.
+	var hit := UiInspect.hit_along(ctrl, rt, rt["local"])
+	var receiver: Node = hit["receiver"]
 	var ignore_note := ""
-	if not UiInspect.inside_embedded_window(ctrl, get_tree().root):
-		receiver = UiInspect.pick_at(vp, get_tree().root, center)
-		if receiver != null and receiver != ctrl and not UiInspect.click_reaches(receiver, ctrl):
-			if ctrl.mouse_filter == Control.MOUSE_FILTER_IGNORE:
-				ignore_note = "target has mouse_filter=IGNORE — the click was delivered at its position; %s received it" \
-					% UiInspect.path_of(receiver, _root())
-			else:
-				return {"ok": true, "clicked": false, "path": path, "at": [center.x, center.y],
-					"occluded_by": UiInspect.path_of(receiver, _root()),
-					"warning": "occluded by %s (%s) — that control would receive the click instead; close/dismiss it, or click it" \
-						% [UiInspect.path_of(receiver, _root()), receiver.get_class()]}
+	if hit["blocker"] != null:
+		receiver = hit["blocker"]
+		if UiInspect.mouse_filter_of(ctrl) == Control.MOUSE_FILTER_IGNORE:
+			ignore_note = "target has mouse_filter=IGNORE: the click was delivered at its position; %s received it" \
+				% UiInspect.path_of(receiver, _root())
+		else:
+			return {"ok": true, "clicked": false, "path": path, "at": [center.x, center.y],
+				"occluded_by": UiInspect.path_of(receiver, _root()),
+				"warning": "occluded by %s (%s): that control would receive the click instead; close/dismiss it, or click it" \
+					% [UiInspect.path_of(receiver, _root()), receiver.get_class()]}
 	var button := int(msg.get("button", 1))
+	# Only a left press moves focus between embedded windows; any other press goes to the window that has it.
+	var focus_why: String = aim.press_focus_refusal(rt, button, _root())
+	if not focus_why.is_empty():
+		return {"ok": true, "clicked": false, "path": path, "at": [center.x, center.y], "warning": focus_why}
+	var push_vp: Viewport = rt["vp"]
 	var down := InputEventMouseButton.new()
 	down.button_index = button
 	down.pressed = true
 	down.position = center
 	down.global_position = center
-	vp.push_input(down, true)
+	push_vp.push_input(down, true)
 	var up := InputEventMouseButton.new()
 	up.button_index = button
 	up.pressed = false
 	up.position = center
 	up.global_position = center
-	vp.push_input(up, true)
+	push_vp.push_input(up, true)
 	var out := {"ok": true, "clicked": true, "path": path, "at": [center.x, center.y]}
 	if receiver != null and receiver != ctrl:
 		out["received_by"] = UiInspect.path_of(receiver, _root())
+	if push_vp != get_tree().root:
+		out["space"] = UiInspect.path_of(push_vp, _root())  # `at` is in this viewport's own pixels
+	var notes: Array = []
 	if ignore_note != "":
-		out["note"] = ignore_note
+		notes.append(ignore_note)
+	if bool(rt["direct"]):
+		notes.append("%s is not shown by a SubViewportContainer: the click was pushed straight into it" % UiInspect.path_of(push_vp, _root()))
+	for h in rt["hops"]:
+		var via: Node = (h as Dictionary)["via"]
+		if via is SubViewportContainer and via.get_script() != null and via.has_method("_propagate_input_event"):
+			notes.append("%s has a script _propagate_input_event, which can keep the click from %s" % [UiInspect.path_of(via, _root()), UiInspect.path_of((h as Dictionary)["vp"], _root())])
+	if not notes.is_empty():
+		out["note"] = "; ".join(PackedStringArray(notes))
 	return out
 
 
-## True if point p (GUI space) is outside the viewport OR clipped by a clip_contents
-## ancestor (ScrollContainer and friends) — i.e. a click there would not reach ctrl.
-func _is_point_clipped(ctrl: Control, p: Vector2, vp: Viewport) -> bool:
-	if not vp.get_visible_rect().has_point(p):
-		return true
-	var a := ctrl.get_parent()
-	while a != null:
-		if a is Control and (a as Control).clip_contents and not (a as Control).get_global_rect().has_point(p):
-			return true
-		a = a.get_parent()
-	return false
-
-
 ## Scroll every ScrollContainer ancestor so ctrl becomes visible. Returns true if at
-## least one did (the position update is deferred to the next layout pass).
+## least one did (the position update is deferred to the next layout pass). Only those in
+## ctrl's own viewport: one above a SubViewport would scroll to a rect in another space.
 func _scroll_into_view(ctrl: Control) -> bool:
 	var did := false
 	var a := ctrl.get_parent()
-	while a != null:
+	while a != null and not (a is Viewport):
 		if a is ScrollContainer:
 			(a as ScrollContainer).ensure_control_visible(ctrl)
 			did = true
@@ -1681,8 +1807,12 @@ func _force_sort(ctrl: Control) -> void:
 		a = a.get_parent()
 
 
-## Report a Control's rect in BOTH GUI/canvas space and screen space (content-scale
-## applied), so the agent can click with the right coordinates — or just call click_control.
+## Report a Control's rect in BOTH the root's GUI space (where it is drawn, and the space
+## click_control, drag, scroll and simulate_input aim in) and window pixels (content scale
+## and the window's own transform applied: what Input.parse_input_event and OS input use).
+## The gui values go through the control's canvas transform and UiInspect.route(), so a HUD
+## on a scaled CanvasLayer or a control inside a SubViewport or a dialog reports where it is
+## on screen, not where get_global_rect() puts it (1.17).
 func _control_rect(msg: Dictionary) -> Dictionary:
 	var n := _resolve_target(msg)
 	if n == null:
@@ -1690,24 +1820,27 @@ func _control_rect(msg: Dictionary) -> Dictionary:
 	if not (n is Control):
 		return {"ok": false, "error": "not a Control (%s)" % n.get_class()}
 	var ctrl := n as Control
-	var gr: Rect2 = ctrl.get_global_rect()
-	var vp := get_viewport()
-	if vp == null:
+	if get_viewport() == null:
 		return {"ok": false, "error": "no viewport"}
-	# local -> canvas (gui) -> output(physical). The final_transform carries the
-	# content-scale/stretch, so screen_rect matches screenshot pixels (gui_rect doesn't
-	# when the window is larger than the canvas, e.g. a 1.735x stretch).
-	var xf := vp.get_final_transform() * ctrl.get_global_transform_with_canvas()
-	var s0: Vector2 = xf * Vector2.ZERO
-	var s1: Vector2 = xf * ctrl.size
-	var sr := Rect2(s0, s1 - s0).abs()
-	return {"ok": true, "rect": {
+	var rt := UiInspect.route(ctrl.get_viewport(), _root())
+	var local := Rect2(Vector2.ZERO, ctrl.size)
+	var gxf: Transform2D = (rt["xf"] as Transform2D) * ctrl.get_global_transform_with_canvas()
+	var gr: Rect2 = gxf * local
+	var gc: Vector2 = gxf * (ctrl.size * 0.5)
+	var land: Viewport = rt["vp"]
+	var sxf: Transform2D = land.get_final_transform() * gxf
+	var sr: Rect2 = sxf * local
+	var sc: Vector2 = sxf * (ctrl.size * 0.5)
+	var rect := {
 		"path": str(_root().get_path_to(ctrl)),
 		"gui_rect": [gr.position.x, gr.position.y, gr.size.x, gr.size.y],
-		"gui_center": [gr.get_center().x, gr.get_center().y],
+		"gui_center": [gc.x, gc.y],
 		"screen_rect": [sr.position.x, sr.position.y, sr.size.x, sr.size.y],
-		"screen_center": [sr.get_center().x, sr.get_center().y],
-	}}
+		"screen_center": [sc.x, sc.y],
+	}
+	if land != get_tree().root:
+		rect["space"] = UiInspect.path_of(land, _root())
+	return {"ok": true, "rect": rect}
 
 
 ## One-call accessibility snapshot of the visible UI (v1.10) — the walker lives in
@@ -1724,7 +1857,7 @@ func _ui_snapshot(msg: Dictionary) -> Dictionary:
 	if not p.is_empty():
 		scope = _resolve(p)
 		if scope == null:
-			return {"ok": false, "error": "node not found: %s" % p}
+			return {"ok": false, "error": _scope_miss(p)}
 	return UiInspect.snapshot(vp, get_tree().root, _root(), scope, msg)
 
 
@@ -1868,9 +2001,11 @@ func _type_status() -> Dictionary:
 	return out
 
 
-## Click a 3D node by projecting its world origin to the screen via the active
-## Camera3D, then injecting motion+press+release there — for games that do their own
-## mouse picking (CollisionObject3D._input_event / a camera raycast from the cursor).
+## Click a 3D node by projecting its world origin to the screen through the camera that
+## renders it, then injecting motion+press+release there, for games that do their own
+## mouse picking (CollisionObject3D._input_event / a camera raycast from the cursor). The
+## camera of the node's own viewport is tried first, so a node inside a SubViewport is
+## clicked through that SubViewport's camera (runtime/world_click.gd).
 func _click_node3d(msg: Dictionary) -> Dictionary:
 	var n := _resolve_target(msg)
 	if n == null:
@@ -1889,10 +2024,10 @@ func _click_node3d(msg: Dictionary) -> Dictionary:
 		var ab: AABB = (n3 as VisualInstance3D).get_aabb()
 		if ab.size != Vector3.ZERO:
 			world = n3.global_transform * ab.get_center()
-	return _world_click(world, int(msg.get("button", 1)), str(_root().get_path_to(n3)))
+	return _world_click(world, int(msg.get("button", 1)), str(_root().get_path_to(n3)), n3.get_viewport())
 
 
-## Click at a 3D WORLD position (unprojected to the screen via the active Camera3D).
+## Click at a 3D WORLD position (unprojected through the root's camera, else a SubViewport's).
 func _click_world(msg: Dictionary) -> Dictionary:
 	var p: Variant = msg.get("position", null)
 	if not (p is Array and (p as Array).size() >= 3):
@@ -1900,39 +2035,22 @@ func _click_world(msg: Dictionary) -> Dictionary:
 	return _world_click(_vec3(p), int(msg.get("button", 1)), "world")
 
 
-func _world_click(world: Vector3, button: int, label: String) -> Dictionary:
-	var vp := get_viewport()
-	if vp == null:
+## The 3D click itself: which camera, the route to the viewport that takes the push, what will and will not
+## receive it (runtime/world_click.gd). Loaded when asked, not preloaded: it is a Full-edition module that
+## pack.ps1 trims from Lite, and a build without it says so instead of failing to parse.
+const WORLD_CLICK_PATH := "res://addons/beckett/runtime/world_click.gd"
+
+
+func _world_click(world: Vector3, button: int, label: String, node_vp: Viewport = null) -> Dictionary:
+	if not ResourceLoader.exists(WORLD_CLICK_PATH):
+		return {"ok": false, "error": "clicking the 3D world is a Full-edition feature (runtime/world_click.gd is not part of this build)"}
+	var impl = load(WORLD_CLICK_PATH)
+	if impl == null:
+		return {"ok": false, "error": "runtime/world_click.gd failed to load (the engine's own error above says why)"}
+	var tree := get_tree()
+	if tree == null or tree.root == null:
 		return {"ok": false, "error": "no viewport"}
-	var cam := vp.get_camera_3d()
-	if cam == null:
-		return {"ok": false, "error": "no active Camera3D in the running scene"}
-	if cam.is_position_behind(world):
-		return {"ok": true, "clicked": false, "target": label,
-			"warning": "world point is behind the camera — not on screen"}
-	var screen: Vector2 = cam.unproject_position(world)
-	if not vp.get_visible_rect().has_point(screen):
-		return {"ok": true, "clicked": false, "target": label, "at": [screen.x, screen.y],
-			"warning": "world point projects off-screen at (%d, %d)" % [int(screen.x), int(screen.y)]}
-	# Hover first (pickers track the moused-over object), then press+release.
-	var motion := InputEventMouseMotion.new()
-	motion.position = screen
-	motion.global_position = screen
-	vp.push_input(motion, true)
-	var down := InputEventMouseButton.new()
-	down.button_index = button
-	down.pressed = true
-	down.position = screen
-	down.global_position = screen
-	vp.push_input(down, true)
-	var up := InputEventMouseButton.new()
-	up.button_index = button
-	up.pressed = false
-	up.position = screen
-	up.global_position = screen
-	vp.push_input(up, true)
-	return {"ok": true, "clicked": true, "target": label,
-		"at": [screen.x, screen.y], "world": [world.x, world.y, world.z]}
+	return impl.click(tree.root, _root(), world, button, label, node_vp)
 
 
 func _vec3(v: Variant) -> Vector3:
@@ -1945,14 +2063,14 @@ func _vec3(v: Variant) -> Vector3:
 
 ## Mouse-wheel scroll at a target Control's center (path/selector) or an explicit
 ## gui-space position. amount>0 scrolls down, <0 up; |amount| = wheel notches.
+## A target's center goes up its route like click_control's (a list inside a SubViewport
+## or a dialog is scrolled where it is on screen); position= is in the root's GUI space.
 func _scroll_cmd(msg: Dictionary) -> Dictionary:
 	var vp := get_viewport()
 	if vp == null:
 		return {"ok": false, "error": "no viewport"}
-	var pos: Vector2
-	if msg.has("position"):
-		pos = InputCodec.vec2(msg.get("position", []))
-	else:
+	var target: Control = null
+	if not msg.has("position"):
 		var n := _resolve_target(msg)
 		if n == null:
 			return {"ok": false, "error": _not_found(msg)}
@@ -1961,11 +2079,32 @@ func _scroll_cmd(msg: Dictionary) -> Dictionary:
 			return {"ok": false, "error": off}
 		if not (n is Control):
 			return {"ok": false, "error": "scroll target must be a Control, or give position=[x,y]"}
-		pos = (n as Control).get_global_rect().get_center()
+		target = n as Control
+	var aim = _drive_aim()
+	if aim == null:
+		return {"ok": false, "error": "scrolling is a Full-edition feature (runtime/drive_aim.gd is not part of this build)"}
 	var amount := int(msg.get("amount", 1))
 	if amount == 0:
 		amount = 1
 	var btn := MOUSE_BUTTON_WHEEL_UP if amount < 0 else MOUSE_BUTTON_WHEEL_DOWN
+	# A wheel notch is a press that is not a left click: Godot hands it to whichever embedded window has focus, at
+	# the point it was aimed. A target is refused when that window does not hold it; a bare position only when it is
+	# outside that window (inside, the notch reaches what is drawn there, as a player's does).
+	var push_vp: Viewport = get_tree().root
+	var pos: Vector2
+	var focus_why := ""
+	if target == null:
+		pos = InputCodec.vec2(msg.get("position", []))
+		focus_why = aim.point_focus_refusal(push_vp, pos, btn, _root())
+	else:
+		var rt: Dictionary = aim.click_route(target, _root())
+		if not str(rt["why"]).is_empty():
+			return {"ok": false, "error": str(rt["why"])}
+		pos = rt["at"]
+		push_vp = rt["vp"]
+		focus_why = aim.press_focus_refusal(rt, btn, _root())
+	if not focus_why.is_empty():
+		return {"ok": false, "error": focus_why}
 	var notches := absi(amount)
 	for i in notches:
 		var down := InputEventMouseButton.new()
@@ -1974,14 +2113,17 @@ func _scroll_cmd(msg: Dictionary) -> Dictionary:
 		down.factor = 1.0
 		down.position = pos
 		down.global_position = pos
-		vp.push_input(down, true)
+		push_vp.push_input(down, true)
 		var up := InputEventMouseButton.new()
 		up.button_index = btn
 		up.pressed = false
 		up.position = pos
 		up.global_position = pos
-		vp.push_input(up, true)
-	return {"ok": true, "scrolled": notches, "direction": "up" if amount < 0 else "down", "at": [pos.x, pos.y]}
+		push_vp.push_input(up, true)
+	var out := {"ok": true, "scrolled": notches, "direction": "up" if amount < 0 else "down", "at": [pos.x, pos.y]}
+	if push_vp != get_tree().root:
+		out["space"] = UiInspect.path_of(push_vp, _root())
+	return out
 
 
 ## Press at `from`, glide through interpolated motion to `to`, release — for sliders,
@@ -2441,6 +2583,9 @@ func _safe(v: Variant) -> Variant:
 	var t := typeof(v)
 	if t == TYPE_OBJECT:
 		return str(v)
+	# A reply going out in binary (reply_line) carries a struct as it is, and the editor renders it (core/typed_json.gd).
+	if _typed_reply:
+		return v
 	# Stringify built-in math structs — JSON can't encode them and they'd come back
 	# as null (the global_rect / transform 'returns null' trap).
 	var structs := [TYPE_VECTOR2, TYPE_VECTOR2I, TYPE_VECTOR3, TYPE_VECTOR3I,
@@ -2482,6 +2627,7 @@ func _perf_monitors() -> Dictionary:
 ## say: a headless editor has no GPU adapter at all and still launches a windowed game. Read-only;
 ## playtest op=run stamps these into a perf baseline and compares them on later runs. (The `eval`
 ## command cannot do this: an Expression sees no engine singletons, only the scene root's members.)
+## perf_clock (1.17) is what timed frame_ms and fps in this game: runtime/replay_perf.gd's CLOCK.
 func _fingerprint() -> Dictionary:
 	var out := {
 		"ok": true,
@@ -2489,6 +2635,7 @@ func _fingerprint() -> Dictionary:
 		"gpu_vendor": RenderingServer.get_video_adapter_vendor(),
 		"display": DisplayServer.get_name(),
 		"build": "debug" if OS.is_debug_build() else "release",
+		"perf_clock": str(ReplayPerf.CLOCK),
 	}
 	# The driver actually in use (vulkan, d3d12, opengl3...). Newer than the oldest engine this
 	# autoload has to parse on, so it is reached by name and simply left out where it is missing.

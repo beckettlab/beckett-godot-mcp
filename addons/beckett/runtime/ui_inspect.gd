@@ -11,11 +11,18 @@ extends RefCounted
 ##     and `click_reaches` answers "does that receiver drive the target?" - so a click
 ##     on a covered/modal-blocked control is REFUSED with the blocker's path instead of
 ##     silently activating the wrong control.
+## Since 1.17 both work in GUI space and follow a click through SubViewportContainers and
+## embedded windows (route, hit_along): see "coordinate spaces" below.
 ##
-## Static and stateless: mcp_runtime resolves targets and delegates here (B7 rule -
-## transport/dispatch stay in mcp_runtime, feature logic lives in its own module).
-## 4.2+ floor: only 4.0-era APIs (get_global_rect, mouse_filter, clip_contents,
-## gui_get_focus_owner, Window.position/size/exclusive, String.md5_text).
+## Static and stateless (one cached engine probe aside): mcp_runtime resolves targets and
+## delegates here (B7 rule - transport/dispatch stay in mcp_runtime, feature logic lives in
+## its own module).
+## 4.2+ floor: only 4.0-era APIs (get_global_transform_with_canvas, Viewport.get_final_transform,
+## Window.is_embedded, Node.get_children(include_internal), mouse_filter, clip_contents, gui_get_focus_owner,
+## Window.position/size/exclusive, String.md5_text), plus one 4.5+ method,
+## Control.get_mouse_filter_with_override, found through ClassDB and reached with call().
+## What only the Full edition's drive tools need (the push point of a click, the focused-window rule for a press,
+## GUI space -> window pixels for injected input) is in runtime/drive_aim.gd, which pack.ps1 trims from Lite.
 
 const CallArgs := preload("res://addons/beckett/core/callargs.gd")  # the two flags below can arrive as text
 const TEXT_CAP := 160  # per-node text cap - dialogue Labels can be huge
@@ -47,6 +54,7 @@ static func snapshot(vp: Viewport, tree_root: Node, scene_root: Node, scope: Nod
 		"truncated": false,
 		"occl_left": OCCLUSION_BUDGET,
 		"occl_capped": false,
+		"routes": {},  # one route() per viewport for the whole snapshot
 	}
 	_snap_walk(scope, ctx)
 	var focus := ""
@@ -98,6 +106,9 @@ static func _snap_walk(n: Node, ctx: Dictionary) -> void:
 		_snap_walk(child, ctx)
 
 
+## An embedded window's rect is its position and size in the GUI space of the viewport it is
+## embedded in (the root's, where the controls' rects are). A native window's position is on the
+## screen instead, so it says native.
 static func _window_entry(w: Window, scene_root: Node) -> Dictionary:
 	var d := {"path": path_of(w, scene_root), "class": w.get_class(),
 		"rect": [w.position.x, w.position.y, w.size.x, w.size.y]}
@@ -105,6 +116,8 @@ static func _window_entry(w: Window, scene_root: Node) -> Dictionary:
 		d["title"] = w.title
 	if w.exclusive:
 		d["exclusive"] = true
+	if not w.is_embedded():
+		d["native"] = true
 	return d
 
 
@@ -112,13 +125,17 @@ static func _window_entry(w: Window, scene_root: Node) -> Dictionary:
 ## menu stays in the hundreds of tokens, not thousands.
 static func _entry(c: Control, ctx: Dictionary) -> Dictionary:
 	var scene_root: Node = ctx["scene_root"]
-	var vp: Viewport = ctx["vp"]
 	var d := {"path": path_of(c, scene_root), "class": c.get_class()}
 	var gn := _script_name(c)
 	if gn != "":
 		d["script"] = gn
-	var r := c.get_global_rect()
+	# Where the control is drawn, in the root's GUI space: the space click_control, drag and scroll
+	# take (get_global_rect left out the CanvasLayer and the Camera2D, and stopped at a SubViewport).
+	var rt := _route_cached(ctx["routes"], c.get_viewport(), scene_root)
+	var r: Rect2 = ((rt["xf"] as Transform2D) * c.get_global_transform_with_canvas()) * Rect2(Vector2.ZERO, c.size)
 	d["rect"] = [roundi(r.position.x), roundi(r.position.y), roundi(r.size.x), roundi(r.size.y)]
+	if rt["vp"] != ctx["tree_root"]:
+		d["space"] = path_of(rt["vp"], scene_root)  # a SubViewport no container shows, or a native window: its own pixels
 	var t := _text_of(c)
 	if t != "":
 		if t.length() > TEXT_CAP:
@@ -130,7 +147,7 @@ static func _entry(c: Control, ctx: Dictionary) -> Dictionary:
 		d["disabled"] = true
 	if c.has_focus():
 		d["focused"] = true
-	if c.mouse_filter == Control.MOUSE_FILTER_IGNORE:
+	if mouse_filter_of(c) == Control.MOUSE_FILTER_IGNORE:  # the filter the hit test acts on (4.5+ inherits it)
 		d["mouse_ignore"] = true
 	if c.tooltip_text != "":
 		d["tooltip"] = c.tooltip_text
@@ -172,19 +189,18 @@ static func _entry(c: Control, ctx: Dictionary) -> Dictionary:
 		d["editable"] = false
 	# Would a click at the center actually land? Cheap honesty flags: scrolled-out-of-view
 	# (clipped) and covered-by-something-else (occluded_by) - computed for interactive
-	# controls only; a full menu costs one tree walk per interactive node.
+	# controls only; a full menu costs one tree walk per level of the route per interactive node.
 	if _is_interactive(c):
-		var center := r.get_center()
-		if point_clipped(c, center, vp):
+		if route_clipped(c, rt):
 			d["clipped"] = true
-		elif bool(ctx["occlusion"]) and not inside_embedded_window(c, ctx["tree_root"]):
+		elif bool(ctx["occlusion"]) and str(rt["why"]).is_empty():
 			if int(ctx["occl_left"]) <= 0:
 				ctx["occl_capped"] = true
 			else:
 				ctx["occl_left"] = int(ctx["occl_left"]) - 1
-				var receiver: Node = pick_at(vp, ctx["tree_root"], center)
-				if receiver != null and receiver != c and not click_reaches(receiver, c):
-					d["occluded_by"] = path_of(receiver, scene_root)
+				var blocker: Node = hit_along(c, rt, gui_center(c))["blocker"]
+				if blocker != null:
+					d["occluded_by"] = path_of(blocker, scene_root)
 	return d
 
 
@@ -235,16 +251,205 @@ static func path_of(n: Node, scene_root: Node) -> String:
 	return str(n.get_path())
 
 
+## ---- coordinate spaces (1.17) -----------------------------------------------
+
+## Three spaces, and which numbers live in which:
+##   canvas  get_global_rect(): leaves out the CanvasLayer's transform and the viewport's canvas_transform (a Camera2D),
+##           and stops at a SubViewport. Nothing here takes a point from it any more: a HUD on a layer scaled by 2 was
+##           hit-tested at half its position, where the view under it is (the 4.7.2 field report).
+##   GUI     get_global_transform_with_canvas(), per viewport: where Godot's own GUI looks for the control under a click
+##           (Viewport::gui_find_control), what push_input(event, true) takes and what Camera3D.unproject_position gives.
+##           Every point and rect Beckett takes or reports (ui_snapshot, click_control, get_control_rect's gui_*, drag,
+##           scroll, simulate_input, the recorder) is in the ROOT viewport's GUI space.
+##   window  get_final_transform() on top of GUI (the content-scale stretch, the KEEP margins, the window's own scale):
+##           what Input.parse_input_event takes (drive_aim.gd's gui_to_window) and get_control_rect's screen_rect.
+## A capture's pixels are a space of their own (image_xf): the texture has the stretch but not the window's own part.
+## route() carries a point up from a control's viewport to the one that takes the push, through each
+## SubViewportContainer (sub_hop) and each embedded Window (window_hop): the inverse of how Godot hands a real click
+## down, the same in 4.2, 4.4.1, 4.6.2 and 4.7.
+
+const ROUTE_HOPS_MAX := 8
+
+# Godot 4.5 reads a control's EFFECTIVE mouse filter in its own hit test (mouse_behavior_recursive = Disabled on an
+# ancestor makes it IGNORE); 4.2 to 4.4 have no such method. Probed once.
+static var _filter_probed := false
+static var _filter_override := false
+
+
+## The mouse filter Godot's GUI acts on: get_mouse_filter_with_override() where the engine has it (4.5+), else
+## mouse_filter. Both statics are assigned inside the probe: a script that is not @tool may skip its static
+## initialisers when an editor script preloads it (input_codec.gd has the story).
+static func mouse_filter_of(c: Control) -> int:
+	if not _filter_probed:
+		_filter_probed = true
+		_filter_override = ClassDB.class_has_method("Control", "get_mouse_filter_with_override")
+	if _filter_override:
+		return int(c.call("get_mouse_filter_with_override"))
+	return c.mouse_filter
+
+
+## A control's center in its own viewport's GUI space.
+static func gui_center(c: Control) -> Vector2:
+	return c.get_global_transform_with_canvas() * (c.size * 0.5)
+
+
+## Does gui-space point p fall on c, asked the way Godot's hit test asks it (Control::has_point on the point taken back
+## through the control's transform)? A script's own _has_point (a round or shaped button) is asked too, as the engine
+## asks it. A transform with no area (a pop-in tween at scale 0) holds no point: the engine skips such a node, and
+## inverting it would fail.
+static func gui_has_point(c: Control, p: Vector2) -> bool:
+	var xf := c.get_global_transform_with_canvas()
+	if is_zero_approx(xf.determinant()):
+		return false
+	var local: Vector2 = xf.affine_inverse() * p
+	if c.get_script() != null and c.has_method("_has_point"):
+		return bool(c.call("_has_point", local))
+	return Rect2(Vector2.ZERO, c.size).has_point(local)
+
+
+## One SubViewportContainer level, from the SubViewport's GUI space to the container's viewport's:
+## container_xf (its get_global_transform_with_canvas) * scale(stretch_shrink when stretch is on) * the SubViewport's
+## final transform. SubViewportContainer.gui_input takes the container-local point, divides it by the shrink (only when
+## stretch is on and shrink > 1, so k = shrink is exact either way) and SubViewport.push_input applies the inverse
+## final transform: this is that, inverted.
+static func sub_hop(container_xf: Transform2D, sub_final: Transform2D, stretch: bool, shrink: int) -> Transform2D:
+	var k := float(maxi(1, shrink)) if stretch else 1.0
+	return container_xf * Transform2D.IDENTITY.scaled(Vector2(k, k)) * sub_final
+
+
+## One embedded Window level, from the window's GUI space to its embedder's: the window's position plus its final
+## transform. Viewport._sub_windows_forward_input moves the event by -position and Window._window_input pushes it with
+## the inverse final transform: this is that, inverted.
+static func window_hop(win_pos: Vector2i, win_final: Transform2D) -> Transform2D:
+	return Transform2D(0.0, Vector2(win_pos)) * win_final
+
+
+## The viewport a Window is embedded in, found the way Window::get_embedder finds it (not bound to scripts): the nearest
+## viewport above it with gui_embed_subwindows on, or null.
+static func embedder_of(w: Window) -> Viewport:
+	var par := w.get_parent()
+	var vp: Viewport = par.get_viewport() if par != null else null
+	while vp != null and not vp.gui_embed_subwindows:
+		var up := vp.get_parent()
+		vp = up.get_viewport() if up != null else null
+	return vp
+
+
+## How a point in `vp`'s GUI space gets to the viewport that takes the push, the way Godot hands a real click down:
+##   {vp: the viewport to push into, xf: vp's GUI space -> that viewport's, hops, direct, why, block}
+## Each hop is {vp: the level it leaves, via: the SubViewportContainer or embedded Window that leads there, to: the next
+## viewport up, xf_in: vp's GUI space -> the level's, xf: vp's GUI space -> to's}. The walk stops at a native window
+## (the root included), at `stop`, or at a SubViewport no container shows: direct is true there, since no click from
+## the screen reaches it (a GUI on a 3D panel, a render target), so a push goes straight into it.
+## why says why a click from the screen would NOT get through, and block its kind: hidden (a container or window that
+## is not visible; it outranks the others), ignore (a container whose mouse filter is IGNORE never forwards a click),
+## no_input (gui_disable_input) or deep (more than ROUTE_HOPS_MAX levels). The walk goes on after a why, so xf always
+## says where the point is drawn.
+static func route(vp: Viewport, scene_root: Node = null, stop: Viewport = null) -> Dictionary:
+	var xf := Transform2D.IDENTITY
+	var hops: Array = []
+	var why := ""
+	var block := ""
+	var direct := false
+	var cur := vp
+	while cur != null and cur != stop:
+		var w := cur as Window
+		var emb: Viewport = null
+		var c: SubViewportContainer = null
+		if w != null:
+			emb = embedder_of(w) if w.is_embedded() else null
+			if emb == null:
+				break  # a native window (the root, embed_subwindows off, force_native): pushes land here
+		elif cur is SubViewport:
+			c = cur.get_parent() as SubViewportContainer
+			if c == null:
+				direct = true
+				break
+		else:
+			break
+		if hops.size() == ROUTE_HOPS_MAX:
+			if block != "hidden":
+				why = "viewports nested deeper than %d" % ROUTE_HOPS_MAX
+				block = "deep"
+			break
+		if w != null:
+			if not w.visible and block != "hidden":
+				why = "%s is hidden" % path_of(w, scene_root)
+				block = "hidden"
+			elif w.gui_disable_input and why.is_empty():
+				why = "%s has gui_disable_input on, so it receives no click" % path_of(w, scene_root)
+				block = "no_input"
+			var hw := window_hop(w.position, w.get_final_transform())
+			hops.append({"vp": w, "via": w, "to": emb, "xf_in": xf, "xf": hw * xf})
+			xf = hw * xf
+			cur = emb
+		else:
+			if not c.is_visible_in_tree() and block != "hidden":
+				why = "%s is hidden" % path_of(c, scene_root)
+				block = "hidden"
+			elif why.is_empty() and mouse_filter_of(c) == Control.MOUSE_FILTER_IGNORE:
+				why = "%s has mouse_filter IGNORE, so Godot never forwards a click into %s" % [path_of(c, scene_root), path_of(cur, scene_root)]
+				block = "ignore"
+			elif why.is_empty() and cur.gui_disable_input:
+				why = "%s has gui_disable_input on, so %s forwards nothing to it" % [path_of(cur, scene_root), path_of(c, scene_root)]
+				block = "no_input"
+			var hs := sub_hop(c.get_global_transform_with_canvas(), cur.get_final_transform(), c.stretch, c.stretch_shrink)
+			hops.append({"vp": cur, "via": c, "to": c.get_viewport(), "xf_in": xf, "xf": hs * xf})
+			xf = hs * xf
+			cur = c.get_viewport()
+	return {"vp": cur, "xf": xf, "hops": hops, "direct": direct, "why": why, "block": block}
+
+
+static func _route_cached(cache: Dictionary, vp: Viewport, scene_root: Node, stop: Viewport = null) -> Dictionary:
+	var key := vp.get_instance_id()
+	if not cache.has(key):
+		cache[key] = route(vp, scene_root, stop)
+	return cache[key]
+
+
+## The hop whose level does not show gui-space point p (p in the GUI space of the route's first viewport), or null when
+## every level does: the point is outside a SubViewportContainer's rect or clipped away around it, or outside an
+## embedded window or the viewport that holds it. The one-pixel-bigger pixel-art layout lands here: the outer ring of
+## SubViewport pixels maps outside the window.
+static func hop_clipping(p: Vector2, rt: Dictionary) -> Node:
+	for h in rt.get("hops", []):
+		var hop: Dictionary = h
+		var up: Vector2 = (hop["xf"] as Transform2D) * p
+		var via: Node = hop["via"]
+		if via is Control:
+			var cont := via as Control
+			if not gui_has_point(cont, up) or point_clipped(cont, up, cont.get_viewport()):
+				return via
+		elif via is Window:
+			var w := via as Window
+			if not Rect2(Vector2(w.position), Vector2(w.size)).has_point(up) or not (hop["to"] as Viewport).get_visible_rect().has_point(up):
+				return via
+	return null
+
+
+static func hops_clipped(p: Vector2, rt: Dictionary) -> bool:
+	return hop_clipping(p, rt) != null
+
+
+## Is the control's center out of reach for a click: outside its own viewport, clipped by an ancestor there, or not
+## shown by a level above? rt is the control's own route.
+static func route_clipped(c: Control, rt: Dictionary) -> bool:
+	var p := gui_center(c)
+	return point_clipped(c, p, c.get_viewport()) or hops_clipped(p, rt)
+
+
 ## ---- hit test (shared with click_control) -----------------------------------
 
 ## True if gui-space point p on ctrl is outside the viewport or clipped away by a
 ## clip_contents ancestor (ScrollContainer and friends) - a click there can't reach it.
+## p and vp are ctrl's own viewport's: the walk stops at the first Viewport, and a level
+## above it is hop_clipping's.
 static func point_clipped(ctrl: Control, p: Vector2, vp: Viewport) -> bool:
 	if not vp.get_visible_rect().has_point(p):
 		return true
 	var a := ctrl.get_parent()
-	while a != null:
-		if a is Control and (a as Control).clip_contents and not (a as Control).get_global_rect().has_point(p):
+	while a != null and not (a is Viewport):
+		if a is Control and (a as Control).clip_contents and not gui_has_point(a as Control, p):
 			return true
 		a = a.get_parent()
 	return false
@@ -256,46 +461,72 @@ static func point_clipped(ctrl: Control, p: Vector2, vp: Viewport) -> bool:
 ## transform point test). Embedded Windows sit above the canvas: a click inside one
 ## resolves within it (or returns the Window itself); a visible EXCLUSIVE window
 ## blocks every click outside itself (the modal case). Returns null when nothing
-## interactive is at the point.
-static func pick_at(vp: Viewport, tree_root: Node, p: Vector2) -> Node:
-	var wins: Array = []
-	_collect_windows(tree_root, wins)
+## interactive is at the point. `tree_root` is the viewport picked in (vp itself).
+static func pick_at(_vp: Viewport, tree_root: Node, p: Vector2) -> Node:
+	var wins := collect_windows(tree_root)
 	for i in range(wins.size() - 1, -1, -1):  # later window = on top (approximation)
 		var w: Window = wins[i]
 		var wr := Rect2(Vector2(w.position), Vector2(w.size))
 		if wr.has_point(p):
-			var inner := _pick_canvas(w, p - Vector2(w.position))
+			var inner := _pick_canvas(w, w.get_final_transform().affine_inverse() * (p - Vector2(w.position)))
 			return inner if inner != null else w
+		if window_frame(w).has_point(p):
+			return w  # its title bar or resize border: a press there drags or resizes the window
 		if w.exclusive:
 			return w  # modal: clicks outside it never reach the UI below
 	return _pick_canvas(tree_root, p)
 
 
-static func _collect_windows(n: Node, out: Array) -> void:
-	for c in n.get_children():
-		if c is Window and (c as Window).visible:
-			out.append(c)
-		_collect_windows(c, out)  # recurse into windows too: an open dropdown/submenu is a nested Window
+## An embedded window's outer frame in its embedder's GUI space: its rect, plus the title bar above it and, when it can be
+## resized, the resize margin around it, unless it is borderless. A left press on the frame drags or resizes the window
+## (Viewport._sub_windows_forward_input), so nothing under it gets that press.
+static func window_frame(w: Window) -> Rect2:
+	var r := Rect2(Vector2(w.position), Vector2(w.size))
+	if w.borderless:
+		return r
+	r = r.grow_individual(0.0, float(w.get_theme_constant("title_height")), 0.0, 0.0)
+	if not w.unresizable:
+		r = r.grow(float(w.get_theme_constant("resize_margin")))
+	return r
+
+
+## The visible windows embedded in `scope` itself, nested ones included (an open dropdown or submenu is a window of its
+## own), in tree order. Internal children are walked too: an OptionButton's or a MenuButton's open dropdown is an
+## INTERNAL PopupMenu, which get_children() leaves out. A native window's position is on the screen, not in scope's GUI
+## space, so it is no part of this list.
+static func collect_windows(scope: Node) -> Array:
+	var out: Array = []
+	_collect_windows(scope, scope, out)
+	return out
+
+
+static func _collect_windows(n: Node, scope: Node, out: Array) -> void:
+	for c in n.get_children(true):
+		if c is Window:
+			var w := c as Window
+			if w.visible and w.is_embedded() and embedder_of(w) == scope:
+				out.append(w)
+		_collect_windows(c, scope, out)
 
 
 ## Pick within one canvas scope: every CanvasLayer under `scope` is its own context
 ## stacked by its `layer` index (ties: later in tree on top); items outside any layer
-## form the default layer-0 context. Contexts are tested top-down.
+## form the default layer-0 context. Contexts are tested top-down, all with the same
+## gui-space point: gui_has_point carries each control's own canvas transform (a layer's
+## final transform with follow_viewport, a Camera2D's on layer 0).
 static func _pick_canvas(scope: Node, p: Vector2) -> Control:
-	var contexts: Array = [[0, -1, scope, Transform2D()]]
+	var contexts: Array = [[0, -1, scope]]
 	var layers: Array = []
 	_collect_layers(scope, layers)
 	for i in layers.size():
 		var cl: CanvasLayer = layers[i]
-		contexts.append([cl.layer, i, cl, cl.transform])
+		contexts.append([cl.layer, i, cl])
 	contexts.sort_custom(func(a, b):
 		if a[0] != b[0]:
 			return a[0] < b[0]
 		return a[1] < b[1])
 	for i in range(contexts.size() - 1, -1, -1):
-		var ctx: Array = contexts[i]
-		var local: Vector2 = (ctx[3] as Transform2D).affine_inverse() * p
-		var hit := _pick_walk(ctx[2], local, true)
+		var hit := _pick_walk((contexts[i] as Array)[2], p, true)
 		if hit != null:
 			return hit
 	return null
@@ -303,8 +534,8 @@ static func _pick_canvas(scope: Node, p: Vector2) -> Control:
 
 static func _collect_layers(n: Node, out: Array) -> void:
 	for c in n.get_children():
-		if c is Window:
-			continue  # windows are separate pick scopes
+		if c is Viewport:
+			continue  # a SubViewport or a window is a pick scope of its own, its CanvasLayers included
 		if c is CanvasLayer and (c as CanvasLayer).visible:
 			out.append(c)
 		_collect_layers(c, out)
@@ -312,13 +543,17 @@ static func _collect_layers(n: Node, out: Array) -> void:
 
 static func _pick_walk(n: Node, p: Vector2, is_ctx_root: bool) -> Control:
 	if not is_ctx_root:
-		if n is Window or n is CanvasLayer:
-			return null  # separate contexts, handled by the callers above
-		if n is CanvasItem and not (n as CanvasItem).visible:
-			return null
+		if n is Viewport or n is CanvasLayer:
+			return null  # separate scopes and contexts: the root's GUI sees a SubViewport's container, not its insides
+		if n is CanvasItem:
+			var ci := n as CanvasItem
+			if not ci.visible:
+				return null
+			if is_zero_approx(ci.get_global_transform_with_canvas().determinant()):
+				return null  # no area: Godot's own pick skips the whole subtree
 		if n is Control:
 			var c := n as Control
-			if c.clip_contents and not _has_point(c, p):
+			if c.clip_contents and not gui_has_point(c, p):
 				return null  # children are clipped to this rect too
 	var kids := n.get_children()
 	for i in range(kids.size() - 1, -1, -1):  # later sibling paints (and picks) first
@@ -327,50 +562,76 @@ static func _pick_walk(n: Node, p: Vector2, is_ctx_root: bool) -> Control:
 			return hit
 	if not is_ctx_root and n is Control:
 		var c2 := n as Control
-		if c2.mouse_filter != Control.MOUSE_FILTER_IGNORE and _has_point(c2, p):
+		if mouse_filter_of(c2) != Control.MOUSE_FILTER_IGNORE and gui_has_point(c2, p):
 			return c2
 	return null
 
 
-## Transform-aware point test (handles rotated/scaled controls, unlike a bare
-## get_global_rect().has_point which is axis-aligned).
-static func _has_point(c: Control, p: Vector2) -> bool:
-	var local: Vector2 = c.get_global_transform().affine_inverse() * p
-	return Rect2(Vector2.ZERO, c.size).has_point(local)
-
-
-## Would a click delivered to `receiver` end up driving `target`?
+## Would a click delivered to `receiver` end up driving `target`? Walked the way
+## Viewport._gui_call_input hands a pointer event to the receiver's parents:
 ##  - receiver IS the target;
-##  - receiver is a descendant whose whole chain up to the target is
-##    MOUSE_FILTER_PASS (the event bubbles up and the target consumes it);
+##  - the target is up the receiver's chain of CanvasItem parents, and nothing on the
+##    way ends it: a control with mouse_filter STOP takes the event, a top_level item
+##    has no parent item, a plain Node breaks the chain. IGNORE controls and Node2Ds
+##    pass it on. The target itself must not be IGNORE (it would never get it);
 ##  - receiver is a SubViewportContainer ancestor of the target (it forwards
 ##    events into the SubViewport hosting the target - forwarded picking is
 ##    the sub-viewport's business, so give it the benefit of the doubt).
 static func click_reaches(receiver: Node, target: Control) -> bool:
 	if receiver == target:
 		return true
-	if receiver is Control and target.is_ancestor_of(receiver):
-		var a: Node = receiver
-		while a != null and a != target:
-			if not (a is Control) or (a as Control).mouse_filter != Control.MOUSE_FILTER_PASS:
+	if receiver is CanvasItem and target.is_ancestor_of(receiver):
+		var ci: CanvasItem = receiver
+		while ci != target:
+			if ci is Control and mouse_filter_of(ci as Control) == Control.MOUSE_FILTER_STOP:
 				return false
-			a = a.get_parent()
-		return true
+			if ci.top_level:
+				return false
+			var up := ci.get_parent()
+			if not (up is CanvasItem):
+				return false
+			ci = up as CanvasItem
+		return mouse_filter_of(target) != Control.MOUSE_FILTER_IGNORE
 	if receiver is SubViewportContainer and receiver.is_ancestor_of(target):
 		return true
 	return false
 
 
-## True when the control lives inside an embedded Window (popup/dialog): its rect is
-## window-local, so the main-canvas hit test does not apply (click_control skips the
-## occlusion precheck for those and keeps the plain push - the pre-1.10 behavior).
-static func inside_embedded_window(c: Control, tree_root: Node) -> bool:
-	var a := c.get_parent()
-	while a != null:
-		if a is Window and a != tree_root:
-			return true
-		a = a.get_parent()
-	return false
+## A click's way down a route, the way Godot hands it on: at each level, the control the press lands on must deliver it
+## to the container that leads one level in, or that control takes the click. p is in the GUI space of the route's first
+## viewport (where `target` lives). Returns {receiver: what the innermost level reached hands the press to, blocker: what
+## takes it instead of the next level or of `target` (null when nothing does), level: the hop index whose container the
+## blocker kept the click from (-1: the target's own level), skipped: a level was not judged}.
+## Whether a control reaches an embedded WINDOW is not judged (pick_at only approximates window stacking, so no refusal
+## rests on it, the pre-1.17 rule): the walk goes on inside the window. A level whose pick finds nothing ends the walk
+## with no blocker: never block on a guess.
+static func hit_along(target: Control, rt: Dictionary, p: Vector2) -> Dictionary:
+	var hops: Array = rt.get("hops", [])
+	var out := {"receiver": null, "blocker": null, "level": -1, "skipped": false}
+	var receiver: Node = null
+	var k := hops.size() - 1
+	if k >= 0 and (hops[k] as Dictionary)["via"] is Window:
+		out["skipped"] = true
+	else:
+		receiver = pick_at(rt["vp"], rt["vp"], (rt["xf"] as Transform2D) * p)
+	while k >= 0:
+		var hop: Dictionary = hops[k]
+		if hop["via"] is Window:
+			out["skipped"] = true
+		else:
+			if receiver == null:
+				return out
+			if not click_reaches(receiver, hop["via"]):
+				out["receiver"] = receiver
+				out["blocker"] = receiver
+				out["level"] = k
+				return out
+		receiver = _pick_canvas(hop["vp"], (hop["xf_in"] as Transform2D) * p)
+		k -= 1
+	out["receiver"] = receiver
+	if target != null and receiver != null and receiver != target and not click_reaches(receiver, target):
+		out["blocker"] = receiver
+	return out
 
 
 ## ---- Set-of-Mark annotation (screenshot annotate=ui, P1) ----------------------
@@ -393,16 +654,19 @@ const _DIGITS := {
 }
 
 
-## Numbered marks for every visible, unclipped interactive control, in document order.
-## rect is SCREEN-pixel space (final_transform math - the space screenshot pixels live
-## in), so the boxes land exactly on the captured image even under content-scale.
+## Numbered marks for every visible, unclipped interactive control that a click on vp
+## reaches, in document order. rect is in the pixels of vp's own captured image
+## (image_xf), so the boxes land on the picture under any content scale, KEEP margin or
+## viewport-mode stretch, and a control inside a SubViewport or a dialog is boxed where it
+## appears. vp is where the routes stop: the window for a window capture, a SubViewport
+## for a capture of that SubViewport.
 static func marks(vp: Viewport, tree_root: Node, scene_root: Node, max_marks: int = 40) -> Array:
 	var out: Array = []
-	_marks_walk(tree_root, vp, tree_root, scene_root, out, maxi(1, max_marks))
+	_marks_walk(tree_root, vp, tree_root, scene_root, out, maxi(1, max_marks), {}, image_xf(vp))
 	return out
 
 
-static func _marks_walk(n: Node, vp: Viewport, tree_root: Node, scene_root: Node, out: Array, cap: int) -> void:
+static func _marks_walk(n: Node, vp: Viewport, tree_root: Node, scene_root: Node, out: Array, cap: int, routes: Dictionary, img_xf: Transform2D) -> void:
 	if out.size() >= cap:
 		return
 	if n is CanvasItem and not (n as CanvasItem).visible:
@@ -411,27 +675,53 @@ static func _marks_walk(n: Node, vp: Viewport, tree_root: Node, scene_root: Node
 		return
 	if n is Control:
 		var c := n as Control
-		if c.is_visible_in_tree() and _is_interactive(c) \
-				and not point_clipped(c, c.get_global_rect().get_center(), vp):
-			var sr := screen_rect_of(c, vp)
-			if sr.size.x >= 2.0 and sr.size.y >= 2.0:
-				var m := {"i": out.size() + 1, "path": path_of(c, scene_root),
-					"rect": [roundi(sr.position.x), roundi(sr.position.y), roundi(sr.size.x), roundi(sr.size.y)]}
-				var t := _text_of(c)
-				if t != "":
-					m["text"] = t.substr(0, 40)
-				out.append(m)
+		if c.is_visible_in_tree() and _is_interactive(c):
+			var rt := _route_cached(routes, c.get_viewport(), scene_root, vp)
+			# Only what a click on this picture reaches: not a SubViewport no container shows, not a
+			# native window, not behind a hidden or IGNORE container, not clipped at any level.
+			if rt["vp"] == vp and not bool(rt["direct"]) and str(rt["why"]).is_empty() and not route_clipped(c, rt):
+				var sr: Rect2 = (img_xf * (rt["xf"] as Transform2D) * c.get_global_transform_with_canvas()) * Rect2(Vector2.ZERO, c.size)
+				if sr.size.x >= 2.0 and sr.size.y >= 2.0:
+					var m := {"i": out.size() + 1, "path": path_of(c, scene_root),
+						"rect": [roundi(sr.position.x), roundi(sr.position.y), roundi(sr.size.x), roundi(sr.size.y)]}
+					var t := _text_of(c)
+					if t != "":
+						m["text"] = t.substr(0, 40)
+					out.append(m)
 	for child in n.get_children():
-		_marks_walk(child, vp, tree_root, scene_root, out, cap)
+		_marks_walk(child, vp, tree_root, scene_root, out, cap, routes, img_xf)
 
 
-## Control rect in OUTPUT/screen pixels (content-scale applied) - the same math
-## _control_rect uses for its screen_rect, which is proven to match screenshot pixels.
-static func screen_rect_of(c: Control, vp: Viewport) -> Rect2:
-	var xf := vp.get_final_transform() * c.get_global_transform_with_canvas()
-	var a: Vector2 = xf * Vector2.ZERO
-	var b: Vector2 = xf * c.size
-	return Rect2(a, b - a).abs()
+## vp's GUI space -> the pixels of vp's own captured image (get_texture().get_image()).
+## The texture holds the content-scale stretch and global_canvas_transform but not the
+## window's own transform: the KEEP margins, and in viewport mode the whole scale-up. So a
+## window keeps get_final_transform()'s scale without its margin, and a window in
+## content_scale_mode viewport renders at its design size, where the image IS the GUI
+## space. Measured against real captures on 4.4.1, 4.6.2 and 4.7 (1000x500 window, 576x324
+## design): canvas_items KEEP gives an 888x500 image at x1.5417 with no margin offset,
+## viewport KEEP a 576x324 image at x1. get_texture().get_size() cannot stand in for the
+## image size: for a stretched window it reports the size times the stretch (1369x772 for
+## that 888x500 capture).
+static func image_xf(vp: Viewport) -> Transform2D:
+	var g := vp.global_canvas_transform
+	if vp is Window:
+		var w := vp as Window
+		if w.content_scale_mode == Window.CONTENT_SCALE_MODE_VIEWPORT and w.content_scale_size.x > 0 and w.content_scale_size.y > 0:
+			return g
+		var fin := vp.get_final_transform()
+		var stretch: Transform2D = Transform2D(fin.x, fin.y, Vector2.ZERO) * Transform2D(g.x, g.y, Vector2.ZERO).affine_inverse()
+		return Transform2D(fin.x, fin.y, stretch * g.origin)
+	return vp.get_final_transform()
+
+
+## A control's rect in WINDOW pixels (the content-scale stretch and the window's own
+## transform applied): what Input.parse_input_event and OS-level input aim at, and
+## get_control_rect's screen_rect. The route stops at vp; rt is the control's route when
+## the caller has it (the two-argument call keeps working).
+static func screen_rect_of(c: Control, vp: Viewport, rt: Dictionary = {}) -> Rect2:
+	var r := rt if not rt.is_empty() else route(c.get_viewport(), null, vp)
+	var land: Viewport = r["vp"]
+	return (land.get_final_transform() * (r["xf"] as Transform2D) * c.get_global_transform_with_canvas()) * Rect2(Vector2.ZERO, c.size)
 
 
 ## Draw the numbered boxes onto a CAPTURED image (never touches the scene). The caller
@@ -492,16 +782,29 @@ static func audit(vp: Viewport, tree_root: Node, scene_root: Node, scope: Node, 
 	_audit_collect(scope, tree_root, interactive, texty)
 	var issues: Array = []
 	var vr := vp.get_visible_rect()
+	# Every rect in the root's GUI space, where the controls are drawn (one route per
+	# viewport): controls on different CanvasLayers, inside SubViewports and in dialogs line
+	# up as on screen. `here` is false for a control a click on vp cannot reach the normal
+	# way (a SubViewport no container shows, a native window); it sits out offscreen and
+	# overlap, whose rects would be in another space.
+	var routes := {}
+	var rects: Array = []
+	var here: Array = []
 	for n in interactive:
+		var rc := n as Control
+		var rt := _route_cached(routes, rc.get_viewport(), scene_root)
+		rects.append(((rt["xf"] as Transform2D) * rc.get_global_transform_with_canvas()) * Rect2(Vector2.ZERO, rc.size))
+		here.append(rt["vp"] == vp and not bool(rt["direct"]))
+	for ci in interactive.size():
 		if issues.size() >= cap:
 			break
-		var c := n as Control
-		var r := c.get_global_rect()
+		var c := interactive[ci] as Control
+		var r: Rect2 = rects[ci]
 		var p := path_of(c, scene_root)
 		if r.size.x < 1.0 or r.size.y < 1.0:
 			issues.append({"type": "zero_size", "path": p, "rect": _r4(r),
 				"detail": "visible interactive control with a degenerate rect"})
-		elif not inside_embedded_window(c, tree_root) and not vr.intersects(r):
+		elif bool(here[ci]) and not vr.intersects(r):
 			issues.append({"type": "offscreen", "path": p, "rect": _r4(r),
 				"detail": "visible interactive control entirely outside the viewport"})
 		if touch_min > 0.0 and (r.size.x < touch_min or r.size.y < touch_min):
@@ -515,18 +818,18 @@ static func audit(vp: Viewport, tree_root: Node, scene_root: Node, scope: Node, 
 		if issues.size() >= cap:
 			break
 		var a := interactive[i] as Control
-		var ra := a.get_global_rect()
-		if ra.size.x < 1.0 or ra.size.y < 1.0:
+		var ra: Rect2 = rects[i]
+		if ra.size.x < 1.0 or ra.size.y < 1.0 or not bool(here[i]):
 			continue
 		for j in range(i + 1, interactive.size()):
 			if issues.size() >= cap:
 				break
 			var b := interactive[j] as Control
-			if a.is_ancestor_of(b) or b.is_ancestor_of(a):
+			if a.is_ancestor_of(b) or b.is_ancestor_of(a) or not bool(here[j]):
 				continue
 			if _host_window(a, tree_root) != _host_window(b, tree_root):
 				continue
-			var rb := b.get_global_rect()
+			var rb: Rect2 = rects[j]
 			if rb.size.x < 1.0 or rb.size.y < 1.0:
 				continue
 			var inter := ra.intersection(rb)

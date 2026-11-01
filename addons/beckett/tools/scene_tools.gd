@@ -12,6 +12,7 @@ const Reflect := preload("res://addons/beckett/core/reflection.gd")
 const Internals := preload("res://addons/beckett/core/internals.gd")  # instance_scene never puts one of Beckett's own scenes in the player's
 const PersistGuard := preload("res://addons/beckett/core/persist_guard.gd")
 const PathGuard := preload("res://addons/beckett/core/path_guard.gd")  # the read rule for a scene opened by path, the write rule for one saved to a path
+const _RENAME_SHOWN := 8  # rewritten node paths a rename_node reply spells out in its text; the json lists every one
 
 var server  # mcp_server node
 
@@ -38,7 +39,7 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "rename_node",
-		"description": "Rename a node in the open scene (undoable).",
+		"description": "Rename a node in the open scene (undoable). Like the Scene dock, it also respells every relative NodePath in the scene that leads through the node (an exported NodePath, Array[NodePath] or Dictionary entries, RemoteTransform3D.remote_path, a %unique path) in the same undo step, and the reply lists them. It refuses a sibling's name, and a %unique name that another node already holds. Characters a node name cannot hold are replaced the way Godot replaces them, and the reply gives the name the node ended up with.",
 		"input_schema": {"type": "object", "properties": {
 			"target": {"type": "string"},
 			"name": {"type": "string"},
@@ -56,9 +57,9 @@ func _register(registry) -> void:
 	})
 	registry.register({
 		"name": "instance_scene",
-		"description": "Instantiate a packed scene (res://*.tscn) as a child in the open scene (undoable).",
+		"description": "Instantiate a packed scene (res://*.tscn, or an imported model such as .glb) as a child in the open scene (undoable). It instances the scene the way the editor does, so the saved scene stores it as an instance of the file and later edits to the file show up in this scene.",
 		"input_schema": {"type": "object", "properties": {
-			"scene": {"type": "string", "description": "res:// path to a .tscn/.scn"},
+			"scene": {"type": "string", "description": "res:// path to a .tscn/.scn, or an imported model such as .glb"},
 			"parent": {"type": "string"},
 			"name": {"type": "string"},
 		}, "required": ["scene"]},
@@ -159,17 +160,61 @@ func _rename_node(args: Dictionary) -> Dictionary:
 	var node := _node(str(args.get("target", "")))
 	if node == null:
 		return {"error": Reflect.miss(str(args.get("target", "")))}
-	var new_name := str(args.get("name", ""))
-	if new_name.is_empty():
+	var asked := str(args.get("name", ""))
+	if asked.is_empty():
 		return {"error": "name is required"}
+	var root := Reflect.scene_root()  # the edited scene's root (the unit suite stands one in)
+	# The paths below are respelled for the name the node ends up with, so it has to be that name: set_name
+	# replaces what a node name cannot hold, and quietly numbers a name a sibling already has.
+	var new_name := asked.validate_node_name()
+	var old_name := str(node.name)
+	if new_name.is_empty():
+		return {"error": "'%s' leaves nothing a node name can hold." % asked}
+	if new_name == old_name:
+		return {"text": "%s already has that name; nothing changed" % old_name,
+			"focus": {"kind": "node", "target": str(root.get_path_to(node))}}
+	var parent := node.get_parent()
+	var sibling: Node = parent.get_node_or_null(NodePath(new_name)) if parent != null else null
+	if sibling != null and sibling != node:
+		return {"error": "%s already has a child named '%s'." % [parent.name, new_name],
+			"suggestion": "Pick another name, or rename that node first."}
+	if node.unique_name_in_owner:
+		var scope: Node = node.owner if node.owner != null else node
+		var taken := scope.get_node_or_null(NodePath("%" + new_name))
+		if taken != null and taken != node:
+			return {"error": "Another node of this scene already has the unique name %%%s." % new_name,
+				"suggestion": "Pick another name, or rename that node first."}
+	# What the Scene dock does on a rename (SceneTreeDock::perform_node_renames): a NodePath that named the node
+	# would point at nothing after it, so it is respelled in the same undo step. Renaming Barbarian to Farmer
+	# used to leave the camera's `follow = NodePath("../Barbarian")` behind (Pixvale, 2026-10-08).
+	var rewrites := _path_renames(root, node, new_name)
 	var ur: EditorUndoRedoManager = server.get_undo_redo()
 	ur.create_action("MCP rename_node")
 	ur.add_do_property(node, "name", new_name)
 	ur.add_undo_property(node, "name", node.name)
+	# The paths go in after the name, and on undo they go back after it, so a setter that looks its node up at once
+	# (RemoteTransform3D does) finds it under the name its path spells.
+	for r in rewrites:
+		ur.add_do_property(r["node"], r["property"], r["after"])
+		ur.add_undo_property(r["node"], r["property"], r["before"])
 	ur.commit_action()
-	var root := EditorInterface.get_edited_scene_root()
-	return {"text": "renamed to %s" % new_name,
-		"focus": {"kind": "node", "target": str(root.get_path_to(node))}}
+	var text := "renamed %s to %s" % [old_name, new_name]
+	if new_name != asked:
+		text += " (Godot's spelling of '%s': a node name cannot hold . : @ / \" %%)" % asked
+	var out := {"focus": {"kind": "node", "target": str(root.get_path_to(node))}}
+	if not rewrites.is_empty():
+		var rows: Array = []
+		for r in rewrites:
+			for p in r["paths"]:
+				rows.append({"node": str(root.get_path_to(r["node"])), "property": r["property"], "from": p[0], "to": p[1]})
+		var shown: Array = []
+		for row in rows.slice(0, _RENAME_SHOWN):
+			shown.append("%s:%s %s -> %s" % [row["node"], row["property"], row["from"], row["to"]])
+		text += ". Rewrote %d node path%s that named it: %s%s" % [rows.size(), "" if rows.size() == 1 else "s", "; ".join(shown),
+			"" if rows.size() <= _RENAME_SHOWN else "; and %d more (json lists them all)" % (rows.size() - _RENAME_SHOWN)]
+		out["json"] = {"renamed": {"from": old_name, "to": new_name}, "rewritten": rows}
+	out["text"] = text
+	return out
 
 
 func _reparent_node(args: Dictionary) -> Dictionary:
@@ -218,7 +263,14 @@ func _instance_scene(args: Dictionary) -> Dictionary:
 	if parent == null:
 		var off := Reflect.refusal_for(str(args.get("parent", "")))
 		return {"error": off if not off.is_empty() else "Could not resolve parent."}
-	var inst := packed.instantiate()
+	# GEN_EDIT_STATE_INSTANCE is what the editor's own instancing passes, and what makes the node an instance of
+	# the file rather than a copy of its root. A plain instantiate() gives it the scene_file_path and none of the
+	# scene's state, so the packer has nothing to compare it with: a save wrote `type="Node3D" ... instance=` and
+	# every property the file's root sets as an override of the class defaults, so a later change to the file never
+	# reached this instance (Pixvale, 2026-10-08).
+	var inst := packed.instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)
+	if inst == null:
+		return {"error": "Could not instantiate %s." % scene_path}
 	if args.has("name"):
 		inst.name = str(args["name"])
 	var ur: EditorUndoRedoManager = server.get_undo_redo()
@@ -315,6 +367,109 @@ func _move_node(args: Dictionary) -> Dictionary:
 ## Beckett's own. This used to be a private copy of the lookup, one that also took any absolute path in the editor.
 func _node(target: String) -> Node:
 	return Reflect.scene_node(target)
+
+
+## The NodePaths that renaming `node` to `new_name` would break, respelled: every property of a node of the scene
+## under `root` (script exports and metadata included) that holds a path walking into `node` BY NAME, as a plain
+## name or as its unique name (%Name), also inside an Array or a Dictionary. One entry per property:
+## {node, property, before, after, paths: [[old, new], ...]}, where `after` is the value to set and `paths` the
+## spellings that changed in it. The scene stays as it is; rename_node puts these in its undo step.
+##
+## A path that reaches the node without naming it (".." from a child, %Child to a unique node below it) keeps
+## working after the rename and is left alone, and so is one that does not resolve now (it is broken already, or
+## it is absolute and only resolves in a running game). The Scene dock also respells animation tracks and paths
+## inside resources; this does not.
+static func _path_renames(root: Node, node: Node, new_name: String) -> Array:
+	var out: Array = []
+	var holders: Array = [root]
+	var i := 0
+	while i < holders.size():
+		var h: Node = holders[i]
+		i += 1
+		holders.append_array(h.get_children())
+		for p in h.get_property_list():
+			if int(p["usage"]) & (PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_EDITOR) == 0:
+				continue
+			# NIL is a Variant-typed property, such as an untyped @export_storage var: only its value can tell.
+			if int(p["type"]) not in [TYPE_NODE_PATH, TYPE_ARRAY, TYPE_DICTIONARY, TYPE_NIL]:
+				continue
+			var before: Variant = h.get(p["name"])
+			var paths: Array = []
+			var after: Variant = _renamed_value(h, before, node, new_name, paths, 0)
+			if not paths.is_empty():
+				out.append({"node": h, "property": str(p["name"]), "before": before, "after": after, "paths": paths})
+	return out
+
+
+## `v` with every NodePath in it that names `node` respelled for `new_name`, each change appended to `paths` as
+## [old, new]. A path resolves from `h`, the node that holds it. An Array or a Dictionary that changes comes back as
+## a copy (a typed one stays typed), so `v` itself is still the value to undo to.
+static func _renamed_value(h: Node, v: Variant, node: Node, new_name: String, paths: Array, depth: int) -> Variant:
+	if depth > 16:  # a container that holds itself
+		return v
+	match typeof(v):
+		TYPE_NODE_PATH:
+			var np: NodePath = v
+			var respelled: Variant = _renamed_path(h, np, node, new_name)
+			if respelled == null:
+				return v
+			paths.append([str(np), str(respelled)])
+			return respelled
+		TYPE_ARRAY:
+			var arr: Array = v
+			var copy: Array = []
+			var changed := false
+			for k in arr.size():
+				var seen := paths.size()
+				var e: Variant = _renamed_value(h, arr[k], node, new_name, paths, depth + 1)
+				if paths.size() > seen:
+					if not changed:
+						copy = arr.duplicate()
+						changed = true
+					copy[k] = e
+			return copy if changed else v
+		TYPE_DICTIONARY:
+			var d: Dictionary = v
+			var copy: Dictionary = {}
+			var changed := false
+			for key in d:
+				var seen := paths.size()
+				var e: Variant = _renamed_value(h, d[key], node, new_name, paths, depth + 1)
+				if paths.size() > seen:
+					if not changed:
+						copy = d.duplicate()
+						changed = true
+					copy[key] = e
+			return copy if changed else v
+	return v
+
+
+## `np` (a path held by `h`) spelled for the rename, or null when it does not name `node` on its way, does not
+## resolve, or is absolute. Walked one name at a time, the way get_node walks it, so a segment that names `node`
+## is told apart from an equal name elsewhere and from a ".." that only passes through it. Subnames (":position")
+## are kept.
+static func _renamed_path(h: Node, np: NodePath, node: Node, new_name: String) -> Variant:
+	if np.is_empty() or np.is_absolute():
+		return null
+	var old_name := str(node.name)
+	var cur: Node = h
+	var names := PackedStringArray()
+	var changed := false
+	for k in np.get_name_count():
+		var seg := str(np.get_name(k))
+		cur = cur.get_node_or_null(NodePath(seg))
+		if cur == null:
+			return null
+		if cur == node and (seg == old_name or seg == "%" + old_name):
+			seg = seg.left(seg.length() - old_name.length()) + new_name  # keeps the % of a unique name
+			changed = true
+		names.append(seg)
+	if not changed:
+		return null
+	var spelled := "/".join(names)
+	if np.get_subname_count() > 0:
+		spelled += ":" + str(np.get_concatenated_subnames())
+	return NodePath(spelled)
 
 
 ## Set owner on a duplicated subtree so it persists on save. Only on nodes that have none yet:

@@ -41,6 +41,22 @@ var on_ready_queue: Array = []
 var on_ready_report: Array = []
 var _on_ready_deadline := 0
 const ON_READY_GRACE_MS := 4000  # how long a queued target may still be spawning
+# A busy game answers late (1.17). The game reads this channel once a frame and answers in order, so a long frame (a
+# scene still loading, a shader compiling) holds a write in its queue past any timeout, and the game still applies it
+# when it catches up: on 2026-10-12 a 4.7.2 game took a write the drain had already reported as failed. So the drain
+# waits ON_READY_WAIT_MS, then parks the write (sent, outcome unknown) and sends nothing more until the game answers
+# again; then it reads the property back and reports the write landed (late_ms, with the value) or failed (with the
+# value read). A write with no answer in ON_READY_LATE_MS (time paused in the debugger not counted) is unknown.
+const ON_READY_WAIT_MS := 1500
+const ON_READY_LATE_MS := 30000
+var on_ready_wait_ms := ON_READY_WAIT_MS  # the unit suite shortens both
+var on_ready_late_ms := ON_READY_LATE_MS
+var _on_ready_waiting: Dictionary = {}  # the parked write: {item, sent, seq, paused_ms, seen}
+# The game connection this batch went out on. A batch is never carried into another game: a game the person starts with
+# F5 inherits the session token and connects as a verified peer, and the agent's writes must not land in it.
+var _on_ready_peer: Object = null
+# The read-back's judge: the coercion the game's own write uses (dependency-free, like this file).
+const CallArgs := preload("res://addons/beckett/core/callargs.gd")
 
 
 func start(p_port: int, bind_address: String = "127.0.0.1") -> int:
@@ -94,8 +110,9 @@ func poll_once() -> void:
 		_peer.poll()
 		var st := _peer.get_status()
 		if st == StreamPeerTCP.STATUS_ERROR or st == StreamPeerTCP.STATUS_NONE:
+			_on_ready_lost(_peer, "the game disconnected")
 			_peer = null
-	if not on_ready_queue.is_empty() and _peer != null:
+	if _peer != null and not on_ready_settled():
 		_drain_on_ready()
 
 
@@ -103,18 +120,43 @@ func poll_once() -> void:
 ## re-queues targets that have not spawned yet until the grace window closes — a scene root
 ## exists the instant the game dials in, but its children may still be instantiating, and a
 ## write silently lost to "node not found" would be exactly the dishonesty we just removed.
+## A write the game does not answer in time is parked, not failed (see ON_READY_WAIT_MS), and nothing more is sent
+## until the game answers it, so the writes still land in the order given and the timeouts do not stack.
 func _drain_on_ready() -> void:
+	if not _on_ready_waiting.is_empty() and not _settle_waiting():
+		return
+	var queue := on_ready_queue
+	on_ready_queue = []
 	var still: Array = []
-	for item in on_ready_queue:
-		var d: Dictionary = item
+	for i in queue.size():
+		var d: Dictionary = queue[i]
 		var cmd := {"cmd": "set", "prop": str(d.get("property", "")), "value": d.get("value")}
-		for k in ["path", "class", "name", "text", "nth", "under"]:
-			if d.has(k):
-				cmd[k] = d[k]
-		var r: Dictionary = send_command(cmd)
+		_on_ready_target_into(cmd, d)
+		var sent := Time.get_ticks_msec()
+		var r: Dictionary = send_command(cmd, on_ready_wait_ms)
 		var err := str(r.get("error", ""))
-		var not_there := is_target_missing(err)
-		if not bool(r.get("ok", false)) and not_there and Time.get_ticks_msec() < _on_ready_deadline:
+		var ok := bool(r.get("ok", false))
+		if not ok and (err.begins_with("game not running") or (err.contains(BREAK_MARK) and not r.has("delivered"))):
+			# Not sent at all: the game went away a moment ago, or it is paused in the debugger. A batch none of whose
+			# writes reached this game stays queued for the next one; one this game has seen is never carried over.
+			on_ready_queue = still + queue.slice(i)
+			if err.contains(BREAK_MARK):
+				_on_ready_not_sent("not sent: the game is paused in the debugger")
+			elif _on_ready_peer != null:
+				_on_ready_not_sent("not sent: the game disconnected")
+			return
+		_on_ready_peer = _peer
+		if r.has("timeout") or r.has("delivered"):
+			# Sent and not answered: a busy game applies it when it catches up, a paused one when it resumes.
+			_on_ready_waiting = {"item": d, "sent": sent, "seq": _seq, "paused_ms": 0, "seen": Time.get_ticks_msec()}
+			on_ready_queue = still + queue.slice(i + 1)
+			return
+		if not ok and err.begins_with("runtime disconnected"):
+			on_ready_report.append(_on_ready_entry(d, {"ok": false, "unknown": true, "error": "the game disconnected before it answered this write: whether it landed is unknown"}))
+			on_ready_queue = still + queue.slice(i + 1)
+			_on_ready_not_sent("not sent: the game disconnected")
+			return
+		if not ok and is_target_missing(err) and Time.get_ticks_msec() < _on_ready_deadline:
 			still.append(d)
 			continue
 		on_ready_report.append(_on_ready_entry(d, r))
@@ -130,14 +172,196 @@ func _drain_on_ready() -> void:
 
 ## Is this error the game saying that node is not there (yet)? That is all the on_ready drain retries. Every other error
 ## is final, and a refusal in particular (a write aimed at Beckett's own runtime, which the game answers with "off
-## limits") must never read as a node that has not appeared: it would be retried for the whole grace window.
+## limits", or a path with a ':' in it, which names a property and so never a node) must never read as a node that
+## has not appeared: it would be retried for the whole grace window. Only the START of the error is read: both of the
+## game's misses begin that way, and a refusal echoes the caller's own words, which can hold "not found" anywhere.
 static func is_target_missing(err: String) -> bool:
-	return err.contains("not found") or err.contains("no node matches")
+	return err.begins_with("node not found") or err.begins_with("no node matches")
 
 
-func _on_ready_entry(d: Dictionary, r: Dictionary) -> Dictionary:
+## The parked write, once the game shows it is answering again: true when it is settled (reported, or queued again
+## because its target is still not there) and the drain may go on, false while the game still owes the answer. It asks
+## only on a sign of life: bytes in the socket (most likely this write's own late answer), a command another tool sent
+## since (whose reply may have taken that answer), or the wait running out. Asking a busy game would only stall the
+## editor. The game answers in order, so once its read-back comes, the write before it has been applied or refused.
+func _settle_waiting() -> bool:
+	var w := _on_ready_waiting
+	var now := Time.get_ticks_msec()
+	if not break_text().is_empty():
+		# Paused in the debugger: nothing can answer until someone presses Continue, and that time is not the game's delay.
+		w["paused_ms"] = int(w["paused_ms"]) + now - int(w["seen"])
+		w["seen"] = now
+		return false
+	w["seen"] = now
+	var waited := now - int(w["sent"]) - int(w["paused_ms"])
+	if _peer == null:
+		return false  # no channel: _on_ready_lost reports the write when the peer drops
+	_peer.poll()
+	if _peer.get_available_bytes() == 0 and _seq == int(w["seq"]) and waited < on_ready_late_ms:
+		return false
+	var d: Dictionary = w["item"]
+	var cmd := {"cmd": "get", "prop": str(d.get("property", ""))}
+	_on_ready_target_into(cmd, d)
+	var r: Dictionary = send_command(cmd, on_ready_wait_ms)
+	var err := str(r.get("error", ""))
+	var ok := bool(r.get("ok", false))
+	if not ok and (r.has("timeout") or r.has("delivered") or err.contains(BREAK_MARK)):
+		w["seq"] = _seq  # that read now waits in the game too: its answer is the next sign of life
+		if waited < on_ready_late_ms:
+			return false
+		_on_ready_waiting = {}
+		var cap := ("%d s" % int(on_ready_late_ms / 1000.0)) if on_ready_late_ms >= 1000 else ("%d ms" % on_ready_late_ms)
+		on_ready_report.append(_on_ready_entry(d, {"ok": false, "unknown": true,
+			"error": "the game has not answered this write in %s: it may still land, so read it back with runtime_get_property" % cap}))
+		_on_ready_not_sent("not sent: the game has not answered an earlier on_ready write in %s" % cap)
+		return false
+	_on_ready_waiting = {}
+	if not ok and (err.begins_with("game not running") or err.begins_with("runtime disconnected")):
+		on_ready_report.append(_on_ready_entry(d, {"ok": false, "unknown": true, "error": "the game disconnected before it answered this write: whether it landed is unknown"}))
+		_on_ready_not_sent("not sent: the game disconnected")
+		return false
+	var late := Time.get_ticks_msec() - int(w["sent"])
+	# The time it waited went to the game's stall, not to spawning: targets still missing get their grace again.
+	_on_ready_deadline = maxi(_on_ready_deadline, Time.get_ticks_msec() + ON_READY_GRACE_MS)
+	if not ok:
+		if is_target_missing(err):
+			on_ready_queue.push_front(d)  # its target is not there, so the write could not land: tried again first
+		else:
+			on_ready_report.append(_on_ready_entry(d, {"ok": false, "error": "the game answered late, and reading the property back says: " + err}, late))
+		return true
+	var got: Variant = r.get("value")
+	var verdict := read_back_verdict(d.get("value"), got)
+	if verdict == 1:
+		on_ready_report.append(_on_ready_entry(d, {"ok": true, "after": got}, late))
+	elif verdict == 0:
+		on_ready_report.append(_on_ready_entry(d, {"ok": false, "after": got,
+			"error": "the game answered late, and the property reads back as %s, not the %s written: the write did not land, or game code changed it since" % [_shown(got), _shown(d.get("value"))]}, late))
+	else:
+		on_ready_report.append(_on_ready_entry(d, {"ok": false, "unknown": true, "after": got,
+			"error": "the game answered late, and the property reads back as %s, which Beckett cannot compare with the %s written: read it with runtime_get_property" % [_shown(got), _shown(d.get("value"))]}, late))
+	return true
+
+
+## The game this batch went out on is gone (it disconnected, or another game took the channel): a write it had not
+## answered is unknown, and the writes never sent are reported as not sent, so none of them reaches the next game.
+func _on_ready_lost(peer: Object, why: String) -> void:
+	if _on_ready_peer == null or _on_ready_peer != peer:
+		return
+	_on_ready_peer = null
+	if not _on_ready_waiting.is_empty():
+		var d: Dictionary = _on_ready_waiting["item"]
+		_on_ready_waiting = {}
+		on_ready_report.append(_on_ready_entry(d, {"ok": false, "unknown": true, "error": "%s before it answered this write: whether it landed is unknown" % why}))
+	_on_ready_not_sent("not sent: " + why)
+
+
+## Report every write still queued as never sent, and empty the queue.
+func _on_ready_not_sent(why: String) -> void:
+	for d in on_ready_queue:
+		on_ready_report.append(_on_ready_entry(d, {"ok": false, "error": why}))
+	on_ready_queue = []
+
+
+## Whether the value read back is the one written: 1 yes, 0 no, -1 cannot tell. `want` is what the batch sent (any
+## spelling the game's write takes), `got` what the game's get answered (mcp_runtime.gd _safe: a number, a bool, text, or
+## a struct as str() prints it, "(0, 6, 11)" or "[P: (0.0, 0.0), S: (10.0, 10.0)]"). The print is read back as each type
+## it can be, and `want` goes through the coercion the game's write itself uses (core/callargs.gd) toward that type, so
+## "Vector3(0, 6, 11)", [0, 6, 11] and "0 6 11" all match "(0, 6, 11)", and a value that coercion refuses could not have
+## been written, so it does not match. Pure.
+static func read_back_verdict(want: Variant, got: Variant) -> int:
+	match typeof(got):
+		TYPE_NIL:
+			return 1 if want == null else -1
+		TYPE_BOOL:
+			var b: Dictionary = CallArgs.coerce(want, TYPE_BOOL)
+			return 1 if bool(b.get("ok", false)) and bool(b["value"]) == bool(got) else 0
+		TYPE_INT, TYPE_FLOAT:
+			var n: Dictionary = CallArgs.coerce(want, TYPE_FLOAT)
+			return 1 if bool(n.get("ok", false)) and is_equal_approx(float(n["value"]), float(got)) else 0
+		TYPE_STRING:
+			var text := str(got)
+			if want is String and str(want) == text:
+				return 1
+			if text.begins_with("<") and text.ends_with(">") and text.contains("#"):
+				return -1  # an object prints as <Class#id>: no written value compares with that
+			var held := _printed_values(text)
+			for v in held:
+				var b: Dictionary = CallArgs.coerce(want, typeof(v))
+				if bool(b.get("ok", false)):
+					return 1 if (v == b["value"] if v is Rect2i else v.is_equal_approx(b["value"])) else 0
+			if not held.is_empty():
+				return 0  # no type the print can be takes the value written, so the game's write refused it too
+			if text.begins_with("[") and text.contains(": ("):
+				return -1  # a struct print this cannot read back (a Projection, or a number printed as inf)
+			if want == null:
+				return 1 if text.is_empty() else 0  # null clears a NodePath, which reads back ""
+			for t in [TYPE_STRING, TYPE_STRING_NAME, TYPE_NODE_PATH]:  # &"walk" and ^"A/B" store walk and A/B
+				var s: Dictionary = CallArgs.coerce(want, t)
+				if bool(s.get("ok", false)) and str(s["value"]) == text:
+					return 1
+			return 0
+	return -1
+
+
+## What str() printed `text` from, read back as each type it can be: "(0.0, 6.0, 11.0)" is a vector or a color by how
+## many numbers it holds, and "[P: (0.0, 0.0), S: (10.0, 10.0)]" a Rect2 (or Rect2i), an AABB, a Plane, a Transform2D,
+## a Basis or a Transform3D by its keys and numbers (str() prints a matrix by its columns, the order these constructors
+## take); [] for any other text.
+static func _printed_values(text: String) -> Array:
+	var bracket := text.begins_with("[") and text.ends_with("]")
+	if not bracket and not (text.begins_with("(") and text.ends_with(")")):
+		return []
+	var keys := ""
+	var n: Array = []
+	for tok in text.substr(1, text.length() - 2).replace("(", " ").replace(")", " ").replace(",", " ").split(" ", false):
+		if bracket and tok.ends_with(":"):
+			keys += tok.trim_suffix(":")
+		elif tok.is_valid_float():
+			n.append(tok.to_float())
+		else:
+			return []
+	if bracket and keys.is_empty():
+		return []  # "[1, 2]" is a list, not a struct
+	match keys + str(n.size()):
+		"2":
+			return [Vector2(n[0], n[1])]
+		"3":
+			return [Vector3(n[0], n[1], n[2])]
+		"4":
+			return [Color(n[0], n[1], n[2], n[3]), Vector4(n[0], n[1], n[2], n[3]), Quaternion(n[0], n[1], n[2], n[3])]
+		"PS4":
+			return [Rect2(n[0], n[1], n[2], n[3]), Rect2i(int(n[0]), int(n[1]), int(n[2]), int(n[3]))]
+		"PS6":
+			return [AABB(Vector3(n[0], n[1], n[2]), Vector3(n[3], n[4], n[5]))]
+		"ND4":
+			return [Plane(Vector3(n[0], n[1], n[2]), n[3])]
+		"XYO6":
+			return [Transform2D(Vector2(n[0], n[1]), Vector2(n[2], n[3]), Vector2(n[4], n[5]))]
+		"XYZ9":
+			return [Basis(Vector3(n[0], n[1], n[2]), Vector3(n[3], n[4], n[5]), Vector3(n[6], n[7], n[8]))]
+		"XYZO12":
+			return [Transform3D(Vector3(n[0], n[1], n[2]), Vector3(n[3], n[4], n[5]), Vector3(n[6], n[7], n[8]), Vector3(n[9], n[10], n[11]))]
+	return []
+
+
+static func _shown(v: Variant) -> String:
+	return str(v).left(120)
+
+
+static func _on_ready_target(d: Dictionary) -> String:
+	return str(d.get("path", d.get("name", d.get("class", "?"))))
+
+
+## Copy an on_ready entry's target (a path or a live selector) into a command.
+static func _on_ready_target_into(cmd: Dictionary, d: Dictionary) -> void:
+	for k in ["path", "class", "name", "text", "nth", "under"]:
+		if d.has(k):
+			cmd[k] = d[k]
+
+
+func _on_ready_entry(d: Dictionary, r: Dictionary, late_ms: int = -1) -> Dictionary:
 	var entry := {
-		"target": str(d.get("path", d.get("name", d.get("class", "?")))),
+		"target": _on_ready_target(d),
 		"property": str(d.get("property", "")),
 		"ok": bool(r.get("ok", false)),
 	}
@@ -145,6 +369,10 @@ func _on_ready_entry(d: Dictionary, r: Dictionary) -> Dictionary:
 		entry["after"] = r.get("after")
 	if r.has("error"):
 		entry["error"] = str(r.get("error"))
+	if bool(r.get("unknown", false)):
+		entry["unknown"] = true
+	if late_ms >= 0:
+		entry["late_ms"] = late_ms
 	return entry
 
 
@@ -152,23 +380,51 @@ func _on_ready_entry(d: Dictionary, r: Dictionary) -> Dictionary:
 func queue_on_ready(items: Array) -> void:
 	on_ready_queue = items.duplicate()
 	on_ready_report = []
+	_on_ready_waiting = {}
+	_on_ready_peer = null
 	_on_ready_deadline = Time.get_ticks_msec() + ON_READY_GRACE_MS
 
 
+## Every queued write has been tried and none is waiting for the game's answer.
+func on_ready_settled() -> bool:
+	return on_ready_queue.is_empty() and _on_ready_waiting.is_empty()
+
+
 ## Report for the last on_ready batch, or {} if there was none. Non-destructive: several
-## tools (wait_until, get_play_state) may surface it.
+## tools (wait_until, get_play_state) may surface it. failed counts the writes that did not land
+## (refused, read back wrong, never sent); unknown, when there is one, those whose outcome nobody
+## can say; waiting names the write the game has not answered yet.
 func on_ready_status() -> Dictionary:
-	if on_ready_report.is_empty() and on_ready_queue.is_empty():
+	if on_ready_report.is_empty() and on_ready_settled():
 		return {}
 	var failed := 0
+	var unknown := 0
 	for e in on_ready_report:
-		if not bool((e as Dictionary).get("ok", false)):
+		if bool((e as Dictionary).get("unknown", false)):
+			unknown += 1
+		elif not bool((e as Dictionary).get("ok", false)):
 			failed += 1
-	return {
+	var out := {
 		"applied": on_ready_report,
-		"pending": on_ready_queue.size(),
+		"pending": on_ready_queue.size() + (0 if _on_ready_waiting.is_empty() else 1),
 		"failed": failed,
 	}
+	if unknown > 0:
+		out["unknown"] = unknown
+	if not _on_ready_waiting.is_empty():
+		var d: Dictionary = _on_ready_waiting["item"]
+		out["waiting"] = {"target": _on_ready_target(d), "property": str(d.get("property", "")), "waited_ms": Time.get_ticks_msec() - int(_on_ready_waiting["sent"])}
+	return out
+
+
+## "" while no write waits for the game's answer, else the sentence wait_until's "not yet" carries.
+func on_ready_wait_note() -> String:
+	if _on_ready_waiting.is_empty():
+		return ""
+	var d: Dictionary = _on_ready_waiting["item"]
+	var more := "" if on_ready_queue.is_empty() else " (%d more queued behind it)" % on_ready_queue.size()
+	return "the game is connected, and on_ready write %s.%s was sent %.1f s ago and is not answered yet%s: a busy game answers late, and the report then says how late" % [
+		_on_ready_target(d), str(d.get("property", "")), float(Time.get_ticks_msec() - int(_on_ready_waiting["sent"])) / 1000.0, more]
 
 
 ## Read the pending peer's first line ({"hello": <token>}) and promote or drop it. The
@@ -220,6 +476,10 @@ func _pump_pending() -> void:
 
 
 func _promote() -> void:
+	if _peer != null:
+		_on_ready_lost(_peer, "another game connected")
+	if not on_ready_queue.is_empty() and _on_ready_peer == null:
+		_on_ready_peer = _pending  # the first game after play_scene takes the batch: a drop before any write is tried reports it, never hands it on
 	_peer = _pending
 	_pending = null
 	_pending_buf = PackedByteArray()
@@ -403,12 +663,19 @@ static func command_refusal(command: String, lite_edition: bool) -> String:
 	return "the '%s' command belongs to the Full edition: Lite sees the running game but does not drive it (input, clicks, calls, time control and the rest of the drive layer are Full features)." % command.left(40)
 
 
+## Replies come back in the engine's binary form and are rendered once, here, for every caller (1.17): core/typed_json.gd.
+const TypedJson := preload("res://addons/beckett/core/typed_json.gd")
+
+
 ## Send one command to the running game and block (bounded) for its JSON-line reply.
 ## Each command carries a sequence id the game echoes back. A LATE reply from an earlier
 ## command that timed out (its handler errored or blocked past the deadline) lands in the
 ## socket with the OLD id — we skip it and keep reading for the CURRENT id, instead of
 ## mis-returning it and leaving every subsequent call to read one stale line behind (the
 ## desync that used to wedge the channel until stop_scene).
+## A command that went out and got no answer says so (1.17): timeout:true when the game did not answer in time (a busy
+## game still runs it when it catches up), delivered:true when it was paused in the debugger by the end of the wait. Status
+## polls read timeout as "not yet", the on_ready drain parks the write, and with_kind words what it may still do.
 func send_command(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
 	# First, before anything is looked at or sent: a command outside the edition's set never reaches the game, whether
 	# or not one is connected.
@@ -428,6 +695,9 @@ func send_command(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
 	var id := _seq
 	var tagged := cmd.duplicate()
 	tagged["_id"] = id
+	# Ask for the reply in the engine's binary form (1.17), so an int and a vector come back as what they are. A game that
+	# predates it ignores the flag and answers in JSON, which decode_reply passes through as it is.
+	tagged[TypedJson.ASK] = TypedJson.VERSION
 	_peer.put_data((JSON.stringify(tagged) + "\n").to_utf8_buffer())
 
 	var buf := PackedByteArray()
@@ -458,7 +728,7 @@ func send_command(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
 					# Match on id; a reply without _id (older game build) defaults to a
 					# match so the bridge keeps working across an un-synced runtime.
 					if parsed is Dictionary and int((parsed as Dictionary).get("_id", id)) == id:
-						return parsed
+						return TypedJson.decode_reply(parsed)
 					# stale reply (old id) or malformed line → drop and keep reading
 		OS.delay_msec(4)
 	# A break can begin while this call waits. The editor itself only learns of it a frame after it happens and
@@ -466,8 +736,8 @@ func send_command(cmd: Dictionary, timeout_ms: int = 4000) -> Dictionary:
 	# the one that answers at once; it costs nothing, and it is right whenever the state did move.
 	paused = break_text()
 	if not paused.is_empty():
-		return {"ok": false, "error": paused}
-	return {"ok": false, "error": _timeout_error(timeout_ms)}
+		return {"ok": false, "error": paused, "delivered": true}  # sent before the pause: it runs when the game resumes
+	return {"ok": false, "error": _timeout_error(timeout_ms), "timeout": true}  # sent: a busy game still runs it later
 
 
 # --- The game is parked in the editor's debugger (v1.16) ---------------------------------------
@@ -550,14 +820,45 @@ static func _timeout_error(timeout_ms: int) -> String:
 ## that sent an agent off to the wrong fix (the Suspend button) before 1.16: a break that begins while a call
 ## waits is only visible to the editor a frame later, so this first timeout cannot name it, but get_play_state can.
 static func _timeout_message(timeout_ms: int, gv: Dictionary) -> String:
-	var msg := ("runtime timeout after %d ms - the game stopped answering. If it just hit a script error or a breakpoint it is stopped in the editor's debugger,"
+	var msg := ("runtime timeout after %d ms: the game did not answer in time. If it just hit a script error or a breakpoint it is stopped in the editor's debugger,"
 		+ " which Beckett learns of a frame after it happens: call get_play_state (it reports debugger_break and the next step).") % timeout_ms
 	if str(gv.get("mode", "")) == "embedded":
 		msg += (" If that says false: the game is running EMBEDDED in the editor's Game workspace (placement: %s),"
 			+ " so the likeliest cause is its Suspend button: suspending stops the entire SceneTree,"
 			+ " this channel included, and every runtime call then times out with no other symptom."
-			+ " Press Suspend again (or Next Frame) and retry. This is NOT time_control op=freeze (Full),"
+			+ " Press Suspend again (or Next Frame) to resume it. This is NOT time_control op=freeze (Full),"
 			+ " which pauses the game and leaves the channel answering.") % str(gv.get("placement", "?"))
 	else:
 		msg += " If that says false, the game is busy or hung."
 	return msg
+
+
+# --- what a command that got no answer may still do (1.17) ----------------------------------------
+# The game reads this channel once a frame and answers in order, so a busy game (a long frame, a scene loading) holds a
+# command past any timeout and still runs it when it catches up. On 2026-10-12 a write reported as "runtime timeout
+# ... the game stopped answering" had landed, and an agent told that sends a call or an input again, which then runs
+# twice. A call site that knows what its command does opts in (with_kind); playtest's own sends and every call that
+# does not say keep the plain answer.
+const KIND_CHANGE := "change"  # changes the game: a write, a call, input, a click, time control, a ui_do flow, eval
+const KIND_READ := "read"  # only reads
+
+
+## r with the sentence its kind adds when the command went out and no answer came back: a timeout, or a debugger
+## break that began while the call waited (send_command's timeout and delivered keys). Any other answer comes back as
+## it was. Pure.
+static func with_kind(r: Dictionary, kind: String) -> Dictionary:
+	var late := bool(r.get("timeout", false))
+	if not (late or bool(r.get("delivered", false))) or not (r.get("error") is String):
+		return r
+	var out := r.duplicate()
+	out["error"] = str(r["error"]) + kind_tail(kind, not late)
+	return out
+
+
+## The sentence itself; `paused` is a break that began after the send, else the game did not answer in time.
+static func kind_tail(kind: String, paused: bool) -> String:
+	if kind == KIND_READ:
+		return " This command only reads, so nothing changed." + ("" if paused else " Ask again.")
+	if paused:
+		return " The command was delivered before the pause and runs when the game resumes: read the state back before you send it again."
+	return " The command was delivered, and the game may still run it when it catches up: read the state back before you send it again."
